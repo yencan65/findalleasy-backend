@@ -123,6 +123,12 @@ process.on("uncaughtException", (err) => {
 // Express app
 // =============================================================================
 const app = express();
+// ✅ HEALTH CHECK (Render / uptime monitor)
+// Not: Frontend dist yoksa "/" 404 kalır; Render health-check bununla geçer.
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ ok: true, service: "findalleasy-backend", ts: Date.now() });
+});
+
 app.set("trust proxy", 1);
 
 const PORT = Number(process.env.PORT || 8080);
