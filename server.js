@@ -123,12 +123,6 @@ process.on("uncaughtException", (err) => {
 // Express app
 // =============================================================================
 const app = express();
-// ✅ HEALTH CHECK (Render / uptime monitor)
-// Not: Frontend dist yoksa "/" 404 kalır; Render health-check bununla geçer.
-app.get("/healthz", (req, res) => {
-  res.status(200).json({ ok: true, service: "findalleasy-backend", ts: Date.now() });
-});
-
 app.set("trust proxy", 1);
 
 const PORT = Number(process.env.PORT || 8080);
@@ -231,6 +225,34 @@ app.options("*", cors(corsOptions));
 // =============================================================================
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(bodyParser.json({ limit: "15mb" }));
+
+// ============================================================================
+//  JSON PARSE SHIELD (S34) — body-parser bazen 400 HTML basar (FE'yi öldürür)
+//  Amaç: JSON parse hatasında request'i düşürme; body'yi {} yapıp route'a devam.
+//  ZERO DELETE: mevcut davranışları kırmaz, sadece 400 yerine kontrollü akış.
+// ============================================================================
+app.use((err, req, res, next) => {
+  try {
+    const ct = String(req.headers["content-type"] || "");
+    const isJson = ct.includes("application/json") || ct.includes("+json");
+    const isParseErr =
+      !!err &&
+      (err.type === "entity.parse.failed" ||
+        err.type === "entity.too.large" ||
+        err instanceof SyntaxError ||
+        String(err.message || "").toLowerCase().includes("unexpected token"));
+
+    if (isJson && isParseErr) {
+      req.body = (req.body && typeof req.body === "object") ? req.body : {};
+      req.__jsonParseError = true;
+      // Not: response dönmüyoruz; route kendi fallback'ini çalıştırabilir.
+      return next();
+    }
+  } catch {}
+  return next(err);
+});
+
+
 // ✅ CANONICAL SEARCH: FE hem {query} hem {q} gönderebilir. 400 yok.
 // Not: Bunu app.use("/api/search", searchRouter) ÜSTÜNE koy ki önce bu yakalasın.
 app.post("/api/search", async (req, res) => {
