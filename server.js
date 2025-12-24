@@ -224,6 +224,21 @@ app.options("*", cors(corsOptions));
 // Middleware
 // =============================================================================
 app.use(helmet({ crossOriginResourcePolicy: false }));
+// ============================================================================
+//  BUILD REV HEADER (S35) — deploy gerçekten güncellendi mi? tek bakışta anla
+// ============================================================================
+app.use((req, res, next) => {
+  try {
+    const rev =
+      process.env.RENDER_GIT_COMMIT ||
+      process.env.GIT_COMMIT ||
+      process.env.COMMIT_SHA ||
+      "unknown";
+    res.setHeader("x-fae-rev", String(rev).slice(0, 12));
+  } catch {}
+  next();
+});
+
 app.use(bodyParser.json({ limit: "15mb" }));
 
 // ============================================================================
@@ -1766,4 +1781,26 @@ if (__REWARD_DISABLED) {
 main().catch((e) => {
   console.error("💥 MAIN_FATAL:", e?.message || e);
   process.exit(1);
+});
+
+
+// ============================================================================
+//  API ERROR SOFTFAIL (S35) — HTML 400/500 yerine JSON empty-state
+//  Not: Sadece /api/* için çalışır; frontend kırılmasın.
+// ============================================================================
+app.use((err, req, res, next) => { // API_ERROR_SOFTFAIL_S35
+  try {
+    const url = String(req.originalUrl || req.url || "");
+    if (url.startsWith("/api/")) {
+      return res.status(200).json({
+        ok: true,
+        items: [],
+        meta: {
+          warn: "API_ERROR",
+          message: String(err?.message || "unknown_error").slice(0, 160),
+        },
+      });
+    }
+  } catch {}
+  return next(err);
 });

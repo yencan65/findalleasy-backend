@@ -27,17 +27,6 @@ import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 const router = express.Router();
 
 // ============================================================================
-//  BUILD MARKER (S34) — deploy doğrulama için
-// ============================================================================
-router.use((req, res, next) => {
-  try {
-    res.setHeader("x-fae-vitrine", "S34");
-  } catch {}
-  return next();
-});
-
-
-// ============================================================================
 //  IAM — TOKEN REPLAY SHIELD (S30) — HARDENED (normal akışı kırmaz)
 // ============================================================================
 
@@ -626,17 +615,50 @@ function postFilterSelected(selected, qSafe, intent) {
 //  - Private = auth (admin/user-only endpointler)
 //  - ZERO DELETE: IAM mantığı korunur, sadece allowlist bypass eklenir.
 // ============================================================================
-const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/dynamic", "/"]);
+const PUBLIC_VITRINE_PATHS = new Set([
+  "/ping",
+  "/dynamic",
+  "/",
+  "/api/vitrin/ping",
+  "/api/vitrine/ping",
+  "/api/vitrin/dynamic",
+  "/api/vitrine/dynamic",
+]);
+
+function _normPath(p) {
+  try {
+    let s = String(p || "");
+    if (!s) return "";
+    s = s.split("?")[0];
+    if (!s.startsWith("/")) s = "/" + s;
+    // strip trailing slash (except root)
+    if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+    return s.toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
 function isPublicVitrineRoute(req) {
   try {
-    const p0 = String(req?.path || "");
-    const p = p0.endsWith("/") && p0.length > 1 ? p0.slice(0, -1) : p0;
-    return PUBLIC_VITRINE_ROUTES.has(p);
+    const candidates = [
+      req?.path,
+      req?.url,
+      req?.originalUrl,
+      (req?.baseUrl || "") + (req?.path || ""),
+    ]
+      .map(_normPath)
+      .filter(Boolean);
+
+    for (const c of candidates) {
+      if (PUBLIC_VITRINE_PATHS.has(c)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
+
 
 router.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
