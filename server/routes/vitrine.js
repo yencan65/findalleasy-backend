@@ -27,6 +27,17 @@ import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 const router = express.Router();
 
 // ============================================================================
+//  BUILD MARKER (S34) — deploy doğrulama için
+// ============================================================================
+router.use((req, res, next) => {
+  try {
+    res.setHeader("x-fae-vitrine", "S34");
+  } catch {}
+  return next();
+});
+
+
+// ============================================================================
 //  IAM — TOKEN REPLAY SHIELD (S30) — HARDENED (normal akışı kırmaz)
 // ============================================================================
 
@@ -616,63 +627,12 @@ function postFilterSelected(selected, qSafe, intent) {
 //  - ZERO DELETE: IAM mantığı korunur, sadece allowlist bypass eklenir.
 // ============================================================================
 const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/dynamic", "/"]);
-const PUBLIC_VITRINE_PREFIXES = ["/api/vitrin", "/api/vitrine"];
-
-function normalizePublicPath(raw) {
-  try {
-    let s = String(raw || "");
-    if (!s) return "";
-    // strip querystring + absolute URL prefix if present
-    s = s.split("?")[0].replace(/^https?:\/\/[^/]+/i, "");
-    if (!s.startsWith("/")) s = "/" + s;
-    // collapse duplicate slashes
-    s = s.replace(/\/\/{2,}/g, "/");
-    // trim trailing slash (except root)
-    if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
-    return s;
-  } catch {
-    return "";
-  }
-}
 
 function isPublicVitrineRoute(req) {
   try {
-    const candidates = [];
-    const push = (v) => {
-      if (v === undefined || v === null) return;
-      const s = normalizePublicPath(v);
-      if (s) candidates.push(s);
-    };
-
-    // Express variants (bazen path/baseUrl/originalUrl farklı gelebiliyor)
-    push(req?.path);
-    push(req?.url);
-    push(req?.originalUrl);
-    try {
-      if (req?.baseUrl && req?.path) push(String(req.baseUrl) + String(req.path));
-    } catch {}
-
-    for (const p of candidates) {
-      if (PUBLIC_VITRINE_ROUTES.has(p)) return true;
-
-      for (const pre of PUBLIC_VITRINE_PREFIXES) {
-        if (!pre) continue;
-        const preN = normalizePublicPath(pre);
-        if (!preN) continue;
-
-        // exact mount root: /api/vitrin  => treat as "/"
-        if (p === preN && PUBLIC_VITRINE_ROUTES.has("/")) return true;
-
-        if (p.startsWith(preN + "/")) {
-          let tail = p.slice(preN.length);
-          if (!tail) tail = "/";
-          tail = normalizePublicPath(tail);
-          if (PUBLIC_VITRINE_ROUTES.has(tail)) return true;
-        }
-      }
-    }
-
-    return false;
+    const p0 = String(req?.path || "");
+    const p = p0.endsWith("/") && p0.length > 1 ? p0.slice(0, -1) : p0;
+    return PUBLIC_VITRINE_ROUTES.has(p);
   } catch {
     return false;
   }
