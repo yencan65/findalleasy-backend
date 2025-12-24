@@ -125,6 +125,21 @@ process.on("uncaughtException", (err) => {
 const app = express();
 app.set("trust proxy", 1);
 
+
+
+// ============================================================================
+//  BUILD STAMP (S35) — "hangi commit canlı?" kanıtı
+//  Not: Render/Cloudflare debug için her response'a basılır.
+// ============================================================================
+const FAE_BUILD = process.env.FAE_BUILD || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "manual";
+app.use((req, res, next) => {
+  try {
+    res.setHeader("x-fae-build", String(FAE_BUILD).slice(0, 12));
+    res.setHeader("x-fae-node", String(process.version || ""));
+  } catch {}
+  return next();
+});
+
 const PORT = Number(process.env.PORT || 8080);
 
 // Mongo URI
@@ -224,21 +239,6 @@ app.options("*", cors(corsOptions));
 // Middleware
 // =============================================================================
 app.use(helmet({ crossOriginResourcePolicy: false }));
-// ============================================================================
-//  BUILD REV HEADER (S35) — deploy gerçekten güncellendi mi? tek bakışta anla
-// ============================================================================
-app.use((req, res, next) => {
-  try {
-    const rev =
-      process.env.RENDER_GIT_COMMIT ||
-      process.env.GIT_COMMIT ||
-      process.env.COMMIT_SHA ||
-      "unknown";
-    res.setHeader("x-fae-rev", String(rev).slice(0, 12));
-  } catch {}
-  next();
-});
-
 app.use(bodyParser.json({ limit: "15mb" }));
 
 // ============================================================================
@@ -1766,7 +1766,24 @@ if (__REWARD_DISABLED) {
   } catch {}
 
   // HTTP + WS
-  const httpServer = createServer(app);
+  const httpServer = 
+// ============================================================================
+//  API 400 SHIELD (S35) — üretimde HTML 400 dönmesin (FE kırılır)
+//  Sadece vitrin endpointleri için: 400 -> 200 empty-state JSON
+// ============================================================================
+app.use((err, req, res, next) => {
+  try {
+    const url = String(req?.originalUrl || req?.url || "");
+    const isVitrin = url.startsWith("/api/vitrin") || url.startsWith("/api/vitrine");
+    const code = Number(err?.status || err?.statusCode || 500);
+    if (isVitrin && code === 400 && !res.headersSent) {
+      return res.status(200).json({ ok: true, items: [], meta: { warn: "BAD_REQUEST", detail: String(err?.message || "") } });
+    }
+  } catch {}
+  return next(err);
+});
+
+createServer(app);
   try {
     createTelemetryWSS(httpServer);
   } catch (e) {
@@ -1781,26 +1798,4 @@ if (__REWARD_DISABLED) {
 main().catch((e) => {
   console.error("💥 MAIN_FATAL:", e?.message || e);
   process.exit(1);
-});
-
-
-// ============================================================================
-//  API ERROR SOFTFAIL (S35) — HTML 400/500 yerine JSON empty-state
-//  Not: Sadece /api/* için çalışır; frontend kırılmasın.
-// ============================================================================
-app.use((err, req, res, next) => { // API_ERROR_SOFTFAIL_S35
-  try {
-    const url = String(req.originalUrl || req.url || "");
-    if (url.startsWith("/api/")) {
-      return res.status(200).json({
-        ok: true,
-        items: [],
-        meta: {
-          warn: "API_ERROR",
-          message: String(err?.message || "unknown_error").slice(0, 160),
-        },
-      });
-    }
-  } catch {}
-  return next(err);
 });

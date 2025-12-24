@@ -26,6 +26,18 @@ import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 
 const router = express.Router();
 
+
+// ============================================================================
+//  BUILD STAMP (S35) — her response'ta görünür
+// ============================================================================
+const FAE_BUILD = process.env.FAE_BUILD || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "manual";
+router.use((req, res, next) => {
+  try {
+    res.setHeader("x-fae-build", String(FAE_BUILD).slice(0, 12));
+  } catch {}
+  return next();
+});
+
 // ============================================================================
 //  IAM — TOKEN REPLAY SHIELD (S30) — HARDENED (normal akışı kırmaz)
 // ============================================================================
@@ -615,28 +627,22 @@ function postFilterSelected(selected, qSafe, intent) {
 //  - Private = auth (admin/user-only endpointler)
 //  - ZERO DELETE: IAM mantığı korunur, sadece allowlist bypass eklenir.
 // ============================================================================
-const PUBLIC_VITRINE_PATHS = new Set([
-  "/ping",
-  "/dynamic",
-  "/",
-  "/api/vitrin/ping",
-  "/api/vitrine/ping",
-  "/api/vitrin/dynamic",
-  "/api/vitrine/dynamic",
-]);
+const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/dynamic", "/__debug", "/"]);
 
-function _normPath(p) {
-  try {
-    let s = String(p || "");
-    if (!s) return "";
-    s = s.split("?")[0];
-    if (!s.startsWith("/")) s = "/" + s;
-    // strip trailing slash (except root)
-    if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
-    return s.toLowerCase();
-  } catch {
-    return "";
+function _normPath(u) {
+  const raw = String(u || "");
+  const p = raw.split("?")[0] || "";
+  if (!p) return "";
+  let x = p.startsWith("/") ? p : `/${p}`;
+  // strip known prefixes (proxy / mount variations)
+  const prefixes = ["/api/vitrin", "/api/vitrine", "/vitrin", "/vitrine"];
+  for (const pre of prefixes) {
+    if (x === pre) { x = "/"; break; }
+    if (x.startsWith(pre + "/")) { x = x.slice(pre.length); break; }
   }
+  // trim trailing slash (except root)
+  if (x.endsWith("/") && x.length > 1) x = x.slice(0, -1);
+  return x || "/";
 }
 
 function isPublicVitrineRoute(req) {
@@ -645,13 +651,11 @@ function isPublicVitrineRoute(req) {
       req?.path,
       req?.url,
       req?.originalUrl,
-      (req?.baseUrl || "") + (req?.path || ""),
-    ]
-      .map(_normPath)
-      .filter(Boolean);
-
+      (String(req?.baseUrl || "") + String(req?.path || "")),
+    ];
     for (const c of candidates) {
-      if (PUBLIC_VITRINE_PATHS.has(c)) return true;
+      const p = _normPath(c);
+      if (PUBLIC_VITRINE_ROUTES.has(p)) return true;
     }
     return false;
   } catch {
@@ -659,9 +663,13 @@ function isPublicVitrineRoute(req) {
   }
 }
 
-
 router.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
+
+  try {
+    const p = _normPath(req?.originalUrl || req?.url || req?.path || "");
+    res.setHeader("x-fae-path", p);
+  } catch {}
 
 
   // ✅ PUBLIC: vitrine endpointleri auth istemez (growth-friendly)
@@ -716,6 +724,28 @@ router.get("/ping", (req, res) => {
   return safeJson(res, { ok: true, service: "vitrine", ts: Date.now() });
 });
 
+
+
+// ---------------------------------------
+// DEBUG (public) — path/mount doğrulama
+// ---------------------------------------
+router.get("/__debug", (req, res) => {
+  const info = {
+    ok: true,
+    build: String(FAE_BUILD).slice(0, 12),
+    method: req.method,
+    host: req.headers["host"] || null,
+    path: req.path || null,
+    baseUrl: req.baseUrl || null,
+    url: req.url || null,
+    originalUrl: req.originalUrl || null,
+    ip: req.ip || null,
+    ua: req.headers["user-agent"] || null,
+    public: true,
+    ts: Date.now(),
+  };
+  return safeJson(res, info);
+});
 // ============================================================================
 //  CORE
 // ============================================================================
