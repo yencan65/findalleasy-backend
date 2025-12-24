@@ -1,0 +1,6 @@
+﻿{
+  "proxies": [
+    { "protocol": "http", "host": "YOUR_PROXY_HOST_1", "port": 8000, "username": "YOUR_USER", "password": "YOUR_PASS", "country": "TR" },
+    { "protocol": "http", "host": "YOUR_PROXY_HOST_2", "port": 8000, "username": "YOUR_USER", "password": "YOUR_PASS", "country": "DE" }
+  ]
+}

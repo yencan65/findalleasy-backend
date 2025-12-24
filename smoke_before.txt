@@ -1,0 +1,268 @@
+
+🧪 S200 SMOKE TEST — groups: 23
+
+💰 AFFILIATE ENGINE S200 YÜKLENDİ - ANA MOTOR İLE %100 UYUMLU
+📊 Desteklenen Provider Sayısı: 29
+🎯 S10.15 Tracking: Aktif
+🔗 S9 ProviderMaster Entegrasyonu: Aktif
+=====================================================
+👕 BOYNER ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🛒 BİM ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🚗 AVEC ADAPTER S200 — RAW ARRAY MODE • LOADED
+🚤 BOAT TOUR ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎭 Activities Adapter — S200 RAW FINAL loaded.
+🏥 Acıbadem Adapter — S200 RAW CLEAN FINAL loaded.
+🏥 Acıbadem Checkup Adapter — S200 RAW CLEAN FINAL loaded.
+🎟️ BILETIX ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎫 BILETINO ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+💰 AKAKÇE PRICE COMPARISON ADAPTER S200 YÜKLENDİ - ANA MOTOR İLE %100 UYUMLU (RAW MODE)
+📊 Kategori: product (price comparison)
+📈 Özellik: Fiyat karşılaştırma, ürün arama
+💰 Komisyon Oranı (config): %4
+🎯 Priority: 1.1
+⏱️ Timeout: 12000ms
+=====================================================
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+🚗 Circular adapter çağrıldı: "istanbul" (TR)
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 _allGroups.js: adapters=9 tested=6 ok=5/6 items=1 bad=0
+
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+🚗 Circular adapter çağrıldı: "istanbul araç kiralama" (TR)
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 carRentalAdapters.js: adapters=9 tested=6 ok=5/6 items=1 bad=0
+
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 checkupAdapters.js: adapters=5 tested=5 ok=5/5 items=2 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 craftAdapters.js: adapters=4 tested=4 ok=3/4 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 educationAdapters.js: adapters=5 tested=5 ok=4/5 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 estateAdapters.js: adapters=21 tested=6 ok=5/6 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+🎟️ [biletix_1765889318351_2fw148rvk] Biletix adapter başladı: "istanbul"
+⚠️ [biletix_1765889318351_2fw148rvk] Biletix adapter sonuç yok → fallback
+⚠️ [biletix_1765889318351_2fw148rvk] Biletix fallback kullanıldı, 522ms
+  ✅ biletix: ok=true items=1 bad=0
+  ✅ passo: ok=true items=0 bad=0
+
+📦 eventAdapters.js: adapters=12 tested=6 ok=5/6 items=1 bad=0
+
+  ✅ trendyol: ok=true items=0 bad=0
+  ✅ hepsiburada: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+👕 DeFacto adapter çağrıldı: "spor ayakkabı" (TR)
+✅ DeFacto başarılı: 0 ürün (1568ms)
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+👕 [boyner_1765889327262_gyynpfg3w] Boyner adapter başladı: "spor ayakkabı"
+⚠️ [boyner_1765889327262_gyynpfg3w] Boyner adapter sonuç yok → fallback
+⚠️ [boyner_1765889327262_gyynpfg3w] Boyner fallback kullanıldı, 1537ms
+  ✅ unknown: ok=true items=1 bad=0
+
+📦 fashionAdapters.js: adapters=12 tested=6 ok=6/6 items=1 bad=0
+
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ migros: ok=true items=0 bad=0
+✅ Carrefour OK (0 ürün, 594ms)
+  ✅ carrefour: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+🛒 [bim_1765889334481_s6ybkux3w] BİM adapter başladı: "pizza"
+⚠️ [bim_1765889334481_s6ybkux3w] BİM fallback kullanıldı, 658ms
+  ✅ unknown: ok=true items=1 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 foodAdapters.js: adapters=14 tested=6 ok=6/6 items=1 bad=0
+
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=1 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 healthAdapters.js: adapters=19 tested=6 ok=6/6 items=2 bad=0
+
+  ✅ allianz: ok=true items=1 bad=0
+  ✅ aksigorta: ok=true items=1 bad=0
+  ✅ sompo: ok=true items=1 bad=0
+  ✅ mapfre: ok=true items=1 bad=0
+  ✅ turkiyesigorta: ok=true items=1 bad=0
+  ✅ hdi: ok=true items=1 bad=0
+
+📦 insuranceAdapters.js: adapters=15 tested=6 ok=6/6 items=6 bad=0
+
+  ✅ lawyer: ok=true items=3 bad=0
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ lawyer: ok=true items=0 bad=0
+  ✅ lawyer: ok=false items=0 bad=0
+  ✅ lawyer: ok=true items=0 bad=0
+
+📦 lawyerAdapters.js: adapters=4 tested=4 ok=3/4 items=3 bad=0
+
+  ✅ unknown_adapter: ok=true items=0 bad=0
+✅ Carrefour OK (0 ürün, 424ms)
+  ✅ unknown_adapter: ok=true items=0 bad=0
+  ✅ unknown_adapter: ok=true items=0 bad=0
+  ✅ unknown_adapter: ok=true items=0 bad=0
+  ✅ unknown_adapter: ok=true items=0 bad=0
+  ✅ unknown_adapter: ok=true items=0 bad=0
+
+📦 marketAdapters.js: adapters=12 tested=6 ok=6/6 items=0 bad=0
+
+  ✅ trendyol_office: ok=true items=0 bad=0
+  ✅ hepsiburada_office: ok=true items=0 bad=0
+  ✅ n11_office: ok=true items=0 bad=0
+🌷 ÇiçekSepeti adapter çağrıldı: "istanbul" (TR)
+✅ ÇiçekSepeti başarılı: 0 ürün (725ms)
+  ✅ ciceksepeti_office: ok=true items=0 bad=0
+  ✅ unknown_office: ok=true items=0 bad=0
+  ✅ migros_office: ok=true items=0 bad=0
+
+📦 officeAdapters.js: adapters=13 tested=6 ok=6/6 items=0 bad=0
+
+  ✅ trendyol_adapter: ok=true items=0 bad=0
+  ✅ hepsiburada_adapter: ok=true items=0 bad=0
+  ✅ n11_adapter: ok=true items=0 bad=0
+  ✅ amazon_adapter: ok=true items=0 bad=0
+🔄 Cimri adapter çağrıldı: "istanbul" (TR)
+✅ Cimri başarılı: 0 ürün (750ms)
+  ✅ unknown_adapter: ok=true items=0 bad=0
+  ✅ unknown_adapter: ok=true items=0 bad=0
+
+📦 productAdapters.js: adapters=33 tested=6 ok=6/6 items=0 bad=0
+
+  ✅ psychology: ok=true items=0 bad=0
+  ✅ psychology: ok=true items=0 bad=0
+  ✅ psychology: ok=false items=0 bad=0
+  ✅ psychology: ok=false items=0 bad=0
+  ✅ psychology: ok=true items=0 bad=0
+  ✅ psychology: ok=true items=1 bad=0
+
+📦 psychologistAdapters.js: adapters=12 tested=6 ok=4/6 items=1 bad=0
+
+  ✅ rental: ok=false items=0 bad=0
+  ✅ biletino: ok=true items=0 bad=0
+  ✅ rental: ok=true items=0 bad=0
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ rental: ok=true items=0 bad=0
+  ✅ rental: ok=false items=0 bad=0
+  ✅ rental: ok=true items=0 bad=0
+
+📦 rentalAdapters.js: adapters=13 tested=6 ok=4/6 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ unknown: ok=false items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+  ✅ biletino: ok=true items=0 bad=0
+  ✅ unknown: ok=true items=0 bad=0
+
+📦 repairAdapters.js: adapters=14 tested=6 ok=5/6 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ googleplaces_spa: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ googleplaces_details_spa: ok=true items=0 bad=0
+  ✅ serpapi_spa: ok=true items=0 bad=0
+  ✅ spamican: ok=true items=0 bad=0
+  ✅ spaneredekal: ok=true items=0 bad=0
+  ✅ biletino: ok=true items=0 bad=0
+
+📦 spaAdapters.js: adapters=8 tested=6 ok=6/6 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ googleplaces_spa: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ googleplaces_details_spa: ok=true items=0 bad=0
+  ✅ serpapi_spa: ok=true items=0 bad=0
+  ✅ spamican: ok=true items=0 bad=0
+  ✅ spaneredekal: ok=true items=0 bad=0
+  ✅ biletino: ok=true items=0 bad=0
+
+📦 spaWellnessAdapters.js: adapters=8 tested=6 ok=6/6 items=0 bad=0
+
+⚠️ googlePlaces: API KEY yok → pasif
+  ✅ googleplaces_tour: ok=true items=0 bad=0
+⚠️ googlePlacesDetails: API KEY yok → pasif
+  ✅ googleplaces_details_tour: ok=true items=0 bad=0
+  ✅ serpapi_tour: ok=true items=0 bad=0
+  ✅ ets: ok=true items=0 bad=0
+  ✅ etstur: ok=true items=0 bad=0
+  ✅ setur: ok=true items=0 bad=0
+
+📦 tourAdapters.js: adapters=15 tested=6 ok=6/6 items=0 bad=0
+
+  ✅ agoda: ok=true items=0 bad=0
+  ✅ expedia: ok=true items=1 bad=0
+  ✅ odamax: ok=true items=0 bad=0
+  ✅ otelz: ok=true items=0 bad=0
+  ✅ etstur: ok=true items=0 bad=0
+  ✅ setur: ok=true items=0 bad=0
+
+📦 travelAdapters.js: adapters=13 tested=6 ok=6/6 items=1 bad=0
+
+  ✅ sahibinden_vehicle: ok=true items=0 bad=0
+  ✅ sahibinden_vehicle_scrape: ok=true items=0 bad=0
+  ✅ sahibinden_vehicle_adapter: ok=true items=0 bad=0
+  ✅ arabam_vehicle: ok=true items=1 bad=0
+  ✅ arabam_vehicle_scrape: ok=true items=1 bad=0
+  ✅ arabam_vehicle_adapter: ok=true items=1 bad=0
+
+📦 vehicleSaleAdapters.js: adapters=15 tested=6 ok=6/6 items=3 bad=0
+
+========== SUMMARY ==========
+groups: 23
+adapters (declared): 285
+items (from tested adapters): 23
+bad items: 0
+=============================
+

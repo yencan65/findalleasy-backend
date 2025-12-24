@@ -1,0 +1,11 @@
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
+  const user = await db.collection("users").findOne({ email });
+  if (!user) return res.json({ ok: false, msg: "Kullanıcı bulunamadı." });
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid) return res.json({ ok: false, msg: "Şifre yanlış." });
+
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+  res.json({ ok: true, user, token });
+});

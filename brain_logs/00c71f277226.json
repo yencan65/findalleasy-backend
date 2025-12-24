@@ -1,0 +1,32 @@
+{
+  "query": "en uygun check up bodrum",
+  "providers": [
+    "acibadem",
+    "acibadem_checkup",
+    "medicalpark",
+    "medipol",
+    "memorial",
+    "liv",
+    "florence",
+    "mhrs",
+    "dental_clinics",
+    "enabiz",
+    "doktorset",
+    "health_tourism",
+    "google_medical",
+    "insurance_health",
+    "sgk_hospitals",
+    "lab_test_prices",
+    "googleplaces_health",
+    "osm_health",
+    "serpapi_health",
+    "acibadem_checkup",
+    "medicalpark_checkup",
+    "liv_checkup",
+    "memorial_checkup",
+    "generic_checkup"
+  ],
+  "vision": [],
+  "chosen": "location",
+  "timestamp": 1764532862359
+}

@@ -1,0 +1,27 @@
+{
+  "platformCommission": {
+    "trendyol": 0.08,
+    "hepsiburada": 0.05,
+    "amazon": 0.04,
+    "aliexpress": 0.06,
+    "booking": 0.03,
+    "agoda": 0.03
+  },
+  "categoryMultiplier": {
+    "electronics": 1.2,
+    "fashion": 1.0,
+    "food": 0.8,
+    "travel": 1.3,
+    "health": 0.9,
+    "realEstate": 0.7
+  },
+  "providerPriority": {
+    "trendyol": 5,
+    "hepsiburada": 4,
+    "amazon": 4,
+    "booking": 4,
+    "agoda": 3,
+    "aliexpress": 2,
+    "generic": 1
+  }
+}

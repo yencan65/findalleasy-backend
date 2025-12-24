@@ -1,0 +1,936 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Try the new cross-platform PowerShell https://aka.ms/pscore6
+
+PS C:\Users\e1865\Desktop\SONER\BACKEND> set FINDALLEASY_ALLOW_STUBS=0
+>> set REWARD_ENGINE_DISABLE=1
+>>
+>> node server/tools/s200SmokeTest.mjs
+>> node server/tools/s200Gate.mjs
+
+🧪 S200 SMOKE TEST — groups: 23
+mode: STRICT (FINDALLEASY_ALLOW_STUBS=0)
+outerTimeout: 6500ms | maxAdaptersPerGroup: 6
+
+💰 AFFILIATE ENGINE S200 (HARDENED) YÜKLENDİ
+📊 Provider config: 12
+🧯 PROD dummy aff: DEV_OFF
+🔎 Discovery affiliate injection: OFF
+=====================================================
+👕 BOYNER ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🛒 BİM ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🚤 BOAT TOUR ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎭 Activities Adapter — S200 FINAL loaded.
+🏥 Acıbadem Adapter — S200 FINAL (standardized) loaded.
+🏥 Acıbadem Checkup Adapter — S200 FINAL (standardized) loaded.
+🎟️ BILETIX ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎫 BILETINO ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+💰 AKAKÇE PRICE COMPARISON ADAPTER S200 YÜKLENDİ - ANA MOTOR İLE %100 UYUMLU
+📊 Kategori: product (price comparison)
+📈 Özellik: Fiyat karşılaştırma, ürün arama
+💰 Komisyon Oranı (config): %4
+🎯 Priority: 1.1
+⏱️ Timeout: 12000ms
+=====================================================
+  ✅ yolcu360_rental@_allGroups.js#0: ok=true items=40 bad=0
+  ✅ neredekal_rental@_allGroups.js#1: ok=true items=1 bad=0
+  ✅ buggy_placeholder@_allGroups.js#2: ok=true items=1 bad=0
+  ✅ boat_placeholder@_allGroups.js#3: ok=true items=1 bad=0
+  ✅ osm_rental@_allGroups.js#4: ok=true items=1 bad=0
+  ✅ biletino@_allGroups.js#5: ok=true items=1 bad=0
+
+📦 _allGroups.js: adapters=13 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=45 bad=0
+
+  ✅ yolcu360@carRentalAdapters.js#0: ok=true items=23 bad=0
+
+📦 carRentalAdapters.js: adapters=1 tested=1 ok=1/1 fails=0 stubbed=0 expectedFails=0 items=23 bad=0
+
+  🟠 medicalpark_checkup@checkupAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 liv_checkup@checkupAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 generic_checkup@checkupAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 acibadem_checkup@checkupAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 memorial_checkup@checkupAdapters.js#4: ok=true EMPTY items=0 bad=0
+
+📦 checkupAdapters.js: adapters=5 tested=5 ok=5/5 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 osm_craft@craftAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 serpapi_craft@craftAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_craft@craftAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 googleplacesdetails_craft@craftAdapters.js#3: ok=true EMPTY items=0 bad=0
+
+📦 craftAdapters.js: adapters=4 tested=4 ok=4/4 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 osm_education@educationAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_education@educationAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 googleplacesdetails_education@educationAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 udemy_courses@educationAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 serpapi_education@educationAdapters.js#4: ok=true EMPTY items=0 bad=0
+
+📦 educationAdapters.js: adapters=5 tested=5 ok=5/5 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+⚠️ EmlakJet sayfa scrape hata: Request failed with status code 404
+  🟠 emlakjet_estate@estateAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 hepsiemlak_estate@estateAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 tapucom_estate@estateAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 zingat_scrape_estate@estateAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 osm_estate@estateAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 sahibinden_adapter_estate@estateAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 estateAdapters.js: adapters=21 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 googleplacesdetails_event@eventAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_event@eventAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 serpapi_events@eventAdapters.js#2: ok=true EMPTY items=0 bad=0
+🎫 [biletino_1766364851376_ou3vw7go3] Biletino adapter başladı: "istanbul"
+⚠️ [biletino_1766364851376_ou3vw7go3] Biletino adapter sonuç yok → fallback (query="istanbul")
+⚠️ [biletino_1766364851376_ou3vw7go3] Biletino fallback kullanıldı, 940ms
+  🟠 biletino@eventAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 passo@eventAdapters.js#4: ok=true EMPTY items=0 bad=0
+⚠️ Etkinlik.io page error: Request failed with status code 404
+  ✅ etkinlikio@eventAdapters.js#5: ok=true items=1 bad=0
+
+📦 eventAdapters.js: adapters=12 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=1 bad=0
+
+  🟠 trendyol@fashionAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 googleshopping_fashion@fashionAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 mavi@fashionAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 koton@fashionAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 defacto@fashionAdapters.js#4: ok=true EMPTY items=0 bad=0
+GoogleShopping adapter hata: HTTP 429 (HTTP 429) body={
+  "error": "Your account has run out of searches."
+}
+  🟠 googleplaces_fashion@fashionAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 fashionAdapters.js: adapters=12 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 migros@foodAdapters.js#0: ok=true EMPTY items=0 bad=0
+Hepsiburada scrape hata: Request failed with status code 403
+  🟠 hepsiburada@foodAdapters.js#1: ok=true EMPTY items=0 bad=0
+GoogleShopping adapter hata: HTTP 429 (HTTP 429) body={
+  "error": "Your account has run out of searches."
+}
+  🟠 a101@foodAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_food@foodAdapters.js#3: ok=true EMPTY items=0 bad=0
+✅ Carrefour OK (0 ürün, 608ms)
+  🟠 carrefour@foodAdapters.js#4: ok=true EMPTY items=0 bad=0
+HTTPCLIENT:GET_FAIL {
+  url: 'https://www.trendyol.com/sr?q=pizza%20market%20g%C4%B1da&pi=1',
+  adapterName: 'trendyol',
+  attempt: 1,
+  retries: 1,
+  isAbort: false,
+  message: 'HTTPCLIENT_NON_2XX 403 for https://www.trendyol.com/sr?q=pizza%20market%20g%C4%B1da&pi=1 (trendyol)'
+}
+HTTPCLIENT:GET_FAIL {
+  url: 'https://www.trendyol.com/sr?q=pizza%20market%20g%C4%B1da&pi=1',
+  adapterName: 'trendyol',
+  attempt: 2,
+  retries: 1,
+  isAbort: false,
+  message: 'HTTPCLIENT_NON_2XX 403 for https://www.trendyol.com/sr?q=pizza%20market%20g%C4%B1da&pi=1 (trendyol)'
+}
+  🟠 trendyol@foodAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 foodAdapters.js: adapters=14 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 dental_clinics@healthAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 health_tourism@healthAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_health@healthAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 lab_test_prices@healthAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 florence@healthAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 google_medical@healthAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 healthAdapters.js: adapters=19 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 serpapi_insurance@insuranceAdapters.js#0: ok=true EMPTY items=0 bad=0
+  ✅ sompo@insuranceAdapters.js#1: ok=true items=1 bad=0
+  ✅ gunes@insuranceAdapters.js#2: ok=true items=1 bad=0
+  ✅ neova@insuranceAdapters.js#3: ok=true items=1 bad=0
+  ✅ groupama@insuranceAdapters.js#4: ok=true items=1 bad=0
+  🟠 googleplaces_insurance@insuranceAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 insuranceAdapters.js: adapters=15 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=4 bad=0
+
+  🟠 lawyer@lawyerAdapters.js#0: ok=true EMPTY items=0 bad=0
+  ❌ lawyer@lawyerAdapters.js#1: ok=false items=0 bad=0
+  🟠 lawyer@lawyerAdapters.js#2: ok=true EMPTY items=0 bad=0
+  ✅ lawyer@lawyerAdapters.js#3: ok=true items=20 bad=0
+
+📦 lawyerAdapters.js: adapters=4 tested=4 ok=3/4 fails=1 stubbed=0 expectedFails=0 items=20 bad=0
+
+  🟠 openstreetmap@marketAdapters.js#0: ok=true EMPTY items=0 bad=0
+Hepsiburada scrape hata: Request failed with status code 403
+  🟠 hepsiburada@marketAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 sok@marketAdapters.js#2: ok=true EMPTY items=0 bad=0
+✅ Carrefour OK (0 ürün, 530ms)
+  🟠 carrefour@marketAdapters.js#3: ok=true EMPTY items=0 bad=0
+🌷 ÇiçekSepeti adapter çağrıldı: "süt 1 litre" (TR)
+✅ ÇiçekSepeti başarılı: 0 ürün (441ms)
+  🟠 ciceksepeti@marketAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 a101@marketAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 marketAdapters.js: adapters=12 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  ✅ osm_office@officeAdapters.js#0: ok=true items=1 bad=0
+  🟠 migros_office@officeAdapters.js#1: ok=true EMPTY items=0 bad=0
+  ✅ googleplaces_office@officeAdapters.js#2: ok=true items=1 bad=0
+🌷 ÇiçekSepeti adapter çağrıldı: "istanbul" (TR)
+✅ ÇiçekSepeti başarılı: 0 ürün (331ms)
+  🟠 ciceksepeti_office@officeAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 a101_office@officeAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 koctas_office@officeAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 officeAdapters.js: adapters=13 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=2 bad=0
+
+✅ Carrefour OK (0 ürün, 542ms)
+  🟠 carrefour_adapter@productAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 rossmann_adapter@productAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 cimri_adapter@productAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 lcw_adapter@productAdapters.js#3: ok=true EMPTY items=0 bad=0
+  ✅ hepsiburada_adapter@productAdapters.js#4: ok=true items=1 bad=0
+  🟠 migros_adapter@productAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 productAdapters.js: adapters=33 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=1 bad=0
+
+  🟠 googleplaces_psychology@psychologistAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 osm_psychology@psychologistAdapters.js#1: ok=true EMPTY items=0 bad=0
+  ✅ ruhunaiyibak@psychologistAdapters.js#2: ok=true items=1 bad=0
+  🟠 mhrs_psychiatry@psychologistAdapters.js#3: ok=true EMPTY items=0 bad=0
+  ❌ serpapi_psychology@psychologistAdapters.js#4: ok=false items=0 bad=0
+  🟠 biletino@psychologistAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 psychologistAdapters.js: adapters=8 tested=6 ok=5/6 fails=1 stubbed=0 expectedFails=0 items=1 bad=0
+
+  ✅ motor_placeholder@rentalAdapters.js#0: ok=true items=1 bad=0
+  ❌ serpapi_rental@rentalAdapters.js#1: ok=false items=0 bad=0
+  ✅ biletino@rentalAdapters.js#2: ok=true items=1 bad=0
+  ✅ scooter_placeholder@rentalAdapters.js#3: ok=true items=1 bad=0
+  ✅ buggy_placeholder@rentalAdapters.js#4: ok=true items=1 bad=0
+  ✅ googleplaces_rental@rentalAdapters.js#5: ok=true items=1 bad=0
+
+📦 rentalAdapters.js: adapters=13 tested=6 ok=5/6 fails=1 stubbed=0 expectedFails=0 items=5 bad=0
+
+  ✅ klimaservis@repairAdapters.js#0: ok=true items=1 bad=0
+  ✅ elektrikci@repairAdapters.js#1: ok=true items=1 bad=0
+  🟠 googleplaces_repair@repairAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_details_repair@repairAdapters.js#3: ok=true EMPTY items=0 bad=0
+  ✅ marangoz@repairAdapters.js#4: ok=true items=1 bad=0
+  ✅ tesisatci@repairAdapters.js#5: ok=true items=1 bad=0
+
+📦 repairAdapters.js: adapters=14 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=4 bad=0
+
+  🟠 googleplaces_details_spa@spaAdapters.js#0: ok=true EMPTY items=0 bad=0
+  ✅ masajsalonu@spaAdapters.js#1: ok=true items=1 bad=0
+  ❌ serpapi_spa@spaAdapters.js#2: ok=false items=0 bad=0
+  🟠 spaneredekal@spaAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 spamican@spaAdapters.js#4: ok=true EMPTY items=0 bad=0
+  ✅ beautycenter@spaAdapters.js#5: ok=true items=1 bad=0
+
+📦 spaAdapters.js: adapters=8 tested=6 ok=5/6 fails=1 stubbed=0 expectedFails=0 items=2 bad=0
+
+  🟠 spaneredekal@spaWellnessAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_details_spa@spaWellnessAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 biletino@spaWellnessAdapters.js#2: ok=true EMPTY items=0 bad=0
+  ✅ masajsalonu@spaWellnessAdapters.js#3: ok=true items=1 bad=0
+  ✅ beautycenter@spaWellnessAdapters.js#4: ok=true items=1 bad=0
+  🟠 googleplaces_spa@spaWellnessAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 spaWellnessAdapters.js: adapters=8 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=2 bad=0
+
+  🟠 neredekal_tour@tourAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_details_tour@tourAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 googleplaces_tour@tourAdapters.js#2: ok=true EMPTY items=0 bad=0
+❌ Tour adapter error (pamukkale_tour): pamukkale_tour timed out (2800ms)
+  ❌ pamukkale_tour@tourAdapters.js#3: ok=false items=0 bad=0
+  🟠 tatilbudur@tourAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 serpapi_tour@tourAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 tourAdapters.js: adapters=15 tested=6 ok=5/6 fails=1 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 skyscanner@travelAdapters.js#0: ok=true EMPTY items=0 bad=0
+  🟠 hotelscombined@travelAdapters.js#1: ok=true EMPTY items=0 bad=0
+  🟠 jolly@travelAdapters.js#2: ok=true EMPTY items=0 bad=0
+  🟠 setur@travelAdapters.js#3: ok=true EMPTY items=0 bad=0
+  🟠 odamax@travelAdapters.js#4: ok=true EMPTY items=0 bad=0
+  🟠 serpapi_travel_bus@travelAdapters.js#5: ok=true EMPTY items=0 bad=0
+
+📦 travelAdapters.js: adapters=11 tested=6 ok=6/6 fails=0 stubbed=0 expectedFails=0 items=0 bad=0
+
+  🟠 sahibinden_vehicle_adapter@vehicleSaleAdapters.js#0: ok=true EMPTY items=0 bad=0
+  ❌ letgo_vehicle_adapter@vehicleSaleAdapters.js#1: ok=false items=0 bad=0
+  🟠 sahibinden_vehicle_scrape@vehicleSaleAdapters.js#2: ok=true EMPTY items=0 bad=0
+  ❌ otonet_vehicle@vehicleSaleAdapters.js#3: ok=false items=0 bad=0
+  ❌ vavacars_vehicle@vehicleSaleAdapters.js#4: ok=false items=0 bad=0
+  ❌ otonet_vehicle_scrape@vehicleSaleAdapters.js#5: ok=false items=0 bad=0
+
+📦 vehicleSaleAdapters.js: adapters=15 tested=6 ok=2/6 fails=4 stubbed=0 expectedFails=0 items=0 bad=0
+
+========== SUMMARY ==========
+groups: 23
+adapters (declared): 275
+items (from tested adapters): 110
+bad items: 0
+fails: 9
+expectedFails: 0
+skipped: 148
+stubbed: 0
+=============================
+
+💰 AFFILIATE ENGINE S200 (HARDENED) YÜKLENDİ
+📊 Provider config: 12
+🧯 PROD dummy aff: DEV_OFF
+🔎 Discovery affiliate injection: OFF
+=====================================================
+🎁 SYSTEM_STARTUP {
+  "time": "2025-12-22T00:55:49.329Z"
+}
+📦 BARCODE ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+✅ [S16] RewardEngine modelleri init edildi
+🏥 Acıbadem Adapter — S200 FINAL (standardized) loaded.
+🏥 Acıbadem Checkup Adapter — S200 FINAL (standardized) loaded.
+🎟️ BILETIX ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎫 BILETINO ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+💰 AKAKÇE PRICE COMPARISON ADAPTER S200 YÜKLENDİ - ANA MOTOR İLE %100 UYUMLU
+📊 Kategori: product (price comparison)
+📈 Özellik: Fiyat karşılaştırma, ürün arama
+💰 Komisyon Oranı (config): %4
+🎯 Priority: 1.1
+⏱️ Timeout: 12000ms
+=====================================================
+👕 BOYNER ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🛒 BİM ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🚤 BOAT TOUR ADAPTER S200 ULTRA YÜKLENDİ - ANA MOTOR %100 UYUMLU
+🎭 Activities Adapter — S200 FINAL loaded.
+🚀 S200 WRAPPED ADAPTER REGISTRY YÜKLENDİ
+📊 Toplam Kategori: 89
+🧩 Toplam Adapter: 1407
+🔧 Sistem: ACTIVE (S200-WRAPPED)
+⚡ Uyumluluk: adapterEngine.js vS200
+📝 Not: Tam uyumlu S200 wrapped adapter registry (array-return + items-meta dual-compat)
+🚀 S200 Adapter Engine Başlatıldı
+📊 Adapter Registry Durumu: {
+  status: 'ACTIVE',
+  version: 'S200-WRAPPED',
+  totalCategories: 89,
+  totalAdapters: 1407,
+  adapterDetails: {
+    product: { count: 35, adapters: [Array] },
+    market: { count: 12, adapters: [Array] },
+    fashion: { count: 12, adapters: [Array] },
+    food: { count: 14, adapters: [Array] },
+    travel: { count: 11, adapters: [Array] },
+    flight: { count: 11, adapters: [Array] },
+    hotel: { count: 11, adapters: [Array] },
+    car_rental: { count: 14, adapters: [Array] },
+    tour: { count: 15, adapters: [Array] },
+    spa: { count: 8, adapters: [Array] },
+    health: { count: 27, adapters: [Array] },
+    psychology: { count: 8, adapters: [Array] },
+    psychologist: { count: 8, adapters: [Array] },
+    therapy: { count: 8, adapters: [Array] },
+    therapist: { count: 8, adapters: [Array] },
+    psikolog: { count: 8, adapters: [Array] },
+    psikoloji: { count: 8, adapters: [Array] },
+    terapi: { count: 8, adapters: [Array] },
+    terapist: { count: 8, adapters: [Array] },
+    psikiyatrist: { count: 8, adapters: [Array] },
+    psikoterapi: { count: 8, adapters: [Array] },
+    checkup: { count: 5, adapters: [Array] },
+    estate: { count: 21, adapters: [Array] },
+    insurance: { count: 15, adapters: [Array] },
+    education: { count: 5, adapters: [Array] },
+    event: { count: 12, adapters: [Array] },
+    office: { count: 13, adapters: [Array] },
+    craft: { count: 4, adapters: [Array] },
+    usta: { count: 4, adapters: [Array] },
+    handyman: { count: 4, adapters: [Array] },
+    rental: { count: 13, adapters: [Array] },
+    vehicle_rental: { count: 14, adapters: [Array] },
+    rent_a_car: { count: 14, adapters: [Array] },
+    rentacar: { count: 14, adapters: [Array] },
+    arac_kiralama: { count: 14, adapters: [Array] },
+    araba_kiralama: { count: 14, adapters: [Array] },
+    oto_kiralama: { count: 14, adapters: [Array] },
+    arac_kirala: { count: 14, adapters: [Array] },
+    araba_kirala: { count: 14, adapters: [Array] },
+    oto_kirala: { count: 14, adapters: [Array] },
+    kiralik_arac: { count: 14, adapters: [Array] },
+    rent: { count: 13, adapters: [Array] },
+    rentals: { count: 13, adapters: [Array] },
+    rental_service: { count: 13, adapters: [Array] },
+    repair: { count: 14, adapters: [Array] },
+    tamir: { count: 14, adapters: [Array] },
+    tamirci: { count: 14, adapters: [Array] },
+    vehicle_sale: { count: 15, adapters: [Array] },
+    lawyer: { count: 4, adapters: [Array] },
+    location: { count: 3, adapters: [Array] },
+    tech: { count: 35, adapters: [Array] },
+    electronics: { count: 35, adapters: [Array] },
+    gadget: { count: 35, adapters: [Array] },
+    device: { count: 35, adapters: [Array] },
+    appliance: { count: 35, adapters: [Array] },
+    grocery: { count: 12, adapters: [Array] },
+    supermarket: { count: 12, adapters: [Array] },
+    store: { count: 12, adapters: [Array] },
+    clothing: { count: 12, adapters: [Array] },
+    apparel: { count: 12, adapters: [Array] },
+    fashion_product: { count: 12, adapters: [Array] },
+    shoes: { count: 12, adapters: [Array] },
+    restaurant: { count: 14, adapters: [Array] },
+    cafe: { count: 14, adapters: [Array] },
+    meal: { count: 14, adapters: [Array] },
+    delivery: { count: 14, adapters: [Array] },
+    trip: { count: 11, adapters: [Array] },
+    vacation: { count: 11, adapters: [Array] },
+    holiday: { count: 11, adapters: [Array] },
+    accommodation: { count: 11, adapters: [Array] },
+    medical: { count: 19, adapters: [Array] },
+    hospital: { count: 19, adapters: [Array] },
+    doctor: { count: 19, adapters: [Array] },
+    clinic: { count: 19, adapters: [Array] },
+    real_estate: { count: 21, adapters: [Array] },
+    property: { count: 21, adapters: [Array] },
+    housing: { count: 21, adapters: [Array] },
+    home: { count: 21, adapters: [Array] },
+    car: { count: 15, adapters: [Array] },
+    vehicle: { count: 15, adapters: [Array] },
+    automobile: { count: 15, adapters: [Array] },
+    motorcycle: { count: 15, adapters: [Array] },
+    misc: { count: 35, adapters: [Array] },
+    unknown: { count: 35, adapters: [Array] },
+    genel: { count: 35, adapters: [Array] },
+    barcode: { count: 33, adapters: [Array] },
+    qr: { count: 33, adapters: [Array] },
+    image: { count: 33, adapters: [Array] },
+    voice: { count: 35, adapters: [Array] }
+  },
+  lastUpdated: '2025-12-22T00:55:49.869Z',
+  compatibleWith: 'adapterEngine.js vS200',
+  note: 'Tam uyumlu S200 wrapped adapter registry (array-return + items-meta dual-compat)'
+}
+
+=== ENV ===
+{
+  FINDALLEASY_ALLOW_STUBS: undefined,
+  SERPAPI_KEY: true,
+  GOOGLE_PLACES_KEY: true,
+  PLACES_API_KEY: true
+}
+
+=== E2E runAdapters ===
+⚡ cimri_adapter bitti → 1ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'cimri_adapter', duration: 2, count: 0, sample: null }
+⚡ defacto_adapter bitti → 2ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'defacto_adapter', duration: 2, count: 0, sample: null }
+⚡ akakce_adapter bitti → 0ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'akakce_adapter', duration: 1, count: 0, sample: null }
+👕 [boyner_1766364950099_dya3yg95t] Boyner adapter başladı: "iphone 15"
+⚡ teknosa_adapter bitti → 1ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'teknosa_adapter', duration: 4, count: 0, sample: null }
+🌷 ÇiçekSepeti adapter çağrıldı: "iphone 15" (TR)
+⚡ mediamarkt_adapter bitti → 0ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'mediamarkt_adapter',
+  duration: 3,
+  count: 0,
+  sample: null
+}
+Hepsiburada scrape hata: Request failed with status code 403
+⚡ hepsiburada_adapter bitti → 666ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'hepsiburada_adapter',
+  duration: 670,
+  count: 0,
+  sample: null
+}
+⚡ migros_adapter bitti → 848ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'migros_adapter',
+  duration: 849,
+  count: 0,
+  sample: null
+}
+✅ ÇiçekSepeti başarılı: 0 ürün (926ms)
+⚡ ciceksepeti_adapter bitti → 928ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'ciceksepeti_adapter',
+  duration: 929,
+  count: 0,
+  sample: null
+}
+⚡ flo_adapter bitti → 1046ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'flo_adapter', duration: 1048, count: 0, sample: null }
+⚡ morhipo_adapter bitti → 990ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'morhipo_adapter',
+  duration: 991,
+  count: 0,
+  sample: null
+}
+⚠️ Getir Web hata: Request failed with status code 404
+⚡ instreet_adapter bitti → 1238ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'instreet_adapter',
+  duration: 1239,
+  count: 0,
+  sample: null
+}
+⚠️ Getir fallback hata: Request failed with status code 403
+⚡ getir_adapter bitti → 1276ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'getir_adapter',
+  duration: 1276,
+  count: 0,
+  sample: null
+}
+⚡ trendyol_adapter bitti → 1461ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'trendyol_adapter',
+  duration: 1461,
+  count: 0,
+  sample: null
+}
+✅ Carrefour OK (0 ürün, 1521ms)
+⚡ carrefour_adapter bitti → 1521ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'carrefour_adapter',
+  duration: 1523,
+  count: 0,
+  sample: null
+}
+⚡ vatan_adapter bitti → 1443ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'vatan_adapter',
+  duration: 1443,
+  count: 0,
+  sample: null
+}
+⚡ watsons_adapter bitti → 1771ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'watsons_adapter',
+  duration: 1771,
+  count: 0,
+  sample: null
+}
+⚡ mavi_adapter bitti → 1983ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'mavi_adapter', duration: 1983, count: 0, sample: null }
+⚡ koton_adapter bitti → 1932ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'koton_adapter',
+  duration: 1933,
+  count: 0,
+  sample: null
+}
+⚡ gratis_adapter bitti → 2041ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'gratis_adapter',
+  duration: 2041,
+  count: 0,
+  sample: null
+}
+⚠️ [boyner_1766364950099_dya3yg95t] Boyner adapter sonuç yok
+⚡ boyner_adapter bitti → 2140ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'boyner_adapter',
+  duration: 2142,
+  count: 0,
+  sample: null
+}
+⚡ rossmann_adapter bitti → 2393ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'rossmann_adapter',
+  duration: 2419,
+  count: 0,
+  sample: null
+}
+N11 html fetch error: N11_HTTP_403
+⚡ koctas_adapter bitti → 2750ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'koctas_adapter',
+  duration: 2751,
+  count: 0,
+  sample: null
+}
+⚡ kigili_adapter bitti → 2728ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'kigili_adapter',
+  duration: 2729,
+  count: 0,
+  sample: null
+}
+⚡ sok_adapter bitti → 2704ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'sok_adapter', duration: 2705, count: 0, sample: null }
+⚡ pttavm_adapter bitti → 2687ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'pttavm_adapter',
+  duration: 2687,
+  count: 0,
+  sample: null
+}
+⚡ serpApiAdapter bitti → 2979ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'serpApiAdapter',
+  duration: 2980,
+  count: 0,
+  sample: null
+}
+⚡ amazon_adapter bitti → 3451ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'amazon_adapter',
+  duration: 3470,
+  count: 0,
+  sample: null
+}
+⚡ n11_adapter bitti → 3514ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'n11_adapter', duration: 3515, count: 0, sample: null }
+⚡ a101_adapter bitti → 3501ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'a101_adapter', duration: 3503, count: 0, sample: null }
+⚡ lcw_adapter bitti → 3996ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'lcw_adapter', duration: 3997, count: 0, sample: null }
+N11 html fetch error: N11_HTTP_403
+N11 html fetch error: N11_HTTP_403
+GoogleShopping adapter hata: HTTP 429 (HTTP 429) body={
+  "error": "Your account has run out of searches."
+}
+⚡ googleShoppingAdapter bitti → 8421ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleShoppingAdapter',
+  duration: 8426,
+  count: 0,
+  sample: null
+}
+⚠️ Reward Engine S16 başlatıldı ama model kontrolü başarısız: Operation `users.findOne()` buffering timed out after 10000ms
+GoogleShopping adapter hata: HTTP 429 (HTTP 429) body={
+  "error": "Your account has run out of searches."
+}
+🧠 ADAPTER:runAdapters_DONE {
+  category: 'product',
+  total: 0,
+  deadlineHit: true,
+  engineVariant: 'S200'
+}
+
+Q="iphone 15" | CAT=product | TOTAL=0 | OK_ITEMS=0 | STUB_ITEMS=0 | BAD_ZERO_PRICE=0
+FAIL: not enough results
+⚡ etstur bitti → 0ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'etstur', duration: 1, count: 0, sample: null }
+⚡ googleplaces_travel bitti → 552ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleplaces_travel',
+  duration: 554,
+  count: 0,
+  sample: null
+}
+⚡ trivago bitti → 658ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'trivago', duration: 659, count: 0, sample: null }
+⚡ odamax bitti → 693ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'odamax', duration: 694, count: 0, sample: null }
+⚡ otelz bitti → 1069ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'otelz', duration: 1070, count: 0, sample: null }
+⚡ skyscanner bitti → 1125ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'skyscanner', duration: 1125, count: 0, sample: null }
+⚡ hotelscombined bitti → 1225ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'hotelscombined',
+  duration: 1226,
+  count: 0,
+  sample: null
+}
+⚡ tatilbudur bitti → 1296ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'tatilbudur', duration: 1296, count: 0, sample: null }
+⚡ jolly bitti → 1351ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'jolly', duration: 1352, count: 0, sample: null }
+⚡ setur bitti → 1542ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'setur', duration: 1542, count: 0, sample: null }
+⚡ serpapi_travel_bus bitti → 2299ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'serpapi_travel_bus',
+  duration: 2300,
+  count: 0,
+  sample: null
+}
+🧠 ADAPTER:runAdapters_DONE {
+  category: 'hotel',
+  total: 0,
+  deadlineHit: false,
+  engineVariant: 'S200'
+}
+
+Q="otel bodrum" | CAT=hotel | TOTAL=0 | OK_ITEMS=0 | STUB_ITEMS=0 | BAD_ZERO_PRICE=0
+FAIL: not enough results
+⚡ mhrs_psychiatry bitti → 218ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'mhrs_psychiatry',
+  duration: 218,
+  count: 0,
+  sample: null
+}
+⚡ googleplaces_psychology bitti → 467ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleplaces_psychology',
+  duration: 468,
+  count: 0,
+  sample: null
+}
+⚡ osm_psychology bitti → 648ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'osm_psychology',
+  duration: 649,
+  count: 0,
+  sample: null
+}
+⚡ ruhunaiyibak bitti → 1015ms {
+  count: 1,
+  sample: 'Ruhuna İyi Bak — Psikolojik Destek Başvurusu',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'ruhunaiyibak',
+  duration: 1015,
+  count: 1,
+  sample: 'Ruhuna İyi Bak — Psikolojik Destek Başvurusu'
+}
+⚡ biletino bitti → 1034ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'biletino', duration: 1035, count: 0, sample: null }
+⚡ serpapi_psychology bitti → 2327ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'serpapi_psychology',
+  duration: 2329,
+  count: 0,
+  sample: null
+}
+⚡ hiwell bitti → 3513ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'hiwell', duration: 3513, count: 0, sample: null }
+⚡ eventbrite_psychology bitti → 3505ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'eventbrite_psychology',
+  duration: 3507,
+  count: 0,
+  sample: null
+}
+🧠 ADAPTER:runAdapters_DONE {
+  category: 'psychology',
+  total: 1,
+  deadlineHit: false,
+  engineVariant: 'S200'
+}
+
+Q="psikolog bodrum" | CAT=psychology | TOTAL=1 | OK_ITEMS=1 | STUB_ITEMS=0 | BAD_ZERO_PRICE=0
+FAIL: not enough results
+⚡ googleplaces_rental bitti → 104ms {
+  count: 1,
+  sample: 'googleplaces üzerinde ara: araç kiralama bodrum',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleplaces_rental',
+  duration: 106,
+  count: 1,
+  sample: 'googleplaces üzerinde ara: araç kiralama bodrum'
+}
+⚡ osm_rental bitti → 523ms {
+  count: 1,
+  sample: 'osm üzerinde ara: araç kiralama bodrum',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'osm_rental',
+  duration: 524,
+  count: 1,
+  sample: 'osm üzerinde ara: araç kiralama bodrum'
+}
+⚡ neredekal_rental bitti → 547ms {
+  count: 1,
+  sample: 'neredekal üzerinde ara: araç kiralama bodrum',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'neredekal_rental',
+  duration: 550,
+  count: 1,
+  sample: 'neredekal üzerinde ara: araç kiralama bodrum'
+}
+⚡ biletino bitti → 957ms {
+  count: 1,
+  sample: 'biletino üzerinde ara: araç kiralama bodrum',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'biletino',
+  duration: 959,
+  count: 1,
+  sample: 'biletino üzerinde ara: araç kiralama bodrum'
+}
+⚡ serpapi_rental bitti → 1677ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'serpapi_rental',
+  duration: 1677,
+  count: 0,
+  sample: null
+}
+⚡ yolcu360_rental bitti → 2615ms {
+  count: 1,
+  sample: 'yolcu360 üzerinde ara: araç kiralama bodrum',
+  timeout: false,
+  aborted: false
+}
+🧠 ADAPTER:adapter_result {
+  adapterName: 'yolcu360_rental',
+  duration: 2616,
+  count: 1,
+  sample: 'yolcu360 üzerinde ara: araç kiralama bodrum'
+}
+⚡ yolcu360 bitti → 3320ms { count: 23, sample: 'BMW 5 Series', timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'yolcu360',
+  duration: 3320,
+  count: 23,
+  sample: 'BMW 5 Series'
+}
+🧠 ADAPTER:runAdapters_DONE {
+  category: 'car_rental',
+  total: 20,
+  deadlineHit: false,
+  engineVariant: 'S200'
+}
+
+Q="araç kiralama bodrum" | CAT=car_rental | TOTAL=20 | OK_ITEMS=20 | STUB_ITEMS=0 | BAD_ZERO_PRICE=0
+⚡ googleplacesdetails_education bitti → 123ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleplacesdetails_education',
+  duration: 125,
+  count: 0,
+  sample: null
+}
+⚡ googleplaces_education bitti → 434ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'googleplaces_education',
+  duration: 435,
+  count: 0,
+  sample: null
+}
+⚡ osm_education bitti → 653ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result { adapterName: 'osm_education', duration: 654, count: 0, sample: null }
+⚡ udemy_courses bitti → 1030ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'udemy_courses',
+  duration: 1030,
+  count: 0,
+  sample: null
+}
+⚡ serpapi_education bitti → 1659ms { count: 0, sample: null, timeout: false, aborted: false }
+🧠 ADAPTER:adapter_result {
+  adapterName: 'serpapi_education',
+  duration: 1660,
+  count: 0,
+  sample: null
+}
+🧠 ADAPTER:runAdapters_DONE {
+  category: 'education',
+  total: 0,
+  deadlineHit: false,
+  engineVariant: 'S200'
+}
+
+Q="ingilizce kursu" | CAT=education | TOTAL=0 | OK_ITEMS=0 | STUB_ITEMS=0 | BAD_ZERO_PRICE=0
+FAIL: not enough results
+
+=== PROBE category="hotel" | adapters=11 | q="otel bodrum" ===
+- odamax | ok=true | count=0 | stub=false | sample=null
+- otelz | ok=true | count=0 | stub=false | sample=null
+- etstur | ok=false | count=0 | stub=false | sample=null
+- setur | ok=true | count=0 | stub=false | sample=null
+- jolly | ok=true | count=0 | stub=false | sample=null
+- tatilbudur | ok=true | count=0 | stub=false | sample=null
+- trivago | ok=true | count=0 | stub=false | sample=null
+- hotelscombined | ok=true | count=0 | stub=false | sample=null
+- skyscanner | ok=true | count=0 | stub=false | sample=null
+- googleplaces_travel | ok=true | count=0 | stub=false | sample=null
+- serpapi_travel_bus | ok=true | count=0 | stub=false | sample=null
+
+=== PROBE category="travel" | adapters=11 | q="otel bodrum" ===
+- odamax | ok=true | count=0 | stub=false | sample=null
+- otelz | ok=true | count=0 | stub=false | sample=null
+- etstur | ok=false | count=0 | stub=false | sample=null
+- setur | ok=true | count=0 | stub=false | sample=null
+- jolly | ok=true | count=0 | stub=false | sample=null
+- tatilbudur | ok=true | count=0 | stub=false | sample=null
+- trivago | ok=true | count=0 | stub=false | sample=null
+- hotelscombined | ok=true | count=0 | stub=false | sample=null
+- skyscanner | ok=true | count=0 | stub=false | sample=null
+- googleplaces_travel | ok=true | count=0 | stub=false | sample=null
+- serpapi_travel_bus | ok=true | count=0 | stub=false | sample=null
+
+=== PROBE category="education" | adapters=5 | q="ingilizce kursu" ===
+- googleplaces_education | ok=true | count=0 | stub=false | sample=null
+- googleplacesdetails_education | ok=true | count=0 | stub=false | sample=null
+- osm_education | ok=true | count=0 | stub=false | sample=null
+- serpapi_education | ok=true | count=0 | stub=false | sample=null
+- udemy_courses | ok=true | count=0 | stub=false | sample=null
+
+=== PROBE category="product" | adapters=31 | q="iphone 15" ===
+HTTPCLIENT:GET_FAIL {
+  url: 'https://www.trendyol.com/sr?q=iphone%2015&pi=1',
+  adapterName: 'trendyol',
+  attempt: 1,
+  retries: 1,
+  isAbort: false,
+  message: 'HTTPCLIENT_NON_2XX 403 for https://www.trendyol.com/sr?q=iphone%2015&pi=1 (trendyol)'
+}
+HTTPCLIENT:GET_FAIL {
+  url: 'https://www.trendyol.com/sr?q=iphone%2015&pi=1',
+  adapterName: 'trendyol',
+  attempt: 2,
+  retries: 1,
+  isAbort: false,
+  message: 'HTTPCLIENT_NON_2XX 403 for https://www.trendyol.com/sr?q=iphone%2015&pi=1 (trendyol)'
+}
+- trendyol_adapter | ok=true | count=0 | stub=false | sample=null
+Hepsiburada scrape hata: Request failed with status code 403
+- hepsiburada_adapter | ok=true | count=0 | stub=false | sample=null
+N11 html fetch error: N11_HTTP_403
+N11 html fetch error: N11_HTTP_403
+N11 html fetch error: N11_HTTP_403
+- n11_adapter | ok=true | count=0 | stub=false | sample=null
+- amazon_adapter | ok=true | count=0 | stub=false | sample=null
+- cimri_adapter | ok=true | count=0 | stub=false | sample=null
+- akakce_adapter | ok=true | count=0 | stub=false | sample=null
+- pttavm_adapter | ok=true | count=48 | stub=false | sample=Apple İphone 15 Pro Max 512 Gb Natürel Titanyum (Apple Türkiye Garantili)
+- teknosa_adapter | ok=true | count=0 | stub=false | sample=null
+- vatan_adapter | ok=true | count=0 | stub=false | sample=null
+- mediamarkt_adapter | ok=true | count=0 | stub=false | sample=null
+- a101_adapter | ok=true | count=0 | stub=false | sample=null
+- migros_adapter | ok=true | count=0 | stub=false | sample=null
+✅ Carrefour OK (0 ürün, 523ms)
+- carrefour_adapter | ok=true | count=0 | stub=false | sample=null
+- sok_adapter | ok=true | count=0 | stub=false | sample=null
+⚠️ Getir Web hata: Request failed with status code 404
+⚠️ Getir fallback hata: Request failed with status code 403
+- getir_adapter | ok=true | count=0 | stub=false | sample=null
+👕 [boyner_1766365013073_5m8d3d5jw] Boyner adapter başladı: "iphone 15"
+⚠️ [boyner_1766365013073_5m8d3d5jw] Boyner adapter sonuç yok
+- boyner_adapter | ok=true | count=0 | stub=false | sample=null
+- flo_adapter | ok=true | count=0 | stub=false | sample=null
+- instreet_adapter | ok=true | count=0 | stub=false | sample=null
+- lcw_adapter | ok=true | count=0 | stub=false | sample=null
+- defacto_adapter | ok=true | count=0 | stub=false | sample=null
+- koton_adapter | ok=true | count=0 | stub=false | sample=null
+- mavi_adapter | ok=true | count=0 | stub=false | sample=null
+- kigili_adapter | ok=true | count=0 | stub=false | sample=null
+- morhipo_adapter | ok=true | count=0 | stub=false | sample=null
+- rossmann_adapter | ok=true | count=0 | stub=false | sample=null
+- gratis_adapter | ok=true | count=0 | stub=false | sample=null
+- watsons_adapter | ok=true | count=0 | stub=false | sample=null
+- koctas_adapter | ok=true | count=0 | stub=false | sample=null
+🌷 ÇiçekSepeti adapter çağrıldı: "iphone 15" (TR)
+✅ ÇiçekSepeti başarılı: 0 ürün (322ms)
+- ciceksepeti_adapter | ok=true | count=0 | stub=false | sample=null
+- serpApiAdapter | ok=false | count=0 | stub=false | sample=null
+  ERR status=undefined code=undefined msg=
+PS C:\Users\e1865\Desktop\SONER\BACKEND>

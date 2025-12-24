@@ -1,0 +1,75 @@
+{
+  "providers": {
+    "trendyol": {
+      "priority": 5,
+      "commission": 0.00,
+      "trustBase": 0.93
+    },
+    "hepsiburada": {
+      "priority": 5,
+      "commission": 0.00,
+      "trustBase": 0.90
+    },
+    "amazon": {
+      "priority": 4,
+      "commission": 0.00,
+      "trustBase": 0.98
+    },
+    "aliexpress": {
+      "priority": 4,
+      "commission": 0.03,
+      "trustBase": 0.85
+    },
+    "etsy": {
+      "priority": 3,
+      "commission": 0.04,
+      "trustBase": 0.82
+    },
+    "zalando": {
+      "priority": 4,
+      "commission": 0.06,
+      "trustBase": 0.87
+    },
+    "mediamarkt": {
+      "priority": 4,
+      "commission": 0.05,
+      "trustBase": 0.88
+    },
+    "ciceksepeti": {
+      "priority": 3,
+      "commission": 0.00,
+      "trustBase": 0.89
+    },
+    "tatilbudur": {
+      "priority": 4,
+      "commission": 0.00,
+      "trustBase": 0.86
+    },
+    "otelz": {
+      "priority": 4,
+      "commission": 0.00,
+      "trustBase": 0.88
+    },
+    "booking": {
+      "priority": 5,
+      "commission": 0.00,
+      "trustBase": 0.92
+    },
+    "skyscanner": {
+      "priority": 4,
+      "commission": 0.00,
+      "trustBase": 0.90
+    },
+    "ubisoft": {
+      "priority": 3,
+      "commission": 0.13,
+      "trustBase": 0.80
+    }
+  },
+
+  "categoryMultiplier": {
+    "gaming": 1.40,
+    "books": 0.90,
+    "pet": 1.10
+  }
+}
