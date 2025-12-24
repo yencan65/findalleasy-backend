@@ -1752,6 +1752,28 @@ if (__REWARD_DISABLED) {
     console.warn("⚠️ mountFrontend warn:", e?.message || e);
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Render health endpoints
+  // - Render uses health checks during deploys / zero-downtime rollout.
+  // - If frontend dist isn't mounted, "/" would be 404 and deploy can time out.
+  // ---------------------------------------------------------------------------
+  app.get("/healthz", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send("ok");
+  });
+
+  app.get("/api/healthz", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({ ok: true, service: "findalleasy-backend" });
+  });
+
+  // Root OK (helps infra checks when static host is off)
+  app.get("/", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send("ok");
+  });
+
   // Optional: auto-loader (explicit ON only)
   try {
     const AUTO_ROUTE_LOADER = String(process.env.FINDALLEASY_AUTO_ROUTE_LOADER || "0") === "1";
