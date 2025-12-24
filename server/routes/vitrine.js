@@ -26,10 +26,42 @@ import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 
 const router = express.Router();
 
-
 // ✅ Body parsers (router-level hardening): ensures POST JSON bodies are readable even if app middleware order changes
 router.use(express.json({ limit: "1mb" }));
 router.use(express.urlencoded({ extended: true }));
+
+// ✅ BODY SALVAGE: Eğer upstream middleware body'yi Buffer/string yaptıysa tekrar JSON'a çevir.
+router.use((req, _res, next) => {
+  try {
+    const b = req.body;
+
+    // Buffer -> JSON
+    if (b && Buffer.isBuffer(b)) {
+      const txt = b.toString("utf8");
+      const t = String(txt || "").trim();
+      if (t && (t.startsWith("{") || t.startsWith("["))) {
+        try {
+          req.body = JSON.parse(t);
+        } catch {
+          // JSON değilse dokunma
+        }
+      }
+    }
+
+    // string -> JSON
+    if (typeof req.body === "string") {
+      const t = req.body.trim();
+      if (t && (t.startsWith("{") || t.startsWith("["))) {
+        try {
+          req.body = JSON.parse(t);
+        } catch {
+          // JSON değilse dokunma
+        }
+      }
+    }
+  } catch {}
+  next();
+});
 
 // ============================================================================
 //  IAM — TOKEN REPLAY SHIELD (S30) — HARDENED (normal akışı kırmaz)
@@ -181,6 +213,42 @@ function safeSessionId(sessionId) {
 }
 
 // ============================================================================
+//  BODY/QUERY COERCE (POST body Buffer/string gelirse de okunabilir olsun)
+// ============================================================================
+function getQueryObject(req) {
+  const q = req?.query;
+  return q && typeof q === "object" ? q : {};
+}
+
+function getBodyObject(req) {
+  const b = req?.body;
+  try {
+    if (!b) return {};
+    if (Buffer.isBuffer(b)) {
+      const t = b.toString("utf8").trim();
+      if (t && (t.startsWith("{") || t.startsWith("["))) {
+        const parsed = JSON.parse(t);
+        return parsed && typeof parsed === "object" ? parsed : {};
+      }
+      return {};
+    }
+    if (typeof b === "string") {
+      const t = b.trim();
+      if (t && (t.startsWith("{") || t.startsWith("["))) {
+        const parsed = JSON.parse(t);
+        return parsed && typeof parsed === "object" ? parsed : {};
+      }
+      return {};
+    }
+    // plain object
+    if (typeof b === "object") return b;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+// ============================================================================
 //  IP / JSON UTILS
 // ============================================================================
 function getClientIp(req) {
@@ -188,6 +256,37 @@ function getClientIp(req) {
   if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0].trim();
   return req.socket?.remoteAddress || req.ip || "0.0.0.0";
 }
+
+function coerceBodyObject(req) {
+  const b = req?.body;
+
+  // already object (and not Buffer)
+  if (b && typeof b === "object" && !Buffer.isBuffer(b)) return b;
+
+  // Buffer -> JSON
+  if (Buffer.isBuffer(b)) {
+    try {
+      const s = b.toString("utf8");
+      const o = JSON.parse(s);
+      return o && typeof o === "object" ? o : {};
+    } catch {
+      return {};
+    }
+  }
+
+  // string -> JSON
+  if (typeof b === "string") {
+    try {
+      const o = JSON.parse(b);
+      return o && typeof o === "object" ? o : {};
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
+}
+
 
 function toJsonSafe(value, maxDepth = 6) {
   const seen = new WeakSet();
@@ -352,7 +451,7 @@ function toBestOnlyPayload(selected, query) {
       it.url = click;
     }
 
-    return it;
+    return patchBestImage(it);
   };
 
   const patchedList = best_list
@@ -384,10 +483,8 @@ function toBestOnlyPayload(selected, query) {
 function safeJson(res, payload, status = 200) {
   try {
     if (res.headersSent) return;
-    // ✅ Duplicate reference circular DEĞİL. Normal json bas.
     return res.status(status).json(payload);
   } catch (e) {
-    // ⚠️ Sadece gerçekten circular varsa buraya düşer
     try {
       if (res.headersSent) return;
       const seen = new WeakSet();
@@ -406,11 +503,7 @@ function safeJson(res, payload, status = 200) {
         best: null,
         best_list: [],
         cards: { best: null, best_list: [] },
-        _meta: {
-          source: "safeJson_fallback",
-          reason: "JSON_SERIALIZATION_ERROR",
-          detail: err?.message || e?.message,
-        },
+        _meta: { source: "safeJson_fallback", reason: "JSON_SERIALIZATION_ERROR", detail: err?.message || e?.message },
       });
     }
   }
@@ -469,7 +562,7 @@ function normKey(s) {
       .replace(/ş/g, "s")
       .replace(/ö/g, "o")
       .replace(/ç/g, "c")
-      .replace(/[^a-z0-9_\-]/g, "") // underscore/hyphen kalsın
+      .replace(/[^a-z0-9_\-]/g, "")
       .trim();
   } catch {
     return "";
@@ -633,15 +726,12 @@ function normalizeReqPath(req) {
   let s = String(req?.path || req?.url || req?.originalUrl || "/").trim();
   if (!s) s = "/";
 
-  // remove query string
   const qIndex = s.indexOf("?");
   if (qIndex >= 0) s = s.slice(0, qIndex) || "/";
 
-  // remove baseUrl prefix if present (router mounted under /api/vitrin)
   const b = String(req?.baseUrl || "").trim();
   if (b && s.startsWith(b)) s = s.slice(b.length) || "/";
 
-  // collapse trailing slash except root
   if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
 
   return s;
@@ -674,7 +764,6 @@ function isPublicVitrineRoute(req) {
 router.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
 
-  // ✅ PUBLIC: vitrine endpointleri auth istemez (growth-friendly)
   if (isPublicVitrineRoute(req)) {
     res.setHeader("x-fae-public", "1");
     req.IAM = { ok: true, userId: "guest", session: null, public: true };
@@ -732,7 +821,7 @@ router.get("/ping", (req, res) => {
   return safeJson(res, { ok: true, service: "vitrine", ts: Date.now() });
 });
 
-router.get("/__debug", (req, res) => {
+router.all("/__debug", (req, res) => {
   try {
     const out = {
       ok: true,
@@ -746,6 +835,12 @@ router.get("/__debug", (req, res) => {
       ip: getClientIp(req),
       ua: String(req.headers["user-agent"] || ""),
       public: isPublicVitrineRoute(req),
+      ct: String(req.headers["content-type"] || ""),
+      cl: String(req.headers["content-length"] || ""),
+      bodyType: req.body === undefined ? "undefined" : (Buffer.isBuffer(req.body) ? "buffer" : typeof req.body),
+      bodyIsBuffer: !!(req.body && Buffer.isBuffer(req.body)),
+      body: req.body,
+      query: req.query,
       ts: Date.now(),
     };
     return safeJson(res, out);
@@ -753,6 +848,7 @@ router.get("/__debug", (req, res) => {
     return safeJson(res, { ok: false, error: "debug_failed", detail: String(e?.message || e) }, 200);
   }
 });
+
 
 // ============================================================================
 //  CORE
@@ -768,8 +864,8 @@ async function handleVitrinCore(req, res) {
       return "";
     };
 
-    const qb = req.body && typeof req.body === "object" ? req.body : {};
-    const qq = req.query && typeof req.query === "object" ? req.query : {};
+    const qb = coerceBodyObject(req);
+    const qq = getQueryObject(req);
 
     const query = pick(qq.q, qq.query, qb.q, qb.query, qb.search);
     const region = pick(qq.region, qb.region, "TR");
@@ -964,7 +1060,6 @@ async function handleVitrinCore(req, res) {
       (Array.isArray(selected.others) && selected.others.length > 0);
 
     if (hasRealQuery && !hasAnyRealContent) {
-      // ✅ BEST ONLY + adapterEngine fallback (vitrinEngine bazen boş dönebiliyor)
       try {
         const t = String((intent && (intent.type || intent.category)) || preferredType || "product");
         let cat = normText(t) || "product";
@@ -1023,17 +1118,10 @@ async function handleVitrinCore(req, res) {
       } catch {}
 
       const out = toBestOnlyPayload(selected, qSafe);
-      let outSafe = out;
       try {
-        // ✅ duplicate refs => expanded by value (no false "[circular]")
-        outSafe = JSON.parse(JSON.stringify(out));
-      } catch {
-        outSafe = toJsonSafe(out);
-      }
-      try {
-        await setCachedResult(cacheKey, outSafe, 120);
+        await setCachedResult(cacheKey, out, 120);
       } catch {}
-      return safeJson(res, outSafe);
+      return safeJson(res, out);
     }
 
     if (!selected.best && selected.best_list.length === 0) {
@@ -1062,20 +1150,12 @@ async function handleVitrinCore(req, res) {
     }
 
     const out = toBestOnlyPayload(selected, qSafe);
-    let outSafe = out;
     try {
-      // ✅ duplicate refs => expanded by value (no false "[circular]")
-      outSafe = JSON.parse(JSON.stringify(out));
-    } catch {
-      outSafe = toJsonSafe(out);
-    }
-    try {
-      await setCachedResult(cacheKey, outSafe, 300);
+      await setCachedResult(cacheKey, out, 300);
     } catch {}
-
-    return safeJson(res, outSafe);
+    return safeJson(res, out);
   } catch (err) {
-    const body = req.body || {};
+    const body = getBodyObject(req);
     const qSafe = sanitize(body.query || "");
     const regionSafe = safeRegion(body.region || "TR");
 
@@ -1110,11 +1190,10 @@ router.all("/dynamic", (req, res, next) => {
       return "";
     };
 
-    const qb = (req.body && typeof req.body === "object") ? req.body : {};
-    const qq = (req.query && typeof req.query === "object") ? req.query : {};
+    const qb = coerceBodyObject(req);
+    const qq = getQueryObject(req);
 
-    // ✅ POST body boşsa querystring’i de dene (asla "" diye ezme)
-    const query  = pick(qq.q, qq.query, qb.q, qb.query, qb.search);
+    const query = pick(qq.q, qq.query, qb.q, qb.query, qb.search);
     const region = pick(qq.region, qb.region, "TR");
     const locale = pick(qq.locale, qq.lang, qb.locale, qb.lang, "tr");
 
@@ -1143,7 +1222,6 @@ router.all("/dynamic", (req, res, next) => {
   }
 });
 
-
 router.post("/dynamic", handleVitrinCore);
 router.get("/dynamic", handleVitrinCore);
 
@@ -1151,20 +1229,21 @@ router.post("/", handleVitrinCore);
 
 router.get("/", (req, res) => {
   try {
-    const q = req.query.q || req.query.query || "";
-    const region = req.query.region || "TR";
-    const locale = req.query.locale || req.query.lang || "tr";
+    const qq = getQueryObject(req);
+    const q = qq.q || qq.query || "";
+    const region = qq.region || "TR";
+    const locale = qq.locale || qq.lang || "tr";
 
+    const qb = getBodyObject(req);
     req.body = {
-      ...(req.body || {}),
+      ...qb,
       query: q,
       region,
       locale,
-      sessionId: req.body?.sessionId || req.headers["x-session-id"] || "",
+      sessionId: qb?.sessionId || req.headers["x-session-id"] || "",
     };
     return handleVitrinCore(req, res);
   } catch (e) {
-    // ✅ ZERO-CRASH
     return safeJson(res, {
       ok: true,
       best: null,
@@ -1179,8 +1258,9 @@ router.get("/", (req, res) => {
 
 router.post("/mock", (req, res) => {
   try {
-    const qSafe = sanitize(req.body?.query || "");
-    const regionSafe = safeRegion(req.body?.region || "TR");
+    const b = getBodyObject(req);
+    const qSafe = sanitize(b?.query || "");
+    const regionSafe = safeRegion(b?.region || "TR");
 
     const mockBestItem = {
       id: "mock_best",
