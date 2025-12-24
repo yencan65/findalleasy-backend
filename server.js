@@ -1751,7 +1751,53 @@ if (__REWARD_DISABLED) {
   } catch {}
 
   // HTTP + WS
-  const httpServer = createServer(app);
+  
+// ============================================================================
+//  API ERROR SOFTFAIL (S34) — /api/vitrin endpointleri asla HTML 400/500 basmasın
+//  - vitrin/vitrine: her koşulda 200 + empty-state JSON (UI ölmesin)
+//  - diğer /api: JSON hata payload (debug edilebilir)
+// ============================================================================
+app.use((err, req, res, next) => {
+  try {
+    if (res.headersSent) return next(err);
+
+    const url0 = String(req?.originalUrl || req?.url || "");
+    const url = url0.split("?")[0];
+    const status = Number(err?.statusCode || err?.status || 500) || 500;
+    const msg = String(err?.message || err || "unknown_error").slice(0, 400);
+
+    const isVitrin = /^\/api\/vitrin(e)?(\/|$)/.test(url);
+
+    if (isVitrin) {
+      return res.status(200).json({
+        ok: true,
+        query: String(req?.body?.query ?? req?.body?.q ?? req?.query?.q ?? req?.query?.query ?? "").trim(),
+        category: "general",
+        best: null,
+        best_list: [],
+        smart: [],
+        others: [],
+        cards: { best: null, best_list: [], smart: [], others: [] },
+        _meta: { source: "global_error_softfail", status, errorType: String(err?.type || ""), reason: msg },
+      });
+    }
+
+    if (url.startsWith("/api/")) {
+      return res.status(status).json({
+        ok: false,
+        error: "API_ERROR",
+        status,
+        detail: msg,
+        _meta: { path: url, type: String(err?.type || "") },
+      });
+    }
+
+    return next(err);
+  } catch (e) {
+    return next(err);
+  }
+});
+const httpServer = createServer(app);
   try {
     createTelemetryWSS(httpServer);
   } catch (e) {
