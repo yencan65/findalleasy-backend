@@ -594,8 +594,28 @@ function postFilterSelected(selected, qSafe, intent) {
 // ============================================================================
 //  🛡 IAM FIREWALL (S30) — API KEY + JWT + SESSION BINDING
 // ============================================================================
+// PUBLIC ALLOWLIST (S34)
+// - Public vitrine/search büyümenin can damarı: auth her istek için zorunlu olursa tıkanır.
+// - Public = rate limit + abuse shield, Private = auth.
+// - ZERO DELETE: var olan IAM mantığı korunur, sadece allowlist ile bypass edilir.
+// ============================================================================
+const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/", "/dynamic"]);
+
+function isPublicVitrineRoute(req) {
+  const p = String(req?.path || "");
+  if (PUBLIC_VITRINE_ROUTES.has(p)) return true;
+  if (p.endsWith("/") && PUBLIC_VITRINE_ROUTES.has(p.slice(0, -1))) return true;
+  return false;
+}
+
 router.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
+
+  // ✅ PUBLIC: vitrine endpointleri auth istemez (growth-friendly)
+  if (isPublicVitrineRoute(req)) {
+    req.IAM = { ok: true, userId: "guest", session: null, public: true };
+    return next();
+  }
 
   const clientKey = req.headers["x-api-key"];
   if (process.env.API_KEY && clientKey !== process.env.API_KEY) {
