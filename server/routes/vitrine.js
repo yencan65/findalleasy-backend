@@ -27,16 +27,9 @@ import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 const router = express.Router();
 
 
-// ============================================================================
-//  BUILD STAMP (S35) — her response'ta görünür
-// ============================================================================
-const FAE_BUILD = process.env.FAE_BUILD || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "manual";
-router.use((req, res, next) => {
-  try {
-    res.setHeader("x-fae-build", String(FAE_BUILD).slice(0, 12));
-  } catch {}
-  return next();
-});
+// ✅ Body parsers (router-level hardening): ensures POST JSON bodies are readable even if app middleware order changes
+router.use(express.json({ limit: "1mb" }));
+router.use(express.urlencoded({ extended: true }));
 
 // ============================================================================
 //  IAM — TOKEN REPLAY SHIELD (S30) — HARDENED (normal akışı kırmaz)
@@ -249,7 +242,6 @@ function toJsonSafe(value, maxDepth = 6) {
   }
 }
 
-
 // ============================================================================
 //  🖼️ BEST-ONLY NORMALIZATION + BLANK.GIF FILTER (S200)
 // ============================================================================
@@ -292,7 +284,6 @@ function patchBestImage(it) {
   return { ...it, image };
 }
 
-
 // ============================================================================
 //  SAFE STRING (S34) — helper used by best-only payload builder
 // ============================================================================
@@ -304,7 +295,6 @@ function safeStr(v, maxLen = 256) {
     return "";
   }
 }
-
 
 function toBestOnlyPayload(selected, query) {
   const qSafe = safeStr(query);
@@ -383,29 +373,46 @@ function toBestOnlyPayload(selected, query) {
     locale: localeSafe,
     best: best0 || null,
     best_list: patchedList,
-    items: patchedList,
+    items: patchedList.slice(),
     count: patchedList.length,
     total: patchedList.length,
-    cards: { best: best0 || null, best_list: patchedList },
+    cards: { best: best0 || null, best_list: patchedList.slice() },
     _meta: selected?._meta || {},
   };
 }
 
-function safeJson(res, obj, code = 200) {
+function safeJson(res, payload, status = 200) {
   try {
     if (res.headersSent) return;
-    const safeObj = toJsonSafe(obj);
-    if (code !== 200) return res.status(code).json(safeObj);
-    return res.json(safeObj);
-  } catch (err) {
-    if (res.headersSent) return;
-    return res.status(200).json({
-      ok: true,
-      best: null,
-      best_list: [],
-      cards: { best: null, best_list: [] },
-      _meta: { source: "safeJson_fallback", reason: "JSON_SERIALIZATION_ERROR", detail: err?.message },
-    });
+    // ✅ Duplicate reference circular DEĞİL. Normal json bas.
+    return res.status(status).json(payload);
+  } catch (e) {
+    // ⚠️ Sadece gerçekten circular varsa buraya düşer
+    try {
+      if (res.headersSent) return;
+      const seen = new WeakSet();
+      const txt = JSON.stringify(payload, (k, v) => {
+        if (v && typeof v === "object") {
+          if (seen.has(v)) return "[circular]";
+          seen.add(v);
+        }
+        return v;
+      });
+      return res.status(status).type("application/json").send(txt);
+    } catch (err) {
+      if (res.headersSent) return;
+      return res.status(200).json({
+        ok: true,
+        best: null,
+        best_list: [],
+        cards: { best: null, best_list: [] },
+        _meta: {
+          source: "safeJson_fallback",
+          reason: "JSON_SERIALIZATION_ERROR",
+          detail: err?.message || e?.message,
+        },
+      });
+    }
   }
 }
 
@@ -620,44 +627,45 @@ function postFilterSelected(selected, qSafe, intent) {
 // ============================================================================
 //  🛡 IAM FIREWALL (S30) — API KEY + JWT + SESSION BINDING
 // ============================================================================
+const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/dynamic", "/", "/__debug"]);
 
-// ============================================================================
-//  PUBLIC ALLOWLIST (S34) — vitrin/search büyümenin can damarı
-//  - Public = rate limit + abuse shield
-//  - Private = auth (admin/user-only endpointler)
-//  - ZERO DELETE: IAM mantığı korunur, sadece allowlist bypass eklenir.
-// ============================================================================
-const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/dynamic", "/__debug", "/"]);
+function normalizeReqPath(req) {
+  let s = String(req?.path || req?.url || req?.originalUrl || "/").trim();
+  if (!s) s = "/";
 
-function _normPath(u) {
-  const raw = String(u || "");
-  const p = raw.split("?")[0] || "";
-  if (!p) return "";
-  let x = p.startsWith("/") ? p : `/${p}`;
-  // strip known prefixes (proxy / mount variations)
-  const prefixes = ["/api/vitrin", "/api/vitrine", "/vitrin", "/vitrine"];
-  for (const pre of prefixes) {
-    if (x === pre) { x = "/"; break; }
-    if (x.startsWith(pre + "/")) { x = x.slice(pre.length); break; }
-  }
-  // trim trailing slash (except root)
-  if (x.endsWith("/") && x.length > 1) x = x.slice(0, -1);
-  return x || "/";
+  // remove query string
+  const qIndex = s.indexOf("?");
+  if (qIndex >= 0) s = s.slice(0, qIndex) || "/";
+
+  // remove baseUrl prefix if present (router mounted under /api/vitrin)
+  const b = String(req?.baseUrl || "").trim();
+  if (b && s.startsWith(b)) s = s.slice(b.length) || "/";
+
+  // collapse trailing slash except root
+  if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+
+  return s;
 }
 
 function isPublicVitrineRoute(req) {
   try {
+    const baseUrl = String(req?.baseUrl || "");
     const candidates = [
       req?.path,
       req?.url,
       req?.originalUrl,
-      (String(req?.baseUrl || "") + String(req?.path || "")),
-    ];
+      baseUrl && req?.path ? `${baseUrl}${req.path}` : "",
+      baseUrl && req?.originalUrl ? `${baseUrl}${req.originalUrl}` : "",
+    ].filter(Boolean);
+
     for (const c of candidates) {
-      const p = _normPath(c);
+      const fakeReq = { ...req, path: c };
+      const p = normalizeReqPath(fakeReq);
       if (PUBLIC_VITRINE_ROUTES.has(p)) return true;
     }
-    return false;
+
+    const p0 = normalizeReqPath(req);
+    return PUBLIC_VITRINE_ROUTES.has(p0);
   } catch {
     return false;
   }
@@ -665,12 +673,6 @@ function isPublicVitrineRoute(req) {
 
 router.use((req, res, next) => {
   if (req.method === "OPTIONS") return res.sendStatus(204);
-
-  try {
-    const p = _normPath(req?.originalUrl || req?.url || req?.path || "");
-    res.setHeader("x-fae-path", p);
-  } catch {}
-
 
   // ✅ PUBLIC: vitrine endpointleri auth istemez (growth-friendly)
   if (isPublicVitrineRoute(req)) {
@@ -688,7 +690,14 @@ router.use((req, res, next) => {
 
   if (!iam.ok) {
     if (process.env.NODE_ENV !== "production") {
-      req.IAM = { ok: true, userId: "guest", session: null, devBypass: true, devIAMReject: true, reason: iam.reason };
+      req.IAM = {
+        ok: true,
+        userId: "guest",
+        session: null,
+        devBypass: true,
+        devIAMReject: true,
+        reason: iam.reason,
+      };
       return next();
     }
     return safeJson(res, { ok: false, error: "IAM_REJECTED", detail: iam.reason }, 401);
@@ -716,7 +725,6 @@ router.use(
   })
 );
 
-
 // ---------------------------------------
 // PING (healthcheck / debug)
 // ---------------------------------------
@@ -724,33 +732,54 @@ router.get("/ping", (req, res) => {
   return safeJson(res, { ok: true, service: "vitrine", ts: Date.now() });
 });
 
-
-
-// ---------------------------------------
-// DEBUG (public) — path/mount doğrulama
-// ---------------------------------------
 router.get("/__debug", (req, res) => {
-  const info = {
-    ok: true,
-    build: String(FAE_BUILD).slice(0, 12),
-    method: req.method,
-    host: req.headers["host"] || null,
-    path: req.path || null,
-    baseUrl: req.baseUrl || null,
-    url: req.url || null,
-    originalUrl: req.originalUrl || null,
-    ip: req.ip || null,
-    ua: req.headers["user-agent"] || null,
-    public: true,
-    ts: Date.now(),
-  };
-  return safeJson(res, info);
+  try {
+    const out = {
+      ok: true,
+      build: String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").slice(0, 12) || "-",
+      method: req.method,
+      host: req.headers?.host,
+      path: String(req.path || ""),
+      baseUrl: String(req.baseUrl || ""),
+      url: String(req.url || ""),
+      originalUrl: String(req.originalUrl || ""),
+      ip: getClientIp(req),
+      ua: String(req.headers["user-agent"] || ""),
+      public: isPublicVitrineRoute(req),
+      ts: Date.now(),
+    };
+    return safeJson(res, out);
+  } catch (e) {
+    return safeJson(res, { ok: false, error: "debug_failed", detail: String(e?.message || e) }, 200);
+  }
 });
+
 // ============================================================================
 //  CORE
 // ============================================================================
 async function handleVitrinCore(req, res) {
   try {
+    // ✅ GET + POST unified input: query/body ikisini de okur, tek shape'e zorlar
+    const pick = (...vals) => {
+      for (const v of vals) {
+        const s = (v == null ? "" : String(v)).trim();
+        if (s) return s;
+      }
+      return "";
+    };
+
+    const qb = req.body && typeof req.body === "object" ? req.body : {};
+    const qq = req.query && typeof req.query === "object" ? req.query : {};
+
+    const query = pick(qq.q, qq.query, qb.q, qb.query, qb.search);
+    const region = pick(qq.region, qb.region, "TR");
+    const locale = pick(qq.locale, qq.lang, qb.locale, qb.lang, "tr");
+    const category = pick(qq.category, qq.group, qb.category, qb.group, "product");
+
+    // downstream engine hep aynı yerden okusun
+    req.query = { ...qq, q: query, query, region, locale, category };
+    req.body = { ...qb, q: query, query, region, locale, category };
+
     const body = req.body || {};
     const rawQuery = body.query?.toString?.() ?? "";
     const typo = fixQueryTyposTR(rawQuery);
@@ -805,7 +834,6 @@ async function handleVitrinCore(req, res) {
     let intent = null;
     try {
       intent = await detectIntent({ query: fixedQuery, source: "text" });
-
     } catch {}
 
     try {
@@ -957,7 +985,8 @@ async function handleVitrinCore(req, res) {
             } catch (_) {}
           }
         }
-const items = Array.isArray(raw?.items)
+
+        const items = Array.isArray(raw?.items)
           ? raw.items
           : Array.isArray(raw?.results)
           ? raw.results
@@ -994,7 +1023,13 @@ const items = Array.isArray(raw?.items)
       } catch {}
 
       const out = toBestOnlyPayload(selected, qSafe);
-      const outSafe = toJsonSafe(out);
+      let outSafe = out;
+      try {
+        // ✅ duplicate refs => expanded by value (no false "[circular]")
+        outSafe = JSON.parse(JSON.stringify(out));
+      } catch {
+        outSafe = toJsonSafe(out);
+      }
       try {
         await setCachedResult(cacheKey, outSafe, 120);
       } catch {}
@@ -1027,7 +1062,13 @@ const items = Array.isArray(raw?.items)
     }
 
     const out = toBestOnlyPayload(selected, qSafe);
-    const outSafe = toJsonSafe(out);
+    let outSafe = out;
+    try {
+      // ✅ duplicate refs => expanded by value (no false "[circular]")
+      outSafe = JSON.parse(JSON.stringify(out));
+    } catch {
+      outSafe = toJsonSafe(out);
+    }
     try {
       await setCachedResult(cacheKey, outSafe, 300);
     } catch {}
@@ -1061,23 +1102,35 @@ router.options("/mock", (req, res) => res.sendStatus(204));
 
 router.all("/dynamic", (req, res, next) => {
   try {
-    const query =
-  req.method === "GET"
-    ? (req.query.q || req.query.query)
-    : (req.body?.query ?? req.body?.q);
+    const pick = (...vals) => {
+      for (const v of vals) {
+        const s = (v == null ? "" : String(v)).trim();
+        if (s) return s;
+      }
+      return "";
+    };
 
-    const region = req.method === "GET" ? req.query.region : req.body?.region;
+    const qb = (req.body && typeof req.body === "object") ? req.body : {};
+    const qq = (req.query && typeof req.query === "object") ? req.query : {};
+
+    // ✅ POST body boşsa querystring’i de dene (asla "" diye ezme)
+    const query  = pick(qq.q, qq.query, qb.q, qb.query, qb.search);
+    const region = pick(qq.region, qb.region, "TR");
+    const locale = pick(qq.locale, qq.lang, qb.locale, qb.lang, "tr");
 
     req.body = {
-      ...(req.body || {}),
-      query: query ?? "",
-      region: region ?? "",
-      sessionId: req.body?.sessionId || req.headers["x-session-id"] || "",
+      ...qb,
+      query,
+      q: query,
+      region,
+      locale,
+      sessionId: pick(qb.sessionId, req.headers["x-session-id"], ""),
     };
+
+    req.query = { ...qq, q: query, query, region, locale };
 
     return next();
   } catch (e) {
-    // ✅ ZERO-CRASH: 500 basma, UI'yi öldürme
     return safeJson(res, {
       ok: true,
       best: null,
@@ -1090,6 +1143,7 @@ router.all("/dynamic", (req, res, next) => {
   }
 });
 
+
 router.post("/dynamic", handleVitrinCore);
 router.get("/dynamic", handleVitrinCore);
 
@@ -1099,8 +1153,15 @@ router.get("/", (req, res) => {
   try {
     const q = req.query.q || req.query.query || "";
     const region = req.query.region || "TR";
+    const locale = req.query.locale || req.query.lang || "tr";
 
-    req.body = { ...(req.body || {}), query: q, region };
+    req.body = {
+      ...(req.body || {}),
+      query: q,
+      region,
+      locale,
+      sessionId: req.body?.sessionId || req.headers["x-session-id"] || "",
+    };
     return handleVitrinCore(req, res);
   } catch (e) {
     // ✅ ZERO-CRASH
