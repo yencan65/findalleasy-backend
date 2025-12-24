@@ -594,17 +594,68 @@ function postFilterSelected(selected, qSafe, intent) {
 // ============================================================================
 //  🛡 IAM FIREWALL (S30) — API KEY + JWT + SESSION BINDING
 // ============================================================================
-// PUBLIC ALLOWLIST (S34)
+// PUBLIC ALLOWLIST (S34) — hardened
 // - Public vitrine/search büyümenin can damarı: auth her istek için zorunlu olursa tıkanır.
 // - Public = rate limit + abuse shield, Private = auth.
 // - ZERO DELETE: var olan IAM mantığı korunur, sadece allowlist ile bypass edilir.
 // ============================================================================
-const PUBLIC_VITRINE_ROUTES = new Set(["/ping", "/", "/dynamic"]);
+
+const PUBLIC_VITRINE_RULES = [
+  { m: "GET", path: "/ping" },
+
+  // vitrin core (GET/POST)
+  { m: "GET", path: "/" },
+  { m: "POST", path: "/" },
+
+  // dynamic (GET/POST)
+  { m: "GET", path: "/dynamic" },
+  { m: "POST", path: "/dynamic" },
+];
+
+function _normPath(p) {
+  try {
+    let s = String(p || "").trim();
+    if (!s) return "";
+    s = s.split("?")[0];
+    if (!s.startsWith("/")) s = "/" + s;
+    // trailing slash normalize ("/" hariç)
+    if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+    return s;
+  } catch {
+    return "";
+  }
+}
 
 function isPublicVitrineRoute(req) {
-  const p = String(req?.path || "");
-  if (PUBLIC_VITRINE_ROUTES.has(p)) return true;
-  if (p.endsWith("/") && PUBLIC_VITRINE_ROUTES.has(p.slice(0, -1))) return true;
+  const m = String(req?.method || "GET").toUpperCase();
+
+  const cand = [];
+  cand.push(_normPath(req?.path));
+  cand.push(_normPath(req?.url));
+  cand.push(_normPath(req?.originalUrl));
+
+  // Eğer somehow "originalUrl" full mount path içeriyorsa, tail’i de dene
+  const more = [];
+  for (const c of cand) {
+    if (!c) continue;
+
+    if (c === "/api/vitrin" || c === "/api/vitrine") more.push("/");
+
+    if (c.startsWith("/api/vitrin/")) more.push(_normPath(c.slice("/api/vitrin".length)));
+    if (c.startsWith("/api/vitrine/")) more.push(_normPath(c.slice("/api/vitrine".length)));
+
+    // endsWith güvenlik ağı
+    if (c.endsWith("/ping")) more.push("/ping");
+    if (c.endsWith("/dynamic")) more.push("/dynamic");
+  }
+  cand.push(...more);
+
+  for (const c of cand) {
+    if (!c) continue;
+    for (const r of PUBLIC_VITRINE_RULES) {
+      if (r.m === m && r.path === c) return true;
+    }
+  }
   return false;
 }
 
@@ -613,7 +664,9 @@ router.use((req, res, next) => {
 
   // ✅ PUBLIC: vitrine endpointleri auth istemez (growth-friendly)
   if (isPublicVitrineRoute(req)) {
-    req.IAM = { ok: true, userId: "guest", session: null, public: true };
+    // Debug: allowlist çalıştı mı anında gör
+    try { res.setHeader("x-fae-public", "1"); } catch {}
+    req.IAM = { ok: true, userId: "guest", session: null, public: true, reason: "PUBLIC_ALLOWLIST" };
     return next();
   }
 
@@ -626,7 +679,14 @@ router.use((req, res, next) => {
 
   if (!iam.ok) {
     if (process.env.NODE_ENV !== "production") {
-      req.IAM = { ok: true, userId: "guest", session: null, devBypass: true, devIAMReject: true, reason: iam.reason };
+      req.IAM = {
+        ok: true,
+        userId: "guest",
+        session: null,
+        devBypass: true,
+        devIAMReject: true,
+        reason: iam.reason,
+      };
       return next();
     }
     return safeJson(res, { ok: false, error: "IAM_REJECTED", detail: iam.reason }, 401);
