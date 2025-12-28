@@ -1,7 +1,7 @@
 // backend/db.js
 import { MongoClient } from "mongodb";
 
-const uri = process.env.MONGO_URI;
+const uri = process.env.MONGO_URI || process.env.MONGODB_URI || process.env.MONGO_URL || process.env.MONGODB_URL;
 let client;
 let db;
 
@@ -12,7 +12,7 @@ export async function getDb() {
   // 2) Ortam değişkeni kontrolü
   if (!uri) {
     throw new Error(
-      "[DB] MONGO_URI tanımlı değil. .env dosyanı ve Render ortam değişkenlerini kontrol et."
+      "[DB] Mongo URI tanımlı değil. (MONGO_URI / MONGODB_URI / MONGO_URL) .env ve Render ortam değişkenlerini kontrol et."
     );
   }
 

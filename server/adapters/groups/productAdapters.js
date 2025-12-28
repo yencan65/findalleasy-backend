@@ -10,12 +10,19 @@
 //  - ✅ runWithCooldownS200: gerçek fn(query, ctx) çağrıları wrapper içinde cooldown ile sarıldı
 //  - ✅ runWithBudget thunk: fn() timeout/cooldown dışında “erken” çalışmasın (sessiz drift/outerTimeout riski düşer)
 //  - (V1.4.3 patch’leri aynen korunur)
+//
+// PATCH V1.4.5 (CATALOG/MONGO):
+//  - ✅ Admitad feed -> Mongo catalog_items -> productAdapters en üste eklendi (wrapS200)
+//  - ✅ catalog_mongo timeout eklendi
+//  - ✅ category filter: admitad her kategoride aktif
 // ============================================================================
 
 import crypto from "crypto";
 import path from "path";
-import { normalizeProviderKeyS9 } from "../../core/providerMasterS9.js";
+import { normalizeProviderKeyS9, getProviderMetaS9 } from "../../core/providerMasterS9.js";
 import { buildAffiliateUrl } from "../affiliateEngine.js";
+import catalogAdapter from "../catalogAdapter.js";
+import { getDb } from "../../db.js";
 
 // ✅ SINGLE SOURCE OF TRUTH kit
 import {
@@ -31,121 +38,133 @@ import {
   withTimeout as kitWithTimeout,
 } from "../../core/s200AdapterKit.js";
 
+
+
 // ---------------------------------------------------------------------------
-// STUB POLICY (DEV ONLY)
+// ENV FLAGS (S200) — keep imports crash-free
 // ---------------------------------------------------------------------------
-const FINDALLEASY_ALLOW_STUBS = String(process.env.FINDALLEASY_ALLOW_STUBS || "") === "1";
 const IS_PROD = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+const FINDALLEASY_ALLOW_STUBS = String(process.env.FINDALLEASY_ALLOW_STUBS || "") === "1";
 const ALLOW_STUBS = !IS_PROD && FINDALLEASY_ALLOW_STUBS;
 
+// Catalog filters (useful to move from demo feeds -> TR-only)
+const CATALOG_CURRENCY = kitSafeStr(process.env.CATALOG_CURRENCY || "") || "";
+const CATALOG_DEFAULT_CURRENCY = kitSafeStr(process.env.CATALOG_DEFAULT_CURRENCY || "") || "TRY";
+const CATALOG_CAMPAIGN_ALLOWLIST_RAW = kitSafeStr(
+  process.env.CATALOG_CAMPAIGN_ALLOWLIST || process.env.ADMITAD_CAMPAIGN_ALLOWLIST || ""
+);
+const CATALOG_CAMPAIGN_ALLOWLIST = (CATALOG_CAMPAIGN_ALLOWLIST_RAW || "")
+  .split(/[,;\s]+/g)
+  .map((x) => Number(String(x || "").trim()))
+  .filter((n) => Number.isFinite(n) && n > 0);
 // ============================================================================
-// BASIC HELPERS
+// ADMITAD FEED (Mongo Catalog) → S200 adapter
+// - catalogAdapter üstünden DB'den arar
+// - output: normal product item shape (url/affiliateUrl garanti)
 // ============================================================================
-const fix = (key) => {
-  try {
-    return kitFixKey ? kitFixKey(key) : String(key || "").toLowerCase().trim();
-  } catch {
-    return String(key || "").toLowerCase().trim();
-  }
-};
+async function searchAdmitadFeedAdapter(query, options = {}) {
+  const q = String(query || "").trim();
+  if (!q) return [];
 
-// canonical providerKey (S9 master varsa onu kullan) — DRIFT SAFE
-const canonicalProviderKey = (raw, fallback = "") => {
-  const base = fix(raw || fallback);
-  if (!base || base === "unknown" || base === "null" || base === "undefined") return fix(fallback) || "product";
-  try {
-    if (typeof normalizeProviderKeyS9 === "function") {
-      const n = normalizeProviderKeyS9(base);
-      const nn = fix(n);
-
-      // ✅ KRİTİK: S9 "unknown|null|undefined" döndürürse base’i EZME (identity drift biter)
-      if (nn && nn !== "unknown" && nn !== "null" && nn !== "undefined") return nn || base;
-
-      return base;
-    }
-  } catch {}
-  return base;
-};
-
-// providerFamily: providerKey’nin ilk parçası (S9 ile normalize)
-const providerFamilyFromKey = (providerKey) => {
-  const k = canonicalProviderKey(providerKey, "product");
-  const fam0 = k.split("_")[0] || k;
-  return canonicalProviderKey(fam0, fam0) || "product";
-};
-
-// Kesin providerKey üretici — dosya adını bozmadan gerçek provider üretir
-const extractProviderKey = (modulePath) => {
-  const raw = path.basename(String(modulePath || "")).replace(/\.js$/i, "");
-  return fix(
-    raw
-      .replace(/Adapter$/i, "")
-      .replace(/adapter$/i, "")
-      .replace(/([a-z])([A-Z])/g, "$1_$2") // camelCase → snake_case
-      .toLowerCase()
+  const limitRaw = Number(
+    (options && typeof options === "object") ? (options.limit ?? options.max ?? 20) : 20
   );
-};
+  const limit = Math.max(1, Math.min(50, Number.isFinite(limitRaw) ? limitRaw : 20));
 
-// ============================================================================
-// DOMAIN / BASE URL MAP — relative URL resolve için kritik
-// ============================================================================
-const DOMAIN_MAP = {
-  trendyol: "trendyol.com",
-  hepsiburada: "hepsiburada.com",
-  n11: "n11.com",
-  amazon_tr: "amazon.com.tr",
+  const offsetRaw = Number(
+    (options && typeof options === "object") ? (options.offset ?? 0) : 0
+  );
+  const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
 
-  cimri: "cimri.com",
-  akakce: "akakce.com",
-  pttavm: "pttavm.com",
+  const provider = "admitad";
 
-  teknosa: "teknosa.com",
-  vatan: "vatanbilgisayar.com",
-  mediamarkt: "mediamarkt.com.tr",
+  // Optional catalog filters (useful when switching from demo feeds to TR-only)
+  const currencyFilter = CATALOG_CURRENCY;
+  const fallbackCurrency = CATALOG_DEFAULT_CURRENCY;
+  const campaignAllow = CATALOG_CAMPAIGN_ALLOWLIST;
 
-  hepsiburada_tech: "hepsiburada.com",
-  hepsiburada_home: "hepsiburada.com",
-  hepsiburada_market: "hepsiburada.com",
+  // Primary: catalog_items (new pipeline)
+  try {
+    const db = await getDb();
+    const colName = kitSafeStr(process.env.CATALOG_COLLECTION) || "catalog_items";
+    const col = db.collection(colName);
 
-  a101: "a101.com.tr",
-  migros: "migros.com.tr",
-  carrefour: "carrefoursa.com",
-  sok: "sokmarket.com.tr",
-  getir_market: "getir.com",
-  getir_carsi: "getir.com",
+    const rx = new RegExp(escapeRegexS200(q), "i");
+    const findQuery = { providerKey: provider, title: rx };
+    if (Array.isArray(campaignAllow) && campaignAllow.length) {
+      findQuery.campaignId = { $in: campaignAllow };
+    }
+    if (currencyFilter) findQuery.currency = currencyFilter;
 
-  boyner: "boyner.com.tr",
-  flo: "flo.com.tr",
-  instreet: "instreet.com.tr",
-  lcw: "lcwaikiki.com",
-  defacto: "defacto.com.tr",
-  koton: "koton.com",
-  mavi: "mavi.com",
-  kigili: "kigili.com",
-  morhipo: "morhipo.com",
+    const docs = await col
+      .find(findQuery)
+      .sort({ updatedAt: -1 })
+      .skip(offset)
+      .limit(limit)
+      .project({
+        _id: 0,
+        providerKey: 1,
+        campaignId: 1,
+        offerId: 1,
+        title: 1,
+        price: 1,
+        oldPrice: 1,
+        currency: 1,
+        image: 1,
+        originUrl: 1,
+        finalUrl: 1,
+        updatedAt: 1,
+        raw: 1,
+      })
+      .toArray();
 
-  rossmann: "rossmann.com.tr",
-  gratis: "gratis.com",
-  watsons: "watsons.com.tr",
+    if (docs && docs.length) {
+      return docs.map((d) => ({
+        id: `${d.providerKey}:${d.campaignId}:${d.offerId}`,
+        title: d.title,
 
-  koctas: "koctas.com.tr",
-  ciceksepeti: "ciceksepeti.com",
-};
+        price: d.price ?? null,
+        oldPrice: d.oldPrice ?? null,
+        currency: d.currency || fallbackCurrency,
 
-const baseUrlFor = (providerKey) => {
-  const pk = canonicalProviderKey(providerKey, "product");
-  const fam = providerFamilyFromKey(pk);
-  const domain = DOMAIN_MAP[pk] || DOMAIN_MAP[fam] || `${fam}.com`;
-  return `https://www.${domain}/`;
-};
+        image: d.image || "",
+        originUrl: d.originUrl || "",
+        finalUrl: d.finalUrl || d.originUrl || "",
+        affiliateUrl: d.finalUrl || d.originUrl || "",
 
-const normalizeMediaUrl = (u, baseUrl) => {
-  const s = kitSafeStr(u);
-  if (!s) return "";
-  if (s.startsWith("//")) return "https:" + s;
-  if (s.startsWith("http://") || s.startsWith("https://")) return s;
-  return normalizeUrlS200(s, baseUrl || "");
-};
+        provider: provider,
+        providerKey: provider,
+        providerFamily: provider,
+
+        campaignId: d.campaignId ?? null,
+        offerId: d.offerId ?? null,
+        updatedAt: d.updatedAt ?? null,
+        raw: d.raw,
+      }));
+    }
+  } catch (e) {
+    // ignore and try legacy
+  }
+
+  // Legacy fallback: admitad_catalog (older deployments)
+  const legacyLimit = Math.max(1, Math.min(200, limit + offset));
+  const legacy = await searchAdmitadLegacyCollection(q, legacyLimit, provider);
+  if (!legacy || !legacy.length) return [];
+
+  return legacy.slice(offset, offset + limit).map((it) => {
+    const originUrl = it?.originUrl || it?.url || it?.finalUrl || "";
+    const finalUrl = it?.finalUrl || it?.affiliateUrl || it?.url || originUrl;
+    return {
+      ...it,
+      provider: provider,
+      providerKey: provider,
+      providerFamily: provider,
+      originUrl,
+      finalUrl,
+      affiliateUrl: finalUrl,
+    };
+  });
+}
 
 // ============================================================================
 // URL helpers — S200 strict (kept)
@@ -154,6 +173,40 @@ const isBadUrl = (u) => isBadUrlS200(u);
 
 const normalizeUrl = (u, baseUrl = "") => {
   return normalizeUrlS200(u, baseUrl || "");
+};
+
+// ============================================================================
+// CATALOG (MONGO) WRAPPER — Admitad feed index
+// - catalogAdapter array döner (biz S200 wrapper’a sokacağız)
+// - affiliateUrl/url garanti doldurulur (buildAffiliateUrl ile drift olmasın)
+// ============================================================================
+const searchCatalogMongo = async (query, options = {}) => {
+  const lim0 =
+    (options && typeof options === "object" && (options.limit ?? options.maxResults)) ??
+    process.env.CATALOG_LIMIT_DEFAULT ??
+    20;
+
+  const limit = Math.max(1, Math.min(50, Number(lim0) || 20));
+
+  const out = await catalogAdapter({
+    q: query,
+    query,
+    limit,
+    ...(options && typeof options === "object" ? options : {}),
+  });
+
+  const arr = Array.isArray(out) ? out : Array.isArray(out?.items) ? out.items : [];
+
+  return arr
+    .filter(Boolean)
+    .map((it) => {
+      const click = it?.affiliateUrl || it?.finalUrl || it?.originUrl || it?.url || null;
+      return {
+        ...it,
+        affiliateUrl: click || it?.affiliateUrl || null,
+        url: it?.url || click || null,
+      };
+    });
 };
 
 // ============================================================================
@@ -277,7 +330,18 @@ export function applyProductRules(item, ctx, rules = PRODUCT_RULES) {
 
   // affiliateUrl
   let affiliateUrl = kitSafeStr(item?.affiliateUrl);
-  if (rules.features.AFFILIATE_INJECT_IF_MISSING && (!affiliateUrl || isBadUrl(affiliateUrl))) {
+
+  // DISCOVERY SOURCE RULE: serpapi sonuçları "discovery" kabul edilir → affiliate inject YOK.
+  const isDiscoverySource =
+    providerFamily === "serpapi" ||
+    providerKey === "serpapi" ||
+    String(providerKey || "").startsWith("serpapi");
+
+  if (
+    !isDiscoverySource &&
+    rules.features.AFFILIATE_INJECT_IF_MISSING &&
+    (!affiliateUrl || isBadUrl(affiliateUrl))
+  ) {
     affiliateUrl = rules.affiliate(providerKey, originUrl);
   }
   affiliateUrl = affiliateUrl && !isBadUrl(affiliateUrl) ? normalizeUrl(affiliateUrl, baseUrl) : null;
@@ -422,11 +486,49 @@ async function safeImport(modulePath, exportName = null) {
   }
 }
 
+
+
+// ============================================================================
+// PROVIDER KEY NORMALIZATION HELPERS (missing in some builds)
+// - canonicalProviderKey(): S9 table normalization + safe fallback
+// - fix(): strict key sanitizer
+// ============================================================================
+function fix(k) {
+  return kitFixKey(k);
+}
+
+function canonicalProviderKey(provider, fallback = "unknown") {
+  const raw = kitSafeStr(provider) || kitSafeStr(fallback) || "unknown";
+  // normalizeProviderKeyS9 already returns a known key or 'unknown'
+  return kitFixKey(normalizeProviderKeyS9(raw));
+}
+
+
+function providerFamilyFromKey(providerKey) {
+  const pk = canonicalProviderKey(providerKey, "product");
+  let fam = (pk.split("_")[0] || pk).trim();
+  fam = kitFixKey(normalizeProviderKeyS9(fam));
+  if (!fam || fam === "unknown" || fam === "null" || fam === "undefined") fam = pk;
+  return fam;
+}
+
+
+function baseUrlFor(providerKey) {
+  try {
+    const meta = getProviderMetaS9(providerKey);
+    const dom = (meta && meta.mainDomain) ? String(meta.mainDomain).trim() : "";
+    if (!dom || dom === "unknown" || dom === "null" || dom === "undefined") return "";
+    if (dom.startsWith("http://") || dom.startsWith("https://")) return dom;
+    return `https://${dom.replace(/^\/+/, "").replace(/\/$/, "")}/`;
+  } catch {
+    return "";
+  }
+}
+
 // ============================================================================
 // S200 WRAPPER — RULE-DRIVEN (kept name/signature)
 // - ✅ returns object { ok, items, count, source, _meta }
 // ============================================================================
-
 function wrapS200(providerKey, fn, timeoutMs = 2600, rules = PRODUCT_RULES) {
   const normalizedProviderKey = rules.features.CANONICAL_PROVIDER_KEY
     ? canonicalProviderKey(providerKey, providerKey)
@@ -579,7 +681,7 @@ const searchPTTAVMAdapter = await safeImport("../pttavmAdapter.js"); // auto-pic
 
 const searchTeknosaAdapter = await safeImport("../teknosaAdapter.js"); // auto-pick
 const searchVatanBilgisayarAdapter = await safeImport("../vatanBilgisayarAdapter.js"); // auto-pick
-const searchMediaMarktAdapter = await safeImport("../mediaMarktAdapter.js"); // auto-pick
+const searchMediaMarktAdapter = await safeImport("../mediamarktAdapter.js"); // auto-pick
 const searchHBTechnologyAdapter = await safeImport("../hepsiburadaTechnologyAdapter.js"); // auto-pick
 
 const searchHBHomeAdapter = await safeImport("../hepsiburadaHomeAdapter.js"); // auto-pick
@@ -609,10 +711,16 @@ const searchWatsonsAdapter = await safeImport("../watsonsAdapter.js"); // auto-p
 const searchKoctasAdapter = await safeImport("../koctasAdapter.js"); // auto-pick
 const searchCicekSepetiAdapter = await safeImport("../ciceksepetiAdapter.js"); // auto-pick
 
+const searchSerpApiAdapter = await safeImport("../serpApi.js", "searchWithSerpApi"); // SerpAPI discovery fallback
+
 // ============================================================================
 // TIMEOUT CONFIG (kept)
 // ============================================================================
 const timeoutConfig = {
+  admitad: 4500,
+  // ✅ Mongo catalog hızlı olmalı (DB + regex)
+  catalog_mongo: 1200,
+
   trendyol: 3500,
   hepsiburada: 3500,
   n11: 3500,
@@ -636,6 +744,8 @@ const timeoutConfig = {
   lcw: 3500,
   defacto: 3500,
 
+  serpapi: 12000,
+
   default: 3500,
 };
 
@@ -645,6 +755,10 @@ const getTimeout = (key) => timeoutConfig[key] || timeoutConfig.default;
 // FİNAL S200 PRODUCT ADAPTER LIST (rule-driven)
 // ============================================================================
 export const productAdapters = [
+  // ✅ EN ÖNCE: gerçek index’li katalog (Admitad feed -> Mongo)
+   wrapS200("admitad", searchAdmitadFeedAdapter, getTimeout("admitad")),
+ // wrapS200("admitad", searchCatalogMongo, getTimeout("catalog_mongo")),
+
   wrapS200("trendyol", searchTrendyolAdapter, getTimeout("trendyol")),
   wrapS200("hepsiburada", searchHepsiburadaAdapter, getTimeout("hepsiburada")),
   wrapS200("n11", searchN11Adapter, getTimeout("n11")),
@@ -685,6 +799,7 @@ export const productAdapters = [
 
   wrapS200("koctas", searchKoctasAdapter),
   wrapS200("ciceksepeti", searchCicekSepetiAdapter),
+  wrapS200("serpapi", searchSerpApiAdapter, getTimeout("serpapi")),
 ];
 
 // ============================================================================
@@ -703,7 +818,8 @@ export function getProductAdaptersByCategory(category) {
     all: productAdapters.map((a) => a.providerKey),
   };
 
-  const providerKeys = categoryMap[cat] || categoryMap.all;
+  // ✅ Admitad catalog her kategoride aktif + serpapi fallback kalsın
+  const providerKeys = Array.from(new Set([...(categoryMap[cat] || categoryMap.all), "serpapi", "admitad"]));
   return productAdapters.filter((adapter) => providerKeys.includes(adapter.providerKey));
 }
 
@@ -749,7 +865,8 @@ export const productAdapterStats = {
 export async function testProductAdapterCompatibility() {
   console.log("🧪 Product Adapter Motor Uyumluluk Testi (S200 / RULE-DRIVEN)\n");
 
-  const testAdapter = productAdapters[0];
+  // ✅ catalog/admitad genelde TR query’de 0 dönebilir; test için ilk “normal” adapter’ı seç
+  const testAdapter = productAdapters.find((a) => a?.providerKey && a.providerKey !== "admitad") || productAdapters[0];
   const testQuery = "iphone 15";
 
   try {

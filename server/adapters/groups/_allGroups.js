@@ -372,6 +372,7 @@ async function resolveProductAdapters() {
     { key: "n11", spec: "../n11Adapter.js", prefer: ["searchN11Adapter"] },
     { key: "amazon", spec: "../amazonAdapter.js", prefer: ["searchAmazonAdapter"] },
     { key: "a101", spec: "../a101Adapter.js", prefer: ["searchA101Adapter"] },
+    { key: "serpapi", spec: "../serpApi.js", prefer: ["searchWithSerpApi"] },
   ];
 
   const out = [];

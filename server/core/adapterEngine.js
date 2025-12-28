@@ -2460,21 +2460,35 @@ const priceCtx = {
         const resolvedProvider = resolveProviderFromUrlS9(
           item.finalUrl || item.url
         );
-        let normalizedProvider = "unknown";
-try {
-  normalizedProvider = normalizeProviderKeyS9(item?.provider || "unknown");
-} catch {}
 
+        // ✅ Provider canonicalization:
+        // - Prefer explicit providerKey/providerFamily/provider coming from S200 adapters
+        // - Never downgrade a known adapter hint (e.g. admitad) to "unknown" just because master list doesn't include it
+        let normalizedProvider = "unknown";
+        try {
+          normalizedProvider = normalizeProviderS9(
+            item?.providerKey || item?.providerFamily || item?.provider || "unknown"
+          );
+        } catch {}
 
         let finalProv =
           resolvedProvider !== "unknown" ? resolvedProvider : normalizedProvider;
 
         if ((!finalProv || finalProv === "unknown") && providerKeyHint) {
-          const pk = normalizeProviderKeyS9(providerKeyHint);
+          let pk = "unknown";
+          try {
+            pk = normalizeProviderS9(providerKeyHint);
+          } catch {}
           if (pk && pk !== "unknown") finalProv = pk;
+          else {
+            const rawHint = String(providerKeyHint || "").toLowerCase().trim();
+            if (rawHint && rawHint !== "unknown") finalProv = rawHint;
+          }
         }
 
         item.provider = finalProv || "unknown";
+        if (!item.providerKey) item.providerKey = item.provider;
+        if (!item.providerFamily) item.providerFamily = item.provider;
 
         // ✅ Affiliate + URL pipeline (deterministic):
         // - originUrl: raw/original link (identity / debug)

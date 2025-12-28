@@ -19,8 +19,37 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
+import { getDb } from "../db.js";
 
 const router = express.Router();
+
+// Express 4: async handler rejection -> unhandled. Wrap to keep server alive.
+const safeRoute = (fn) => async (req, res, next) => {
+  try {
+    await Promise.resolve(fn(req, res));
+  } catch (e) {
+    console.error("SEARCH_ROUTE_FATAL", e);
+    if (!res.headersSent) {
+      res.status(200).json({
+        ok: true,
+        ts: nowIso(),
+        q: safeStr(req?.query?.q) || "",
+        group: safeStr(req?.query?.group) || "",
+        results: [],
+        items: [],
+        count: 0,
+        total: 0,
+        nextOffset: 0,
+        hasMore: false,
+        cards: [],
+        _meta: { fatal: true, error: safeStr(e?.message || e) },
+      });
+    } else {
+      next?.(e);
+    }
+  }
+};
+
 
 // ---------------------------------------------------------------------------
 // Config
@@ -81,6 +110,25 @@ function safeStr(v) {
 function toInt(v, fallback) {
   const n = Number.parseInt(String(v), 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function safeInt(v, fallback = 0) {
+  return toInt(v, fallback);
+}
+
+function clampInt(v, fallback, min = 1, max = 100) {
+  const n = toInt(v, fallback);
+  return Math.min(max, Math.max(min, n));
+}
+
+function parseList(v) {
+  if (Array.isArray(v)) return v.map(safeStr).filter(Boolean);
+  const s = safeStr(v);
+  if (!s) return [];
+  return s
+    .split(/[;,\s]+/g)
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
 }
 
 function nowIso() {
@@ -149,6 +197,186 @@ function normQForMatch(q) {
     .replace(/[îìíï]/g, "i")
     .replace(/[ûùúü]/g, "u");
   return folded.replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function escapeRegExp(s) {
+  return safeStr(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ---------------------------------------------------------------------------
+// Catalog fallback (feed-based)
+// - /api/search (group=product) will also query MongoDB catalog_items so we see
+//   real products immediately after a feed ingest, even if live adapters return 0.
+// - Controlled by env: SEARCH_INCLUDE_CATALOG (default: 1, set 0 to disable).
+// - Optional query param: currency=TRY (or env SEARCH_CATALOG_CURRENCY=TRY)
+// ---------------------------------------------------------------------------
+async function fetchCatalogFallback({ q, limit, engineLimit, currency }) {
+  const query = safeStr(q).trim();
+  if (!query) {
+    return { items: [], meta: { ok: true, used: false, reason: "empty_q" } };
+  }
+
+  const take = Math.min(Math.max(1, safeInt(limit, 20)), 200);
+  const capA = take * 6;
+  const capB = Math.max(50, safeInt(engineLimit, 10) * 10);
+  const cap = Math.min(Math.max(capA, take), capB, 600);
+
+  const t0 = Date.now();
+  try {
+    // getDb() is async (Mongo driver connect + db select)
+    // If we don't await here, db is a Promise -> db.collection is not a function
+    const db = await getDb();
+    // Prefer CATALOG_COLLECTION; keep FEED_COLLECTION for backward compat
+    const colName =
+      safeStr(process.env.CATALOG_COLLECTION) ||
+      safeStr(process.env.FEED_COLLECTION) ||
+      "catalog_items";
+    const col = db.collection(colName);
+
+    const tokens = query
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 2)
+      .slice(0, 6);
+
+    const and = tokens.map((t) => ({
+      title: { $regex: escapeRegExp(t), $options: "i" },
+    }));
+
+    const filter = and.length
+      ? { $and: and }
+      : { title: { $regex: escapeRegExp(query), $options: "i" } };
+
+    const cur = safeStr(currency).trim().toUpperCase();
+    if (cur) filter.currency = cur;
+
+    const docs = await col
+      .find(filter, {
+        projection: {
+          _id: 1,
+          providerKey: 1,
+          providerName: 1,
+          campaignId: 1,
+          offerId: 1,
+          title: 1,
+          price: 1,
+          finalPrice: 1,
+          currency: 1,
+          image: 1,
+          finalUrl: 1,
+          originUrl: 1,
+          updatedAt: 1,
+        },
+      })
+      .sort({ finalPrice: 1, price: 1, updatedAt: -1 })
+      .limit(cap)
+      .toArray();
+
+    const items = docs
+      .map((d) => {
+        const providerKey = safeStr(d.providerKey) || "catalog";
+        const campaignId = safeInt(d.campaignId, 0);
+        const offerId = safeStr(d.offerId) || safeStr(d._id);
+        const title = safeStr(d.title);
+        const url = safeStr(d.finalUrl) || safeStr(d.originUrl);
+        if (!title || !url) return null;
+
+        const p = Number.isFinite(d.price) ? d.price : safeInt(d.price, 0);
+        const fp = Number.isFinite(d.finalPrice)
+          ? d.finalPrice
+          : safeInt(d.finalPrice, 0);
+
+        return {
+          id: `${providerKey}:${campaignId}:${offerId}`,
+          provider: providerKey,
+          providerKey,
+          title,
+          price: p,
+          finalPrice: fp,
+          currency: safeStr(d.currency),
+          image: safeStr(d.image),
+          finalUrl: safeStr(d.finalUrl) || url,
+          originUrl: safeStr(d.originUrl) || url,
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      items,
+      meta: {
+        ok: true,
+        used: true,
+        count: items.length,
+        ms: Date.now() - t0,
+        collection: colName,
+        currency: cur,
+      },
+    };
+  } catch (e) {
+    return {
+      items: [],
+      meta: {
+        ok: false,
+        used: true,
+        count: 0,
+        ms: Date.now() - t0,
+        error: safeStr(e?.message || e),
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Result normalization (DRIFT-SAFE)
+// - provider/providerKey may be missing (or "unknown") depending on engine branch
+// - url may be missing while finalUrl/originUrl exists
+// - we normalize here so API contract stays stable
+// ---------------------------------------------------------------------------
+function inferProviderKeyFromId(id) {
+  const s = safeStr(id);
+  const m = s.match(/^([a-z0-9_\-]+):/i);
+  return m?.[1] ? safeStr(m[1]).toLowerCase() : "";
+}
+
+function normalizeProviderKeyLoose(k) {
+  const s = safeStr(k).toLowerCase();
+  if (!s) return "";
+  if (s === "unknown" || s === "unknown_provider" || s === "unknownprovider") return "";
+  return s;
+}
+
+function normalizeSearchItem(it) {
+  const obj = it && typeof it === "object" ? it : {};
+
+  const providerKey =
+    normalizeProviderKeyLoose(obj.providerKey) ||
+    normalizeProviderKeyLoose(obj.provider) ||
+    normalizeProviderKeyLoose(obj.networkKey) ||
+    normalizeProviderKeyLoose(obj.sourceProvider) ||
+    normalizeProviderKeyLoose(inferProviderKeyFromId(obj.id)) ||
+    (Number.isFinite(obj.campaignId) ? "admitad" : "");
+
+  // URL: prefer explicit url, otherwise fall back to affiliate/final links.
+  const url =
+    safeStr(obj.url) ||
+    safeStr(obj.finalUrl) ||
+    safeStr(obj.originUrl) ||
+    safeStr(obj.deeplink) ||
+    safeStr(obj.link);
+
+  const provider =
+    normalizeProviderKeyLoose(obj.provider) ||
+    providerKey ||
+    "unknown";
+
+  return {
+    ...obj,
+    providerKey: providerKey || "unknown",
+    provider,
+    url: url || obj.url || "",
+    finalUrl: safeStr(obj.finalUrl) || url || "",
+    originUrl: safeStr(obj.originUrl) || url || "",
+  };
 }
 
 function keywordOverride(qNorm) {
@@ -464,6 +692,13 @@ async function callRunAdapters(runAdapters, q, group, region, opts) {
 // ---------------------------------------------------------------------------
 async function handle(req, res) {
   const reqId = mkReqId();
+
+  // Prevent any proxy/browser caching from causing limit/offset confusion
+  try {
+    res.set("Cache-Control", "no-store");
+    res.set("X-FAE-ReqId", reqId);
+  } catch {}
+
   const t0 = Date.now();
 
   const qRaw = safeStr(req.method === "POST" ? req.body?.q : req.query?.q);
@@ -477,15 +712,41 @@ async function handle(req, res) {
       (req.method === "POST" ? req.body?.region : req.query?.region) ||
         REGION_DEFAULT
     ) || REGION_DEFAULT;
+  const currencyParam = safeStr(req.method === "POST" ? req.body?.currency : req.query?.currency);
 
-  const limit = Math.min(
-    100,
-    Math.max(1, toInt(req.method === "POST" ? req.body?.limit : req.query?.limit, 20))
+  // Provider filter (request-level OR env allowlist)
+  const providerIn = req.method === "POST"
+    ? (req.body?.provider ?? req.body?.providers)
+    : (req.query?.provider ?? req.query?.providers);
+
+  const requestedProviders = parseList(providerIn)
+    .map((s) => String(s).trim().toLowerCase())
+    .filter(Boolean);
+
+  const envProviderAllow = parseList(process.env.FINDALLEASY_SEARCH_PROVIDER_ALLOWLIST)
+    .map((s) => String(s).trim().toLowerCase())
+    .filter(Boolean);
+
+  const providerAllow = requestedProviders.length
+    ? requestedProviders
+    : (envProviderAllow.length ? envProviderAllow : null);
+
+  // NOTE: Engine branches drift on paging. We enforce paging at the route layer so
+  // /api/search never lies.
+  const reqLimit = clampInt(
+    req.method === "POST" ? req.body?.limit : req.query?.limit,
+    20,
+    1,
+    100
   );
-  const offset = Math.max(
+  const reqOffset = Math.max(
     0,
     toInt(req.method === "POST" ? req.body?.offset : req.query?.offset, 0)
   );
+
+  // Ask the engine for "at least enough" to slice reliably.
+  // (If engine ignores limit, we still slice; if it respects limit, we asked for more.)
+  const engineLimit = clampInt(reqLimit + reqOffset, reqLimit, 1, 200);
 
   const requestedGroupRaw = groupIn || "auto";
 
@@ -553,6 +814,85 @@ async function handle(req, res) {
 
   if (!resolvedGroup) resolvedGroup = DEFAULT_GROUP;
 
+  // ---------------------------------------------------------------------------
+  // PRODUCT MODE: catalog-only (default) / catalog-first / adapters-first
+  // - Merchant onayı gelene kadar: catalog-only (adapter scrape yok)
+  //   SEARCH_PRODUCT_MODE=adapters_first  -> eski davranış
+  //   SEARCH_PRODUCT_MODE=catalog_first   -> önce catalog, sonra adapter
+  // ---------------------------------------------------------------------------
+  const requestedGroupParam = safeStr(req.query.group || "").toLowerCase();
+  const isProductRequest = requestedGroupParam === "product" || resolvedGroup === "product";
+  const productMode = String(process.env.SEARCH_PRODUCT_MODE || "catalog_only").toLowerCase();
+
+  if (isProductRequest && productMode === "catalog_only") {
+    try {
+      // IMPORTANT: keep a stable timestamp for this request branch.
+      // (Previously this referenced an undefined `ts` and crashed catalog_only,
+      //  forcing a fall-through into adapters.)
+      const ts = nowIso();
+
+      const catProviderKey = safeStr(process.env.CATALOG_PROVIDER_KEY || process.env.FEED_PROVIDER_KEY || "admitad");
+      const catCampaignId = safeInt(process.env.CATALOG_CAMPAIGN_ID, 0);
+      const catCurrency = safeStr(process.env.CATALOG_CURRENCY || process.env.FEED_DEFAULT_CURRENCY || "");
+      const cat = await fetchCatalogFallback({
+        q,
+        limit: reqLimit,
+        offset: reqOffset,
+        providerKey: catProviderKey,
+        campaignId: catCampaignId,
+        currency: catCurrency,
+      });
+      const items = Array.isArray(cat?.items) ? cat.items : [];
+
+      const payload = {
+        type: "search",
+        ts,
+        reqId,
+        q,
+        requestedGroup: requestedGroupRaw,
+        resolvedGroup: "product",
+        mode: "catalog_only",
+        count: items.length,
+        total: safeInt(cat?.total, items.length),
+      };
+      appendJsonl(INTENT_LOG_PATH, payload);
+      emitTelemetry("intent.search.catalog_only", payload, req);
+
+      return res.status(200).json({
+        ok: true,
+        reqId,
+        ts,
+        q,
+        group: "product",
+        usedGroup: "product",
+        intent: safeStr(autoMeta?.intent) || safeStr(autoMeta?.category) || "product",
+        results: items,
+        items,
+        count: items.length,
+        total: safeInt(cat?.total, items.length),
+        nextOffset: safeInt(cat?.nextOffset, 0),
+        hasMore: Boolean(cat?.hasMore),
+        cards: [],
+        _meta: {
+          engineVariant: "CATALOG_ONLY",
+          providerKey: catProviderKey,
+          campaignId: catCampaignId,
+          currency: catCurrency || null,
+          offset: reqOffset,
+          limit: reqLimit,
+          ms: Date.now() - t0,
+          // fetchCatalogFallback returns { items, meta }, not { _meta }.
+          catalog: cat?.meta || cat?._meta || null,
+          ...(autoMeta ? { auto: autoMeta } : {}),
+        },
+      });
+    } catch (e) {
+      const msg = safeStr(e?.message || e);
+      console.warn(`[${reqId}] catalog_only failed -> adapters`, msg);
+      // fall through to adapter engine
+    }
+  }
+
   // Run adapters
   if (typeof engine?.runAdapters !== "function") {
     const payload = {
@@ -597,9 +937,12 @@ async function handle(req, res) {
 
   try {
     upstream = await callRunAdapters(engine.runAdapters, q, resolvedGroup, region, {
-      limit,
-      offset,
+      limit: engineLimit,
+      offset: 0,
       region,
+      // keep original request in meta for debugging / telemetry
+      reqLimit,
+      reqOffset,
     });
     upstreamOk = upstream?.ok !== false; // treat undefined as ok
     upstreamMeta = upstream?._meta || null;
@@ -609,14 +952,96 @@ async function handle(req, res) {
     upstream = { ok: false, items: [], count: 0, source: resolvedGroup, _meta: upstreamMeta };
   }
 
-  const items = Array.isArray(upstream?.items) ? upstream.items : [];
-  const count = Number.isFinite(upstream?.count) ? upstream.count : items.length;
+  const rawItems0 = Array.isArray(upstream?.items)
+    ? upstream.items
+    : Array.isArray(upstream?.results)
+      ? upstream.results
+      : [];
 
-  // Cards (placeholder)
+  // -----------------------------------------------------------------------
+  // FEED CATALOG FALLBACK (MongoDB)
+  // - /api/catalog/search already works, but the main /api/search (product)
+  //   should also return results from the ingested feed so the UI is alive.
+  // - Disable with SEARCH_INCLUDE_CATALOG=0
+  // -----------------------------------------------------------------------
+  let rawItems = rawItems0;
+  let catalogMeta = null;
+
+  const includeCatalog =
+    resolvedGroup === "product" &&
+    String(process.env.SEARCH_INCLUDE_CATALOG ?? "1") !== "0";
+
+  if (includeCatalog) {
+    const curHint = safeStr(currencyParam || process.env.SEARCH_CATALOG_CURRENCY || "");
+    // NOTE: "limit" is not a symbol in this scope. Use reqLimit (validated above).
+    // This prevents: ReferenceError: limit is not defined
+    const cat = await fetchCatalogFallback({
+      q,
+      limit: reqLimit,
+      engineLimit,
+      currency: curHint,
+    });
+    if (cat?.items?.length) rawItems = rawItems0.concat(cat.items);
+    catalogMeta = cat?.meta || null;
+  }
+
+  const normalizedItems = rawItems
+    .map(normalizeSearchItem)
+    .filter(Boolean);
+
+  const filteredItems = providerAllow
+    ? normalizedItems.filter((it) => {
+        const pk = String(it?.providerKey || it?.provider || "").toLowerCase();
+        if (pk && providerAllow.includes(pk)) return true;
+        const idp = String(it?.id || "").toLowerCase();
+        return providerAllow.some((p) => idp.startsWith(p + ':'));
+      })
+    : normalizedItems;
+
+  const total = filteredItems.length;
+  const items = filteredItems.slice(reqOffset, reqOffset + reqLimit);
+  const count = items.length;
+
+  const candidateSource = filteredItems;
+
+  // Cards — ONLY "best" is active (Smart/Others are parked for future)
+  const pickPrice = (it) => {
+    const v = it?.optimizedPrice ?? it?.finalPrice ?? it?.price;
+    const n = typeof v === "number" ? v : Number(String(v ?? "").replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  const trustOf = (it) => {
+    const t = it?.commissionMeta?.providerTrust ?? it?.providerTrust ?? null;
+    return typeof t === "number" && Number.isFinite(t) ? t : null;
+  };
+
+  const candidates = candidateSource.filter((it) => {
+    const p = pickPrice(it);
+    return !!it?.title && !!it?.url && p != null;
+  });
+
+  const trusted = candidates.filter((it) => {
+    const t = trustOf(it);
+    return t == null ? true : t >= 0.45;
+  });
+
+  const pool = trusted.length ? trusted : candidates;
+  const best = pool.reduce((acc, cur) => {
+    if (!acc) return cur;
+    const ap = pickPrice(acc);
+    const cp = pickPrice(cur);
+    return ap == null ? cur : cp == null ? acc : cp < ap ? cur : acc;
+  }, null);
+
   const cards = [
-    { title: "En uygun & güvenilir", desc: "Öneriler hazırlanıyor...", cta: "Tıkla", region: "TR" },
-    { title: "Konumuna göre öneri", desc: "", cta: "Tıkla", region: "TR" },
-    { title: "Diğer satıcılar", desc: "Karşılaştırmalı alternatifler", cta: "Tıkla", region: "TR" },
+    {
+      key: "best",
+      title: "En uygun & güvenilir",
+      desc: best ? String(best.title || "") : "Öneriler hazırlanıyor...",
+      cta: "Tıkla",
+      region: String(region || "TR"),
+    },
   ];
 
   // Telemetry log (only AUTO by default)
@@ -658,8 +1083,8 @@ async function handle(req, res) {
       overrideKeyword: autoMeta.overrideKeyword,
       correctedByOverride,
 
-      limit,
-      offset,
+      limit: reqLimit,
+      offset: reqOffset,
       region,
       upstreamOk,
       upstream: {
@@ -689,9 +1114,9 @@ async function handle(req, res) {
     results: items,
     items,
     count,
-    total: count,
-    nextOffset: offset + count,
-    hasMore: false,
+    total,
+    nextOffset: reqOffset + count,
+    hasMore: reqOffset + count < total,
     cards,
     _meta: {
       reqId,
@@ -703,9 +1128,17 @@ async function handle(req, res) {
       engine: "../core/adapterEngine.js",
       exports: Object.keys(engine || {}),
       source: resolvedGroup,
-      rawCount: items.length,
+      limit: reqLimit,
+      offset: reqOffset,
+      engineLimit,
+      upstreamCount: rawItems0.length,
+      rawCount: normalizedItems.length,
+      filteredCount: total,
+      returnedCount: count,
+      ...(providerAllow ? { providerAllow } : {}),
       upstreamOk,
       upstreamMeta,
+      ...(catalogMeta ? { catalog: catalogMeta, catalogCount: safeInt(catalogMeta.count, 0) } : {}),
       ...(usedAuto ? { auto: autoMeta } : {}),
       ...(typo?.fixed ? { qOriginal: qRaw, typoFix: typo.changes } : {}),
     },
@@ -773,8 +1206,8 @@ async function feedback(req, res) {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
-router.get("/", handle);
-router.post("/", handle);
+router.get("/", safeRoute(handle));
+router.post("/", safeRoute(handle));
 
 // health check
 router.get("/health", (req, res) => {

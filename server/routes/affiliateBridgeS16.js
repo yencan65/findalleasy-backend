@@ -239,8 +239,13 @@ async function waitForDbReady(ms = 8000) {
   const start = Date.now();
   while (Date.now() - start < ms) {
     try {
-      const d = getDb();
-      if (d) return true;
+      // getDb() is async; we must await to avoid returning a Promise (false-positive "ready")
+      const d = await getDb();
+      // Hard readiness: ping the server so postbacks don't silently vanish.
+      if (d && typeof d.command === "function") {
+        await d.command({ ping: 1 });
+      }
+      return true;
     } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }

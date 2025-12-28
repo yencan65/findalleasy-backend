@@ -949,13 +949,21 @@ async function handleVitrinCore(req, res) {
     }
     const cacheKey = `vitrine:${regionSafe}:${userId}:${b64}`;
 
+    // ✅ Cache'ten sadece DOLU sonuç dön (boş cache 5dk kilitler)
     try {
       const cached = await getCachedResult(cacheKey);
       const cachedPayload = cached?.data || cached;
-      if (cachedPayload && typeof cachedPayload === "object") {
+
+      const maybeCount =
+        (typeof cachedPayload?.count === "number" ? cachedPayload.count : null) ??
+        (Array.isArray(cachedPayload?.items) ? cachedPayload.items.length : 0) ??
+        (Array.isArray(cachedPayload?.best_list) ? cachedPayload.best_list.length : 0);
+
+      if (cachedPayload && typeof cachedPayload === "object" && maybeCount > 0) {
         const outCached = toBestOnlyPayload(cachedPayload, qSafe);
         return safeJson(res, outCached);
       }
+      // else: boş cache'i yok say → engine/fallback aşağıda çalışsın
     } catch {}
 
     // Mongo preferred
@@ -1118,9 +1126,11 @@ async function handleVitrinCore(req, res) {
       } catch {}
 
       const out = toBestOnlyPayload(selected, qSafe);
-      try {
-        await setCachedResult(cacheKey, out, 120);
-      } catch {}
+      if ((out?.count || 0) > 0) {
+        try {
+          await setCachedResult(cacheKey, out, 120);
+        } catch {}
+      }
       return safeJson(res, out);
     }
 
@@ -1150,9 +1160,11 @@ async function handleVitrinCore(req, res) {
     }
 
     const out = toBestOnlyPayload(selected, qSafe);
-    try {
-      await setCachedResult(cacheKey, out, 300);
-    } catch {}
+    if ((out?.count || 0) > 0) {
+      try {
+        await setCachedResult(cacheKey, out, 300);
+      } catch {}
+    }
     return safeJson(res, out);
   } catch (err) {
     const body = getBodyObject(req);

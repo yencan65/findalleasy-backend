@@ -35,6 +35,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // LEARNING
 import { syncLearningToMongo } from "./server/core/learningSync.js";
 import searchRouter from "./server/routes/search.js";
+import catalogRouter from "./server/routes/catalog.js";
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -421,6 +423,8 @@ app.post("/api/search", async (req, res) => {
 });
 
 app.use("/api/search", searchRouter);
+app.use("/api/catalog", catalogRouter);
+
 
 // Mark as mounted for inline route guard
 getRouteRegistry(app).mounted.add("/api/search");
