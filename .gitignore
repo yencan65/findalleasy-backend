@@ -1,22 +1,11 @@
-﻿# dependencies
-node_modules/
-
-# env
+﻿node_modules/
 .env
 .env.*
-!.env.example
-
-# logs / debug
-brain_logs/
-*.log
+.DS_Store
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# local big artifacts
-feed.csv
-sample.bin
-server.zip
-
-# misc
-.DS_Store
+pnpm-debug.log*
+dist/
+build/
+.coverage/
