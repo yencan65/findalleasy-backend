@@ -36,7 +36,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { syncLearningToMongo } from "./server/core/learningSync.js";
 import searchRouter from "./server/routes/search.js";
 import catalogRouter from "./server/routes/catalog.js";
-
+import cspRouter from "./server/routes/csp.js";
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -424,7 +424,7 @@ app.post("/api/search", async (req, res) => {
 
 app.use("/api/search", searchRouter);
 app.use("/api/catalog", catalogRouter);
-
+app.use("/api/csp", cspRouter);
 
 // Mark as mounted for inline route guard
 getRouteRegistry(app).mounted.add("/api/search");
