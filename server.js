@@ -1,3 +1,5 @@
+// server.js (S35+ hardened, single-file)
+
 import "dotenv/config";
 import bcrypt from "bcryptjs";
 
@@ -17,10 +19,10 @@ import { createServer } from "http";
 // WS + Metrics
 import { createTelemetryWSS } from "./server/ws/telemetryWS.js";
 import { getMetrics } from "./server/utils/metrics.js";
+
 // Affiliate contracts (startup validation)
 import { validateAffiliateContracts } from "./server/core/affiliateContracts.validate.js";
 import { PROVIDER_CONFIG } from "./server/core/providerConfig.js";
-
 
 // MODELLER
 import Profile from "./server/models/Profile.js";
@@ -37,6 +39,7 @@ import { syncLearningToMongo } from "./server/core/learningSync.js";
 import searchRouter from "./server/routes/search.js";
 import catalogRouter from "./server/routes/catalog.js";
 import cspRouter from "./server/routes/csp.js";
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -52,9 +55,6 @@ function fail(res, status = 400, data = {}) {
 
 // =============================================================================
 // Frontend static hosting (OPTIONAL)
-// - If a Vite/React build exists, serve it from the same Node server
-// - Ensures /privacy, /cookies, /affiliate-disclosure etc don't 404 on refresh
-// - NO-OP if dist folder not found
 // =============================================================================
 function resolveFrontendDist() {
   const fromEnv = String(process.env.FINDALLEASY_FRONTEND_DIST || "").trim();
@@ -80,7 +80,9 @@ function resolveFrontendDist() {
 function mountFrontend(appInstance) {
   const found = resolveFrontendDist();
   if (!found) {
-    console.log("ℹ️ Frontend dist not found (skipping static host). Set FINDALLEASY_FRONTEND_DIST to enable.");
+    console.log(
+      "ℹ️ Frontend dist not found (skipping static host). Set FINDALLEASY_FRONTEND_DIST to enable."
+    );
     return;
   }
 
@@ -88,7 +90,6 @@ function mountFrontend(appInstance) {
   const indexHtml = found.index;
   console.log("✅ Frontend static host enabled:", distDir);
 
-  // Static assets
   appInstance.use(
     express.static(distDir, {
       index: false,
@@ -127,13 +128,15 @@ process.on("uncaughtException", (err) => {
 const app = express();
 app.set("trust proxy", 1);
 
-
-
 // ============================================================================
-//  BUILD STAMP (S35) — "hangi commit canlı?" kanıtı
-//  Not: Render/Cloudflare debug için her response'a basılır.
+//  BUILD STAMP (S35)
 // ============================================================================
-const FAE_BUILD = process.env.FAE_BUILD || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "manual";
+const FAE_BUILD =
+  process.env.FAE_BUILD ||
+  process.env.RENDER_GIT_COMMIT ||
+  process.env.GIT_COMMIT ||
+  "manual";
+
 app.use((req, res, next) => {
   try {
     res.setHeader("x-fae-build", String(FAE_BUILD).slice(0, 12));
@@ -156,11 +159,17 @@ const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGIN || "http://localhost:5173"
 // Affiliate contracts validation (FAIL FAST)
 // =============================================================================
 const __AFF_CONTRACT_STRICT =
-  (process.env.AFF_CONTRACT_STRICT ?? (process.env.NODE_ENV === "production" ? "1" : "0")) === "1";
+  (process.env.AFF_CONTRACT_STRICT ??
+    (process.env.NODE_ENV === "production" ? "1" : "0")) === "1";
 
 try {
-  const __providers = Array.isArray(PROVIDER_CONFIG) ? PROVIDER_CONFIG : Object.values(PROVIDER_CONFIG || {});
-  const r = validateAffiliateContracts({ providers: __providers, strict: __AFF_CONTRACT_STRICT });
+  const __providers = Array.isArray(PROVIDER_CONFIG)
+    ? PROVIDER_CONFIG
+    : Object.values(PROVIDER_CONFIG || {});
+  const r = validateAffiliateContracts({
+    providers: __providers,
+    strict: __AFF_CONTRACT_STRICT,
+  });
   console.log("✅ Affiliate contracts validated:", r);
 } catch (e) {
   console.error("🚨 Affiliate contracts validation failed:", e?.message || e);
@@ -174,8 +183,8 @@ function getRouteRegistry(appInstance) {
   if (!appInstance?.locals) return { mounted: new Set(), missing: new Set() };
   if (!appInstance.locals.__faeRouteRegistry) {
     appInstance.locals.__faeRouteRegistry = {
-      mounted: new Set(), // prefixes mounted via app.use("/api/xyz", router)
-      missing: new Set(), // prefixes we wanted but couldn't load
+      mounted: new Set(),
+      missing: new Set(),
     };
   }
   return appInstance.locals.__faeRouteRegistry;
@@ -228,14 +237,14 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) return callback(null, true);
 
     console.warn("🚫 CORS REDDEDİLDİ:", origin);
-    // deny silently (browser will block)
     return callback(null, false);
   },
   credentials: true,
 };
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+// Express 5 uyumu: "*" yerine regex kullan
+app.options(/.*/, cors(corsOptions));
 
 // =============================================================================
 // Middleware
@@ -244,9 +253,7 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(bodyParser.json({ limit: "15mb" }));
 
 // ============================================================================
-//  JSON PARSE SHIELD (S34) — body-parser bazen 400 HTML basar (FE'yi öldürür)
-//  Amaç: JSON parse hatasında request'i düşürme; body'yi {} yapıp route'a devam.
-//  ZERO DELETE: mevcut davranışları kırmaz, sadece 400 yerine kontrollü akış.
+// JSON PARSE SHIELD (S34)
 // ============================================================================
 app.use((err, req, res, next) => {
   try {
@@ -260,22 +267,22 @@ app.use((err, req, res, next) => {
         String(err.message || "").toLowerCase().includes("unexpected token"));
 
     if (isJson && isParseErr) {
-      req.body = (req.body && typeof req.body === "object") ? req.body : {};
+      req.body = req.body && typeof req.body === "object" ? req.body : {};
       req.__jsonParseError = true;
-      // Not: response dönmüyoruz; route kendi fallback'ini çalıştırabilir.
       return next();
     }
   } catch {}
   return next(err);
 });
 
-
+// ============================================================================
 // ✅ CANONICAL SEARCH: FE hem {query} hem {q} gönderebilir. 400 yok.
-// Not: Bunu app.use("/api/search", searchRouter) ÜSTÜNE koy ki önce bu yakalasın.
+// ============================================================================
+globalThis.__FAE_CANONICAL_SEARCH = true;
+
 app.post("/api/search", async (req, res) => {
   const reply = (payload) => res.status(200).json(payload);
 
-  // Basit TR mojibake tamiri (PowerShell/charset kazaları)
   const fixMojibakeTR = (s) => {
     const str = String(s || "");
     if (!str) return "";
@@ -304,7 +311,6 @@ app.post("/api/search", async (req, res) => {
     const limit = Number.isFinite(limitN) ? limitN : 20;
     const offset = Number.isFinite(offsetN) ? offsetN : 0;
 
-    // Frontend res.ok kırılmasın: 200 dön, ok:false ile "observable fail" yap.
     if (!query) {
       return reply({
         ok: false,
@@ -324,7 +330,6 @@ app.post("/api/search", async (req, res) => {
       });
     }
 
-    // Engine'i lazy import (module cache’lenir)
     let eng = null;
     try {
       eng = await import("./server/core/adapterEngine.js");
@@ -348,11 +353,9 @@ app.post("/api/search", async (req, res) => {
     }
 
     let raw = null;
-
-    // Çeşitli imzalara tolerans: (q, category, opts) veya (q, opts)
     try {
       raw = await eng.runAdapters(query, category, { limit, offset, region, locale });
-    } catch (e1) {
+    } catch (_e1) {
       try {
         raw = await eng.runAdapters(query, { limit, offset, region, locale, category });
       } catch (e2) {
@@ -378,8 +381,8 @@ app.post("/api/search", async (req, res) => {
     const items = Array.isArray(raw?.items)
       ? raw.items
       : Array.isArray(raw?.results)
-        ? raw.results
-        : [];
+      ? raw.results
+      : [];
 
     const total = Number(raw?.total ?? raw?.count ?? items.length);
     const count = items.length;
@@ -428,6 +431,7 @@ app.use("/api/csp", cspRouter);
 
 // Mark as mounted for inline route guard
 getRouteRegistry(app).mounted.add("/api/search");
+
 // =============================================================================
 // Dynamic auto-loader (optional)
 // =============================================================================
@@ -445,7 +449,6 @@ export async function loadRouteModules(appInstance) {
       const routeName = file.replace(".js", "");
       const prefix = `/api/${routeName}`;
 
-      // NO DRIFT: skip if already mounted explicitly
       if (reg.mounted.has(prefix)) continue;
 
       const routePath = path.join(routesDir, file);
@@ -542,12 +545,10 @@ async function registerRouterRoutes(appInstance) {
     return null;
   }
 
-  // ---- ROUTES (CANONICAL) ----
   mountOnce("/api/verify", await safeImportRouter("./server/routes/verify.js", "verify"));
   mountOnce("/api/auth", await safeImportRouter("./server/routes/auth.js", "auth"));
 
-  // vitrin / vitrine: ikisi de ayrı dosya ise ayrı endpoint; legacy alias istersen burada ver.
-  mountOnce("/api/vitrin", await safeImportRouter("./server/routes/vitrine.js", "vitrine")); // alias: single implementation
+  mountOnce("/api/vitrin", await safeImportRouter("./server/routes/vitrine.js", "vitrine"));
   mountOnce("/api/vitrine", await safeImportRouter("./server/routes/vitrine.js", "vitrine"));
 
   mountOnce("/api/suggest", await safeImportRouter("./server/routes/suggest.js", "suggest"));
@@ -564,7 +565,7 @@ async function registerRouterRoutes(appInstance) {
       ],
       "product-info"
     );
-    mountOnce("/api/product-info", r, ["/api/productInfo"]); // legacy alias
+    mountOnce("/api/product-info", r, ["/api/productInfo"]);
   }
 
   mountOnce("/api/rewards", await safeImportRouter("./server/routes/rewards.js", "rewards"));
@@ -573,7 +574,6 @@ async function registerRouterRoutes(appInstance) {
 
   {
     const r = await safeImportRouter("./server/routes/affiliateCallback.js", "affiliateCallback");
-    // canonical + legacy file-name alias (auto-loader açılırsa bile sürpriz olmasın)
     mountOnce("/api/affiliate-callback", r, ["/api/affiliateCallback"]);
   }
 
@@ -582,7 +582,6 @@ async function registerRouterRoutes(appInstance) {
 
   {
     const r = await safeImportRouter("./server/routes/orderCallback.js", "orderCallback");
-    // canonical istersen /api/order-callback yap; ama sende /api/order kullanılıyor gibi.
     mountOnce("/api/order", r, ["/api/orderCallback"]);
   }
 
@@ -592,7 +591,10 @@ async function registerRouterRoutes(appInstance) {
   mountOnce("/api/vision", await safeImportRouter("./server/routes/vision.js", "vision"));
 
   {
-    const r = await safeImportRouter(["./server/routes/revenueRoutes.js", "./server/routes/revenue.js"], "revenue");
+    const r = await safeImportRouter(
+      ["./server/routes/revenueRoutes.js", "./server/routes/revenue.js"],
+      "revenue"
+    );
     mountOnce("/api/revenue", r, ["/api/revenueRoutes"]);
   }
 
@@ -610,7 +612,6 @@ async function registerRouterRoutes(appInstance) {
     mountOnce("/api/aff", r, ["/api/affiliateBridgeS16"]);
   }
 
-  // Debug route dump (DEV)
   if (routeDebug) {
     appInstance.get("/api/_debug/routes", (_req, res) => ok(res, { routes: dumpRoutes(appInstance) }));
     console.log("🧭 ROUTE_DUMP:", dumpRoutes(appInstance));
@@ -629,7 +630,6 @@ function registerInlineRoutes(appInstance) {
   const INLINE_UNDER_ROUTER = String(process.env.FINDALLEASY_INLINE_UNDER_ROUTER || "0") === "1";
 
   function inlineAllowed(prefix) {
-    // default: router varsa inline altında endpoint TANIMLAMA (NO DRIFT)
     return INLINE_UNDER_ROUTER || !reg.mounted.has(prefix);
   }
 
@@ -648,7 +648,7 @@ function registerInlineRoutes(appInstance) {
     }
   });
 
-  // Basit watch stub (yalnızca router yoksa)
+  // Basit watch stub
   if (!reg.mounted.has("/api/watch")) {
     appInstance.post("/api/watch", (_req, res) => ok(res, { watch: true }));
   }
@@ -752,7 +752,6 @@ function registerInlineRoutes(appInstance) {
     genai = null;
   }
 
-  // UI helpers
   function greetingByHour(hour, locale = "tr", name = "") {
     const n = name ? `${name} ` : "";
     if (hour < 6) return locale === "tr" ? `${n}İyi geceler` : `Good night ${n}`.trim();
@@ -923,60 +922,65 @@ function registerInlineRoutes(appInstance) {
   });
 
   // ---------------------------------------------------------------------------
-  // Search (DEV stub gated)
+  // Search (DEV stub gated) — only if /api/search NOT mounted
+  // (S35 fix: canonical /api/search zaten var; burada drift yaratma)
   // ---------------------------------------------------------------------------
-  appInstance.post("/api/search", async (req, res) => {
-    try {
-      const { query = "", region = "TR", locale = "tr", userId = "", sessionId = "", offset = 0, limit = 20 } =
-        req.body || {};
-      const off = Number(offset) || 0;
-      const lim = Math.min(50, Number(limit) || 20);
+  if (inlineAllowed("/api/search") && !globalThis.__FAE_CANONICAL_SEARCH) {
+    appInstance.post("/api/search", async (req, res) => {
+      try {
+        const { query = "", region = "TR", locale = "tr", userId = "", sessionId = "", offset = 0, limit = 20 } =
+          req.body || {};
+        const off = Number(offset) || 0;
+        const lim = Math.min(50, Number(limit) || 20);
 
-      if (MONGO && (userId || sessionId)) {
-        await Profile.findOneAndUpdate(
-          { userId: userId || null, sessionId: sessionId || null },
-          {
-            $push: { lastQueries: { q: query, at: new Date() } },
-            $set: { lastSeen: new Date(), region, locale },
-          },
-          { upsert: true }
-        );
-      }
+        if (MONGO && (userId || sessionId)) {
+          await Profile.findOneAndUpdate(
+            { userId: userId || null, sessionId: sessionId || null },
+            {
+              $push: { lastQueries: { q: query, at: new Date() } },
+              $set: { lastSeen: new Date(), region, locale },
+            },
+            { upsert: true }
+          );
+        }
 
-      const ALLOW_STUBS = String(process.env.FINDALLEASY_ALLOW_STUBS || "") === "1";
-      if (!ALLOW_STUBS) {
+        const ALLOW_STUBS = String(process.env.FINDALLEASY_ALLOW_STUBS || "") === "1";
+        if (!ALLOW_STUBS) {
+          const cards = buildVitrinCards({ query, answer: "", locale, region });
+          return fail(res, 501, {
+            error: "SEARCH_NOT_IMPLEMENTED",
+            cards,
+            results: [],
+            nextOffset: 0,
+            hasMore: false,
+            total: 0,
+          });
+        }
+
+        const total = 100;
+        const all = Array.from({ length: total }, (_, i) => ({
+          id: `alt-${i + 1}`,
+          title: `${query || "Alternatif"} #${i + 1}`,
+          price: Math.round(50 + (i % 7) * 200),
+          deeplink: "https://example.com/product/" + (i + 1),
+          rating: ((i % 10) + 10) / 10,
+          provider: i % 2 ? "Trendyol" : "Global",
+          region,
+        }));
+        const slice = all.slice(off, off + lim);
+        const nextOffset = off + slice.length;
+        const hasMore = nextOffset < total;
+
         const cards = buildVitrinCards({ query, answer: "", locale, region });
-        return fail(res, 501, {
-          error: "SEARCH_NOT_IMPLEMENTED",
-          cards,
-          results: [],
-          nextOffset: 0,
-          hasMore: false,
-          total: 0,
-        });
+        return ok(res, { cards, results: slice, nextOffset, hasMore, total });
+      } catch (e) {
+        console.error("search error:", e);
+        return fail(res, 500, { cards: [], results: [] });
       }
-
-      const total = 100;
-      const all = Array.from({ length: total }, (_, i) => ({
-        id: `alt-${i + 1}`,
-        title: `${query || "Alternatif"} #${i + 1}`,
-        price: Math.round(50 + (i % 7) * 200),
-        deeplink: "https://example.com/product/" + (i + 1),
-        rating: ((i % 10) + 10) / 10,
-        provider: i % 2 ? "Trendyol" : "Global",
-        region,
-      }));
-      const slice = all.slice(off, off + lim);
-      const nextOffset = off + slice.length;
-      const hasMore = nextOffset < total;
-
-      const cards = buildVitrinCards({ query, answer: "", locale, region });
-      return ok(res, { cards, results: slice, nextOffset, hasMore, total });
-    } catch (e) {
-      console.error("search error:", e);
-      return fail(res, 500, { cards: [], results: [] });
-    }
-  });
+    });
+  } else {
+    logSkip("/api/search", "/api/search");
+  }
 
   // ---------------------------------------------------------------------------
   // AI route (inline) — only if /api/ai router NOT mounted
@@ -1130,7 +1134,7 @@ function registerInlineRoutes(appInstance) {
   });
 
   // ---------------------------------------------------------------------------
-  // Auth legacy + custom (router olsa bile alt endpoint'ler; istersen auth.js'e taşı)
+  // Auth legacy + custom
   // ---------------------------------------------------------------------------
   appInstance.post("/api/auth/legacy-signup", async (req, res) => {
     try {
@@ -1326,9 +1330,7 @@ function registerInlineRoutes(appInstance) {
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // Orders stats (inline) — only if /api/orders router NOT mounted
-  // ---------------------------------------------------------------------------
+  // Orders stats (inline)
   if (inlineAllowed("/api/orders")) {
     appInstance.get("/api/orders/stats", async (req, res) => {
       try {
@@ -1346,9 +1348,7 @@ function registerInlineRoutes(appInstance) {
     logSkip("/api/orders/*", "/api/orders");
   }
 
-  // ---------------------------------------------------------------------------
-  // Coupons (inline) — only if /api/coupons router NOT mounted
-  // ---------------------------------------------------------------------------
+  // Coupons (inline)
   if (inlineAllowed("/api/coupons")) {
     appInstance.post("/api/coupons/create", async (req, res) => {
       try {
@@ -1367,9 +1367,7 @@ function registerInlineRoutes(appInstance) {
     logSkip("/api/coupons/*", "/api/coupons");
   }
 
-  // ---------------------------------------------------------------------------
   // Badges
-  // ---------------------------------------------------------------------------
   appInstance.get("/api/badges", async (req, res) => {
     try {
       const { userId } = req.query || {};
@@ -1387,16 +1385,16 @@ function registerInlineRoutes(appInstance) {
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // Rewards (inline) — only if /api/rewards router NOT mounted
-  // ---------------------------------------------------------------------------
+  // Rewards (inline)
   if (inlineAllowed("/api/rewards")) {
     appInstance.get("/api/rewards", async (req, res) => {
       try {
         const { userId } = req.query || {};
         if (!userId) return fail(res, 400, { error: "userId required" });
 
-        const list = await Reward.find({ userId, expireAt: { $gte: new Date() } }).sort({ expireAt: 1 }).lean();
+        const list = await Reward.find({ userId, expireAt: { $gte: new Date() } })
+          .sort({ expireAt: 1 })
+          .lean();
         const total = (list || []).reduce((s, z) => s + (z.amount || 0), 0);
         return ok(res, { total, list });
       } catch (e) {
@@ -1413,7 +1411,9 @@ function registerInlineRoutes(appInstance) {
         const userDoc = await User.findById(userId).lean();
         if (!userDoc) return fail(res, 403, { error: "login required for discount" });
 
-        const active = await Reward.find({ userId, expireAt: { $gte: new Date() } }).sort({ expireAt: 1 }).lean();
+        const active = await Reward.find({ userId, expireAt: { $gte: new Date() } })
+          .sort({ expireAt: 1 })
+          .lean();
         const available = (active || []).reduce((s, z) => s + (z.amount || 0), 0);
         if (available < amount) return fail(res, 400, { error: "insufficient reward" });
 
@@ -1434,9 +1434,7 @@ function registerInlineRoutes(appInstance) {
     logSkip("/api/rewards/*", "/api/rewards");
   }
 
-  // ---------------------------------------------------------------------------
   // Cron cleanup + notify
-  // ---------------------------------------------------------------------------
   if (transporter) {
     cron.schedule("0 0 * * *", async () => {
       try {
@@ -1473,9 +1471,7 @@ function registerInlineRoutes(appInstance) {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Referral (inline) — only if /api/referral router NOT mounted
-  // ---------------------------------------------------------------------------
+  // Referral (inline)
   if (inlineAllowed("/api/referral")) {
     appInstance.post("/api/referral/create", async (req, res) => {
       try {
@@ -1483,7 +1479,10 @@ function registerInlineRoutes(appInstance) {
         if (!userId) return fail(res, 400, { error: "userId required" });
         const code = crypto.randomBytes(5).toString("hex");
         await Referral.create({ userId, code });
-        return ok(res, { code, url: `${process.env.PUBLIC_URL || "https://findalleasy.com"}/invite?c=${code}` });
+        return ok(res, {
+          code,
+          url: `${process.env.PUBLIC_URL || "https://findalleasy.com"}/invite?c=${code}`,
+        });
       } catch (e) {
         console.error("referral create error:", e);
         return fail(res, 500);
@@ -1523,9 +1522,7 @@ function registerInlineRoutes(appInstance) {
     logSkip("/api/referral/*", "/api/referral");
   }
 
-  // ---------------------------------------------------------------------------
   // Payment webhook (stub signature)
-  // ---------------------------------------------------------------------------
   function verifyProviderSignature(_req) {
     return true;
   }
@@ -1595,9 +1592,7 @@ function registerInlineRoutes(appInstance) {
     }
   });
 
-  // ---------------------------------------------------------------------------
   // Memory API
-  // ---------------------------------------------------------------------------
   appInstance.get("/api/memory", async (req, res) => {
     try {
       const { userId } = req.query || {};
@@ -1615,7 +1610,11 @@ function registerInlineRoutes(appInstance) {
       const { userId, items = [] } = req.body || {};
       if (!userId) return fail(res, 400, { error: "userId required" });
       for (const { key, value } of items) {
-        await Memory.updateOne({ userId, key }, { $set: { value, lastUpdated: new Date() } }, { upsert: true });
+        await Memory.updateOne(
+          { userId, key },
+          { $set: { value, lastUpdated: new Date() } },
+          { upsert: true }
+        );
       }
       return ok(res, { saved: items.length });
     } catch (e) {
@@ -1716,64 +1715,57 @@ async function main() {
     console.warn("⚠️ model preload warn:", e?.message || e);
   }
 
-  
-// RewardEngine init (soft)
-const __REWARD_DISABLED =
-  String(process.env.REWARD_ENGINE_DISABLE || "0") === "1" ||
-  String(process.env.FINDALLEASY_TEST_MODE || "0") === "1";
+  // RewardEngine init (soft)
+  const __REWARD_DISABLED =
+    String(process.env.REWARD_ENGINE_DISABLE || "0") === "1" ||
+    String(process.env.FINDALLEASY_TEST_MODE || "0") === "1";
 
-if (__REWARD_DISABLED) {
-  console.log("🧯 Reward Engine S16 disabled (skip boot)");
-} else
-  try {
-    const rewardEngineMod = await import("./server/core/rewardEngine.js");
-    const ensureModel = rewardEngineMod.ensureModel || rewardEngineMod.default?.ensureModel;
-    const systemStartupCheck = rewardEngineMod.systemStartupCheck || rewardEngineMod.default?.systemStartupCheck;
+  if (__REWARD_DISABLED) {
+    console.log("🧯 Reward Engine S16 disabled (skip boot)");
+  } else
+    try {
+      const rewardEngineMod = await import("./server/core/rewardEngine.js");
+      const ensureModel = rewardEngineMod.ensureModel || rewardEngineMod.default?.ensureModel;
+      const systemStartupCheck =
+        rewardEngineMod.systemStartupCheck || rewardEngineMod.default?.systemStartupCheck;
 
-    if (typeof ensureModel === "function") {
-      const okEnsure = await ensureModel();
-      if (!okEnsure) console.warn("⚠️ RewardEngine ensureModel => false (devam)");
+      if (typeof ensureModel === "function") {
+        const okEnsure = await ensureModel();
+        if (!okEnsure) console.warn("⚠️ RewardEngine ensureModel => false (devam)");
+      }
+      if (typeof systemStartupCheck === "function") {
+        await systemStartupCheck();
+      } else {
+        console.warn("⚠️ rewardEngine.systemStartupCheck bulunamadı");
+      }
+      console.log("✅ Reward Engine S16 boot tamam");
+    } catch (e) {
+      console.warn("⚠️ RewardEngine boot error (soft):", e?.message || e);
     }
-    if (typeof systemStartupCheck === "function") {
-      await systemStartupCheck();
-    } else {
-      console.warn("⚠️ rewardEngine.systemStartupCheck bulunamadı");
-    }
-    console.log("✅ Reward Engine S16 boot tamam");
-  } catch (e) {
-    console.warn("⚠️ RewardEngine boot error (soft):", e?.message || e);
-  }
 
   // Routes (router first, then inline fallback)
   await registerRouterRoutes(app);
   registerInlineRoutes(app);
 
-  // Optional frontend static hosting (only if dist exists)
-  // Keeps clean URLs working on refresh: /privacy, /cookies, etc.
+  // Optional frontend static hosting
   try {
     mountFrontend(app);
   } catch (e) {
     console.warn("⚠️ mountFrontend warn:", e?.message || e);
   }
 
-
-  // ---------------------------------------------------------------------------
   // Render health endpoints
-  // - Render uses health checks during deploys / zero-downtime rollout.
-  // - If frontend dist isn't mounted, "/" would be 404 and deploy can time out.
-  // ---------------------------------------------------------------------------
-  app.get("/healthz", (req, res) => {
+  app.get("/healthz", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).send("ok");
   });
 
-  app.get("/api/healthz", (req, res) => {
+  app.get("/api/healthz", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({ ok: true, service: "findalleasy-backend" });
   });
 
-
-  // Build/version info (useful for reviewers + ops)
+  // Build/version info
   app.get("/api/version", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
@@ -1787,7 +1779,7 @@ if (__REWARD_DISABLED) {
   });
 
   // Root OK (helps infra checks when static host is off)
-  app.get("/", (req, res) => {
+  app.get("/", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).send("ok");
   });
@@ -1805,10 +1797,8 @@ if (__REWARD_DISABLED) {
     setInterval(syncLearningToMongo, 300000);
   } catch {}
 
-  // HTTP + WS
   // ============================================================================
-  //  API 400 SHIELD (S35) — üretimde HTML 400 dönmesin (FE kırılır)
-  //  Sadece vitrin endpointleri için: 400 -> 200 empty-state JSON
+  // API 400 SHIELD (S35) — vitrin: 400 -> 200 empty-state JSON
   // ============================================================================
   app.use((err, req, res, next) => {
     try {
@@ -1824,6 +1814,36 @@ if (__REWARD_DISABLED) {
       }
     } catch {}
     return next(err);
+  });
+
+  // ✅ API 404 shield (HTML yerine JSON)
+  app.use("/api", (req, res) => {
+    if (res.headersSent) return;
+    return res.status(404).json({
+      ok: false,
+      error: "NOT_FOUND",
+      path: String(req.originalUrl || req.url || ""),
+    });
+  });
+
+  // ✅ Final API error shield (HTML yerine JSON)
+  app.use((err, req, res, next) => {
+    try {
+      if (res.headersSent) return next(err);
+      const url = String(req?.originalUrl || req?.url || "");
+      const isApi = url.startsWith("/api") || url.startsWith("/metrics");
+      if (!isApi) return next(err);
+
+      const status = Number(err?.status || err?.statusCode || 500);
+      return res.status(status).json({
+        ok: false,
+        error: "API_ERROR",
+        status,
+        message: String(err?.message || "unknown"),
+      });
+    } catch {
+      return next(err);
+    }
   });
 
   const httpServer = createServer(app);
