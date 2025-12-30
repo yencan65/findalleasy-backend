@@ -524,6 +524,100 @@ function normalizeVitrinePayload(payload = {}) {
 }
 
 // ============================================================================
+//  HOME VITRINE (NO-QUERY) — pull REAL items from catalog DB
+//  Goal: homepage can show real offers without requiring a search.
+//  - Never invent prices/sellers.
+//  - If catalog is empty/unavailable, return empty-state.
+// ============================================================================
+async function buildHomeFromCatalog({ region = "TR", locale = "tr", category = "product" } = {}) {
+  try {
+    const db = getDb?.();
+    if (!db) return null;
+
+    const colName = String(process.env.CATALOG_COLLECTION || "catalog_items");
+    const col = db.collection(colName);
+
+    // Keep it conservative: only show items that have a click-out URL and a title.
+    // (Avoids weird half-ingested rows.)
+    const baseQuery = {
+      $and: [
+        { title: { $exists: true, $ne: "" } },
+        { $or: [
+          { finalUrl: { $exists: true, $ne: "" } },
+          { url: { $exists: true, $ne: "" } },
+          { originUrl: { $exists: true, $ne: "" } },
+          { deeplink: { $exists: true, $ne: "" } },
+        ]},
+      ],
+    };
+
+    const docs = await col
+      .find(baseQuery)
+      .sort({ updatedAt: -1, createdAt: -1, ts: -1, _id: -1 })
+      .limit(24)
+      .toArray();
+
+    if (!Array.isArray(docs) || docs.length === 0) return null;
+
+    const pickNum = (...vals) => {
+      for (const v of vals) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+      return null;
+    };
+
+    const items = docs
+      .map((d) => {
+        const finalUrl = d.finalUrl || d.url || d.deeplink || d.originUrl || "";
+        const title = String(d.title || d.name || "").trim();
+        if (!title || !finalUrl) return null;
+
+        return {
+          id: String(d.id || d.itemId || d.productId || d._id || "").slice(0, 80) || undefined,
+          title,
+          image: d.image || (Array.isArray(d.images) ? d.images[0] : null) || null,
+          images: Array.isArray(d.images) ? d.images : undefined,
+          price: pickNum(d.finalPrice, d.optimizedPrice, d.price),
+          finalPrice: pickNum(d.finalPrice, d.optimizedPrice, d.price),
+          currency: String(d.currency || d.currencyCode || "TRY"),
+          provider: String(d.provider || d.providerName || d.providerKey || "catalog"),
+          providerKey: String(d.providerKey || d.provider || "catalog"),
+          originUrl: d.originUrl || d.url || d.finalUrl || null,
+          finalUrl,
+          url: finalUrl,
+          region,
+          locale,
+          source: String(d.source || "catalog"),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 12);
+
+    if (items.length === 0) return null;
+
+    return {
+      ok: true,
+      region,
+      locale,
+      category,
+      group: category,
+      best_list: items,
+      best: items[0] || null,
+      _meta: {
+        source: "home_catalog",
+        catalogCollection: colName,
+        region,
+        locale,
+        category,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
 //  RELEVANCE FILTER — "saçma sapan alakasız" kartları kes
 // ============================================================================
 
@@ -900,6 +994,28 @@ async function handleVitrinCore(req, res) {
 
     if (qSafe.length > 256) qSafe = qSafe.slice(0, 256);
 
+    // ✅ HOME MODE: query boşsa FAKE vitrin göstermeyiz.
+    // Reviewer/audit bakışında "uydurma fiyat" = direkt red sebebi.
+    const hasRealQuery = !!qSafe && String(qSafe).trim().length > 0;
+    if (!hasRealQuery) {
+      // 1) Try to serve REAL items from catalog DB (preferred)
+      const home = await buildHomeFromCatalog({ region: regionSafe, locale: localeSafe, category });
+      if (home) return safeJson(res, toBestOnlyPayload(home, ""));
+
+      // 2) Otherwise: clean empty-state
+      const empty = {
+        ok: true,
+        region: regionSafe,
+        locale: localeSafe,
+        category,
+        group: category,
+        best: null,
+        best_list: [],
+        _meta: { source: "home_empty", reason: "EMPTY_QUERY" },
+      };
+      return safeJson(res, toBestOnlyPayload(empty, ""));
+    }
+
     // 0) HEALTH
     try {
       const healthIntent = detectHealthIntent(qSafe);
@@ -1006,51 +1122,23 @@ async function handleVitrinCore(req, res) {
       engineData = await Promise.race([enginePromise, timeoutPromise]);
     } catch {}
 
-    // Fallback
-    const mockBestItem = {
-      id: "route_mock_best",
-      title: "En Uygun Satıcı",
-      provider: "findalleasy",
-      providerKey: "findalleasy",
-      price: null,
-      finalUserPrice: null,
-      priceHint: "₺999",
-      category: "product",
-      region: regionSafe,
-      rating: 0,
-      trustScore: 0,
-      qualityScore: 0,
-      cardType: "main",
-      isPlaceholder: true,
-    };
-
-    const mockData = {
-      ok: true,
-      query: qSafe,
-      category: "product",
-      best: mockBestItem,
-      best_list: [mockBestItem],
-      smart: [],
-      others: [],
-      cards: { best: mockBestItem, best_list: [mockBestItem], smart: [], others: [] },
-      _meta: { source: "route_fallback", reason: "engine_timeout_or_error" },
-    };
-
-    const hasRealQuery = !!qSafe && String(qSafe).trim().length > 0;
-
+    // Fallback (NO FAKE DATA)
     const fallbackEmpty = {
       ok: true,
       query: qSafe,
+      region: regionSafe,
+      locale: localeSafe,
       category: (intent && (intent.type || intent.category)) || preferredType || "general",
+      group: (intent && (intent.type || intent.category)) || preferredType || "general",
       best: null,
       best_list: [],
       cards: { best: null, best_list: [] },
       _meta: { source: "route_fallback_empty", reason: "engine_timeout_or_error" },
     };
 
-    let selected = engineData?.ok ? engineData : hasRealQuery ? fallbackEmpty : mockData;
+    let selected = engineData?.ok ? engineData : fallbackEmpty;
 
-    if (!selected || typeof selected !== "object") selected = mockData;
+    if (!selected || typeof selected !== "object") selected = fallbackEmpty;
 
     if (!Array.isArray(selected.best_list)) selected.best_list = [];
     if (selected.best && selected.best_list.length === 0) selected.best_list = [selected.best];
@@ -1067,7 +1155,7 @@ async function handleVitrinCore(req, res) {
       (Array.isArray(selected.smart) && selected.smart.length > 0) ||
       (Array.isArray(selected.others) && selected.others.length > 0);
 
-    if (hasRealQuery && !hasAnyRealContent) {
+    if (!hasAnyRealContent) {
       try {
         const t = String((intent && (intent.type || intent.category)) || preferredType || "product");
         let cat = normText(t) || "product";

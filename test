@@ -1,5 +1,0 @@
-set "FINDALLEASY_ALLOW_STUBS=1" && node server/tools/s200SmokeTest.mjs
-
-set "FINDALLEASY_ALLOW_STUBS=0" && node server/tools/s200SmokeTest.mjs
-
-node server/tools/azE2E.mjs
