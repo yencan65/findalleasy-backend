@@ -428,6 +428,28 @@ app.post("/api/search", async (req, res) => {
 app.use("/api/search", searchRouter);
 app.use("/api/catalog", catalogRouter);
 app.use("/api/csp", cspRouter);
+app.use("/api/csp", (err, req, res, next) => {
+  try {
+    const ct = String(req.headers["content-type"] || "");
+    const isCsp =
+      ct.includes("application/csp-report") ||
+      ct.includes("application/reports+json");
+
+    const isParseErr =
+      !!err &&
+      (err.type === "entity.parse.failed" ||
+        err instanceof SyntaxError ||
+        String(err.message || "").toLowerCase().includes("unexpected token") ||
+        String(err.message || "").toLowerCase().includes("expected property name"));
+
+    // CSP endpoint telemetri: parse bozulsa bile 204 dön, tarayıcıyı / sistemi yorma
+    if (isCsp && isParseErr && !res.headersSent) {
+      return res.status(204).end();
+    }
+  } catch {}
+  return next(err);
+});
+
 
 // Mark as mounted for inline route guard
 getRouteRegistry(app).mounted.add("/api/search");
