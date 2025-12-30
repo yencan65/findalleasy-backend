@@ -1772,6 +1772,20 @@ if (__REWARD_DISABLED) {
     return res.status(200).json({ ok: true, service: "findalleasy-backend" });
   });
 
+
+  // Build/version info (useful for reviewers + ops)
+  app.get("/api/version", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({
+      ok: true,
+      service: "findalleasy-backend",
+      node: process.version,
+      env: process.env.NODE_ENV || "unknown",
+      build: process.env.BUILD_SHA || process.env.RENDER_GIT_COMMIT || null,
+      ts: Date.now(),
+    });
+  });
+
   // Root OK (helps infra checks when static host is off)
   app.get("/", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -1792,24 +1806,27 @@ if (__REWARD_DISABLED) {
   } catch {}
 
   // HTTP + WS
-  const httpServer = 
-// ============================================================================
-//  API 400 SHIELD (S35) — üretimde HTML 400 dönmesin (FE kırılır)
-//  Sadece vitrin endpointleri için: 400 -> 200 empty-state JSON
-// ============================================================================
-app.use((err, req, res, next) => {
-  try {
-    const url = String(req?.originalUrl || req?.url || "");
-    const isVitrin = url.startsWith("/api/vitrin") || url.startsWith("/api/vitrine");
-    const code = Number(err?.status || err?.statusCode || 500);
-    if (isVitrin && code === 400 && !res.headersSent) {
-      return res.status(200).json({ ok: true, items: [], meta: { warn: "BAD_REQUEST", detail: String(err?.message || "") } });
-    }
-  } catch {}
-  return next(err);
-});
+  // ============================================================================
+  //  API 400 SHIELD (S35) — üretimde HTML 400 dönmesin (FE kırılır)
+  //  Sadece vitrin endpointleri için: 400 -> 200 empty-state JSON
+  // ============================================================================
+  app.use((err, req, res, next) => {
+    try {
+      const url = String(req?.originalUrl || req?.url || "");
+      const isVitrin = url.startsWith("/api/vitrin") || url.startsWith("/api/vitrine");
+      const code = Number(err?.status || err?.statusCode || 500);
+      if (isVitrin && code === 400 && !res.headersSent) {
+        return res.status(200).json({
+          ok: true,
+          items: [],
+          meta: { warn: "BAD_REQUEST", detail: String(err?.message || "") },
+        });
+      }
+    } catch {}
+    return next(err);
+  });
 
-createServer(app);
+  const httpServer = createServer(app);
   try {
     createTelemetryWSS(httpServer);
   } catch (e) {
