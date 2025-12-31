@@ -278,87 +278,71 @@ app.use((err, req, res, next) => {
 // ============================================================================
 // ✅ CANONICAL SEARCH: FE hem {query} hem {q} gönderebilir. 400 yok.
 // ============================================================================
+
+// Bu flag: sistemde canonical search var demek.
+// Canonical olan artık ROUTER olmalı (server/routes/search.js) — inline değil.
 globalThis.__FAE_CANONICAL_SEARCH = true;
 
-app.post("/api/search", async (req, res) => {
-  const reply = (payload) => res.status(200).json(payload);
+// 🚫 Inline /api/search default KAPALI.
+// Sebep: server/routes/search.js (S200 fallback + diag) router'ını gölgeler.
+// Acil debug için açmak istersen: FAE_INLINE_SEARCH_ENABLE=1
+const FAE_INLINE_SEARCH_ENABLE = String(process.env.FAE_INLINE_SEARCH_ENABLE || "0") === "1";
 
-  const fixMojibakeTR = (s) => {
-    const str = String(s || "");
-    if (!str) return "";
-    const looksBroken = /�|Ã|Â/.test(str);
-    if (!looksBroken) return str;
-    try {
-      const repaired = Buffer.from(str, "latin1").toString("utf8");
-      if (/[ğüşöçıİĞÜŞÖÇ]/.test(repaired) && !/�/.test(repaired)) return repaired;
-      return repaired || str;
-    } catch {
-      return str;
-    }
-  };
+if (FAE_INLINE_SEARCH_ENABLE) {
+  app.post("/api/search", async (req, res) => {
+    const reply = (payload) => res.status(200).json(payload);
 
-  try {
-    const b = req.body || {};
-    const rawQuery = String(b.query ?? b.q ?? "").trim();
-    const query = fixMojibakeTR(rawQuery).trim();
-
-    const region = String(b.region ?? "TR");
-    const locale = String(b.locale ?? b.lang ?? "tr");
-    const category = String(b.category ?? b.group ?? "product");
-
-    const limitN = Number(b.limit);
-    const offsetN = Number(b.offset);
-    const limit = Number.isFinite(limitN) ? limitN : 20;
-    const offset = Number.isFinite(offsetN) ? offsetN : 0;
-
-    if (!query) {
-      return reply({
-        ok: false,
-        query: "",
-        q: "",
-        category,
-        group: category,
-        region,
-        locale,
-        items: [],
-        results: [],
-        count: 0,
-        total: 0,
-        nextOffset: offset,
-        hasMore: false,
-        _meta: { error: "MISSING_QUERY" },
-      });
-    }
-
-    let eng = null;
-    try {
-      eng = await import("./server/core/adapterEngine.js");
-    } catch (e) {
-      return reply({
-        ok: false,
-        query,
-        q: query,
-        category,
-        group: category,
-        region,
-        locale,
-        items: [],
-        results: [],
-        count: 0,
-        total: 0,
-        nextOffset: offset,
-        hasMore: false,
-        _meta: { error: "ENGINE_IMPORT_FAIL", msg: String(e?.message || e) },
-      });
-    }
-
-    let raw = null;
-    try {
-      raw = await eng.runAdapters(query, category, { limit, offset, region, locale });
-    } catch (_e1) {
+    const fixMojibakeTR = (s) => {
+      const str = String(s || "");
+      if (!str) return "";
+      const looksBroken = /�|Ã|Â/.test(str);
+      if (!looksBroken) return str;
       try {
-        raw = await eng.runAdapters(query, { limit, offset, region, locale, category });
-      } catch (e2) {
+        const repaired = Buffer.from(str, "latin1").toString("utf8");
+        if (/[ğüşöçıİĞÜŞÖÇ]/.test(repaired) && !/�/.test(repaired)) return repaired;
+        return repaired || str;
+      } catch {
+        return str;
+      }
+    };
+
+    try {
+      const b = req.body || {};
+      const rawQuery = String(b.query ?? b.q ?? "").trim();
+      const query = fixMojibakeTR(rawQuery).trim();
+
+      const region = String(b.region ?? "TR");
+      const locale = String(b.locale ?? b.lang ?? "tr");
+      const category = String(b.category ?? b.group ?? "product");
+
+      const limitN = Number(b.limit);
+      const offsetN = Number(b.offset);
+      const limit = Number.isFinite(limitN) ? limitN : 20;
+      const offset = Number.isFinite(offsetN) ? offsetN : 0;
+
+      if (!query) {
+        return reply({
+          ok: false,
+          query: "",
+          q: "",
+          category,
+          group: category,
+          region,
+          locale,
+          items: [],
+          results: [],
+          count: 0,
+          total: 0,
+          nextOffset: offset,
+          hasMore: false,
+          _meta: { error: "MISSING_QUERY" },
+        });
+      }
+
+      let eng = null;
+      try {
+        eng = await import("./server/core/adapterEngine.js");
+      } catch (e) {
         return reply({
           ok: false,
           query,
@@ -373,57 +357,87 @@ app.post("/api/search", async (req, res) => {
           total: 0,
           nextOffset: offset,
           hasMore: false,
-          _meta: { error: "RUN_ADAPTERS_FAIL", msg: String(e2?.message || e2) },
+          _meta: { error: "ENGINE_IMPORT_FAIL", msg: String(e?.message || e) },
         });
       }
+
+      let raw = null;
+      try {
+        raw = await eng.runAdapters(query, category, { limit, offset, region, locale });
+      } catch (_e1) {
+        try {
+          raw = await eng.runAdapters(query, { limit, offset, region, locale, category });
+        } catch (e2) {
+          return reply({
+            ok: false,
+            query,
+            q: query,
+            category,
+            group: category,
+            region,
+            locale,
+            items: [],
+            results: [],
+            count: 0,
+            total: 0,
+            nextOffset: offset,
+            hasMore: false,
+            _meta: { error: "RUN_ADAPTERS_FAIL", msg: String(e2?.message || e2) },
+          });
+        }
+      }
+
+      const items = Array.isArray(raw?.items)
+        ? raw.items
+        : Array.isArray(raw?.results)
+        ? raw.results
+        : [];
+
+      const total = Number(raw?.total ?? raw?.count ?? items.length);
+      const count = items.length;
+      const nextOffset = offset + count;
+      const hasMore = total > nextOffset;
+
+      return reply({
+        ok: raw?.ok === false ? false : true,
+        query,
+        q: query,
+        category,
+        group: category,
+        region,
+        locale,
+        items,
+        results: items,
+        count,
+        total,
+        nextOffset,
+        hasMore,
+        _meta: raw?._meta || raw?.meta || { source: raw?.source || "engine" },
+      });
+    } catch (err) {
+      return reply({
+        ok: false,
+        query: String(req?.body?.query ?? req?.body?.q ?? "").trim(),
+        q: String(req?.body?.query ?? req?.body?.q ?? "").trim(),
+        category: String(req?.body?.category ?? req?.body?.group ?? "product"),
+        group: String(req?.body?.category ?? req?.body?.group ?? "product"),
+        region: String(req?.body?.region ?? "TR"),
+        locale: String(req?.body?.locale ?? req?.body?.lang ?? "tr"),
+        items: [],
+        results: [],
+        count: 0,
+        total: 0,
+        nextOffset: Number(req?.body?.offset ?? 0) || 0,
+        hasMore: false,
+        _meta: { error: "SEARCH_ROUTE_CRASH", msg: String(err?.message || err) },
+      });
     }
+  });
+} else {
+  // ✅ Router (server/routes/search.js) canonical handler.
+  // Inline route kapalı olduğu için fallback/diag artık router tarafında çalışır.
+}
 
-    const items = Array.isArray(raw?.items)
-      ? raw.items
-      : Array.isArray(raw?.results)
-      ? raw.results
-      : [];
-
-    const total = Number(raw?.total ?? raw?.count ?? items.length);
-    const count = items.length;
-    const nextOffset = offset + count;
-    const hasMore = total > nextOffset;
-
-    return reply({
-      ok: raw?.ok === false ? false : true,
-      query,
-      q: query,
-      category,
-      group: category,
-      region,
-      locale,
-      items,
-      results: items,
-      count,
-      total,
-      nextOffset,
-      hasMore,
-      _meta: raw?._meta || raw?.meta || { source: raw?.source || "engine" },
-    });
-  } catch (err) {
-    return reply({
-      ok: false,
-      query: String(req?.body?.query ?? req?.body?.q ?? "").trim(),
-      q: String(req?.body?.query ?? req?.body?.q ?? "").trim(),
-      category: String(req?.body?.category ?? req?.body?.group ?? "product"),
-      group: String(req?.body?.category ?? req?.body?.group ?? "product"),
-      region: String(req?.body?.region ?? "TR"),
-      locale: String(req?.body?.locale ?? req?.body?.lang ?? "tr"),
-      items: [],
-      results: [],
-      count: 0,
-      total: 0,
-      nextOffset: Number(req?.body?.offset ?? 0) || 0,
-      hasMore: false,
-      _meta: { error: "SEARCH_ROUTE_CRASH", msg: String(err?.message || err) },
-    });
-  }
-});
 
 app.use("/api/search", searchRouter);
 app.use("/api/catalog", catalogRouter);
