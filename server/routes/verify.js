@@ -4,11 +4,14 @@
 // ======================================================================
 
 import express from "express";
-import nodemailer from "nodemailer";
+import nodemailer from "nodemailer"; // legacy: bırakıyoruz, ama artık tek mail motoru kullanılacak
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 
 import VerificationCode from "../models/VerificationCode.js";
+
+// ✅ Tek mail motoru (EMAIL_* öncelikli, SMTP_/MAIL_ fallback) — tüm projede standard olsun
+import { sendEmail } from "../utils/email.js";
 
 const router = express.Router();
 
@@ -157,23 +160,12 @@ function rateLimit(ip, email, limit = 8, windowMs = 60_000) {
 }
 
 // ======================================================================
-//  SMTP — KORUNDU
+//  EMAIL — TEK MOTOR (server/utils/email.js)
+//  Not: utils/email.js zaten retry + profile fallback yapıyor.
 // ======================================================================
-function makeTransporter() {
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    console.warn("[verify] ⚠ SMTP yapılandırılmamış — TEST MODE");
-    return null;
-  }
-
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.SMTP_PORT) || 587,
-    secure: false,
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    tls: { rejectUnauthorized: false },
-  });
+async function sendEmailWithRetry({ to, subject, text, html }) {
+  return sendEmail(to, subject, text, html);
 }
-const transporter = makeTransporter();
 
 function generateCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -229,13 +221,20 @@ router.post("/send-code", async (req, res) => {
     // IAM: Session başlat
     const sessionId = bindSession(email, ip, ua);
 
-    if (transporter) {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    // ✅ Mail göndermeden "success" dönmek YASAK. Gönderim patlarsa kullanıcı bilsin.
+    try {
+      await sendEmailWithRetry({
         to: email,
         subject: "FindAllEasy Doğrulama Kodu",
         text: `Kodunuz: ${code}`,
       });
+    } catch (e) {
+      console.error("[verify] email send failed", e?.code, e?.message || e);
+      return safeJson(
+        res,
+        { success: false, message: "E-posta gönderilemedi" },
+        500
+      );
     }
 
     return safeJson(res, {
