@@ -1,14 +1,14 @@
 // ============================================================================
-// FAE EMAIL ENGINE — S114 RELIABLE (ENV CHAOS PROOF)
-// Goal: Aktivasyon / Şifre sıfırlama mailleri "bazen geliyor" değil, tutarlı.
+// FAE EMAIL ENGINE — S113 RELIABLE (AUTO-PROFILE FALLBACK + GMAIL APPPASS SAFE)
 //
 // Fixes:
-//  - Render ENV'te EMAIL_* / SMTP_* / MAIL_* karışmış olabiliyor → profil seçimi
-//  - Port string gelince secure hatası ("465" !== 465) → Number()
-//  - Gmail'de FROM adresi user ile uyuşmazsa EENVELOPE/550 → Gmail'de from=user
-//  - Stabilite: pool + timeout + retry + net hata logu (ops için)
+//  - Prefer EMAIL_* first (Render env karmaşasında en net set bu)
+//  - Port string -> Number() + secure doğru hesap
+//  - Gmail App Password kopyalanırken boşluk kalırsa auth patlar -> whitespace strip (gmail host)
+//  - verify() fail olunca süreci öldürme -> sonraki profile'a geç
+//  - Retry + transient error handling
 //
-// ZERO-DELETE: Export imzaları korunur: sendEmail, sendActivationEmail, sendPasswordResetCode
+// ZERO-DELETE: export imzaları korunur: sendEmail, sendActivationEmail, sendPasswordResetCode
 // ============================================================================
 
 import nodemailer from "nodemailer";
@@ -21,97 +21,126 @@ function pickEnv(...names) {
   return "";
 }
 
+const MAIL_DEBUG = pickEnv("MAIL_DEBUG") === "1";
+// Default: verify kapalı (bazı ortamlarda false-negative / fallback'i gereksiz kesiyor)
+// İstersen MAIL_VERIFY=1 ile aç.
+const MAIL_VERIFY = pickEnv("MAIL_VERIFY") === "1";
+
 function boolish(v) {
-  const s = String(v ?? "").trim().toLowerCase();
+  const s = String(v || "").trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-const MAIL_DEBUG = pickEnv("MAIL_DEBUG") === "1";
-// Bazı SMTP'ler verify() çağrısını sevmez. Default: kapalı.
-const MAIL_VERIFY = pickEnv("MAIL_VERIFY") === "1";
+function isGmailHost(host) {
+  const h = String(host || "").toLowerCase();
+  return h === "smtp.gmail.com" || h.endsWith(".gmail.com") || h.includes("googlemail");
+}
+
+function normalizePass(pass, host) {
+  const raw = String(pass || "");
+  // App Password çoğu zaman 4'lü gruplar halinde kopyalanır. Gmail'de whitespace'i kırp.
+  if (isGmailHost(host)) return raw.replace(/\s+/g, "");
+  return raw;
+}
+
+function isTransient(err) {
+  const code = err?.code || "";
+  return ["ETIMEDOUT", "ECONNRESET", "ESOCKET", "EADDRINUSE", "ECONNREFUSED", "EPROTO"].includes(code);
+}
+
+function shouldTryNextProfile(err) {
+  const code = err?.code || "";
+  const msg = String(err?.message || "").toLowerCase();
+  // Auth fail → başka credential seti denenebilir
+  if (code === "EAUTH") return true;
+  if (msg.includes("535") || msg.includes("username") || msg.includes("password")) return true;
+  // envelope/from yetkisiz → from/user uyumsuz olabilir
+  if (code === "EENVELOPE") return true;
+  // TLS/connection problemleri → başka host/port seti denenebilir
+  if (isTransient(err)) return true;
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Profiles: EMAIL_* / SMTP_* / MAIL_* (karışık env'e dayanıklı)
 // ---------------------------------------------------------------------------
 function buildProfile(prefix) {
   const user =
-    prefix === "EMAIL"
-      ? pickEnv("EMAIL_USER")
-      : prefix === "SMTP"
-      ? pickEnv("SMTP_USER")
-      : pickEnv("MAIL_USER");
-
-  const pass =
-    prefix === "EMAIL"
-      ? pickEnv("EMAIL_PASS")
-      : prefix === "SMTP"
-      ? pickEnv("SMTP_PASS")
-      : pickEnv("MAIL_PASS");
-
-  if (!user || !pass) return null;
+    prefix === "EMAIL" ? pickEnv("EMAIL_USER") :
+    prefix === "SMTP" ? pickEnv("SMTP_USER") :
+    pickEnv("MAIL_USER");
 
   const host =
-    (prefix === "EMAIL"
-      ? pickEnv("EMAIL_HOST")
-      : prefix === "SMTP"
-      ? pickEnv("SMTP_HOST")
-      : pickEnv("MAIL_HOST")) || "smtp.gmail.com";
+    (prefix === "EMAIL" ? pickEnv("EMAIL_HOST") :
+     prefix === "SMTP" ? pickEnv("SMTP_HOST") :
+     pickEnv("MAIL_HOST")) || "smtp.gmail.com";
 
-  const port = Number(
-    (prefix === "EMAIL"
-      ? pickEnv("EMAIL_PORT")
-      : prefix === "SMTP"
-      ? pickEnv("SMTP_PORT")
-      : pickEnv("MAIL_PORT")) || 587
-  );
+  const passRaw =
+    prefix === "EMAIL" ? pickEnv("EMAIL_PASS") :
+    prefix === "SMTP" ? pickEnv("SMTP_PASS") :
+    pickEnv("MAIL_PASS");
 
-  const secure =
-    boolish(
-      prefix === "EMAIL"
-        ? pickEnv("EMAIL_SECURE")
-        : prefix === "SMTP"
-        ? pickEnv("SMTP_SECURE")
-        : pickEnv("MAIL_SECURE")
-    ) || port === 465;
+  const pass = normalizePass(passRaw, host);
 
-  const fromName = pickEnv("EMAIL_FROM_NAME", "MAIL_FROM_NAME", "FROM_NAME") || "FindAllEasy";
+  const portRaw =
+    prefix === "EMAIL" ? pickEnv("EMAIL_PORT") :
+    prefix === "SMTP" ? pickEnv("SMTP_PORT") :
+    pickEnv("MAIL_PORT");
+
+  const port = Number(portRaw || 587);
+
+  const secureRaw =
+    prefix === "EMAIL" ? pickEnv("EMAIL_SECURE") :
+    prefix === "SMTP" ? pickEnv("SMTP_SECURE") :
+    pickEnv("MAIL_SECURE");
+
+  const secure = boolish(secureRaw) || port === 465;
+
   let from = pickEnv("FROM_EMAIL", "EMAIL_FROM", "SMTP_FROM", "MAIL_FROM") || user;
-  const replyTo = pickEnv("EMAIL_REPLY_TO", "MAIL_REPLY_TO", "REPLY_TO") || "";
-
-  // Gmail SMTP: envelope/from farklı olunca patlar. Gmail ise from=user yap.
-  if (String(host).toLowerCase().includes("gmail")) {
+  // Gmail SMTP genelde authenticated user ile aynı FROM adresini ister.
+  // FROM_EMAIL yanlış set edilirse EENVELOPE/EAUTH tarzı hatalar görürsün.
+  const isGmail = host === "smtp.gmail.com" || host.endsWith(".gmail.com") || host.endsWith(".googlemail.com");
+  const strictFrom = pickEnv("MAIL_STRICT_FROM") !== "0"; // default ON
+  if (isGmail && strictFrom && from.toLowerCase() !== user.toLowerCase()) {
     from = user;
   }
+  const fromName = pickEnv("EMAIL_FROM_NAME", "MAIL_FROM_NAME", "FROM_NAME") || "FindAllEasy";
+  const replyTo = pickEnv("EMAIL_REPLY_TO", "MAIL_REPLY_TO") || "";
+
+  if (!user || !pass) return null;
 
   return { prefix, user, pass, host, port, secure, from, fromName, replyTo };
 }
 
-const profileEmail = buildProfile("EMAIL");
-const profileSmtp = buildProfile("SMTP");
-const profileMail = buildProfile("MAIL");
+// ✅ ÖNEMLİ: Öncelik EMAIL → SMTP → MAIL
+const profiles = ["SMTP", "MAIL", "EMAIL"].map(buildProfile).filter(Boolean);
 
-// Manuel seçim (Render env karmaşasında en sağlam yol)
-// MAIL_PROFILE=EMAIL | SMTP | MAIL
-const forcedProfile = pickEnv("MAIL_PROFILE").toUpperCase();
-const candidatesByName = {
-  EMAIL: profileEmail,
-  SMTP: profileSmtp,
-  MAIL: profileMail,
-};
+// Mixed profile (her şey karmaysa son çare)
+(function addMixed() {
+  const host = pickEnv("EMAIL_HOST", "SMTP_HOST", "MAIL_HOST") || "smtp.gmail.com";
+  const user = pickEnv("EMAIL_USER", "SMTP_USER", "MAIL_USER");
+  const pass = normalizePass(pickEnv("EMAIL_PASS", "SMTP_PASS", "MAIL_PASS"), host);
+  if (!user || !pass) return;
 
-// Default: EMAIL > SMTP > MAIL (senin env ekranında hepsi var; EMAIL daha deterministik)
-const profiles = [
-  forcedProfile && candidatesByName[forcedProfile] ? candidatesByName[forcedProfile] : null,
-  !forcedProfile ? profileEmail : null,
-  !forcedProfile ? profileSmtp : null,
-  !forcedProfile ? profileMail : null,
-].filter(Boolean);
+  const port = Number(pickEnv("EMAIL_PORT", "SMTP_PORT", "MAIL_PORT") || 587);
+  const secure = boolish(pickEnv("EMAIL_SECURE", "SMTP_SECURE", "MAIL_SECURE")) || port === 465;
+
+  let from = pickEnv("FROM_EMAIL", "EMAIL_FROM", "SMTP_FROM", "MAIL_FROM") || user;
+  // Gmail SMTP genelde authenticated user ile aynı FROM adresini ister.
+  // FROM_EMAIL yanlış set edilirse EENVELOPE/EAUTH tarzı hatalar görürsün.
+  const isGmail = host === "smtp.gmail.com" || host.endsWith(".gmail.com") || host.endsWith(".googlemail.com");
+  const strictFrom = pickEnv("MAIL_STRICT_FROM") !== "0"; // default ON
+  if (isGmail && strictFrom && from.toLowerCase() !== user.toLowerCase()) {
+    from = user;
+  }
+  const fromName = pickEnv("EMAIL_FROM_NAME", "MAIL_FROM_NAME", "FROM_NAME") || "FindAllEasy";
+  const replyTo = pickEnv("EMAIL_REPLY_TO", "MAIL_REPLY_TO") || "";
+
+  profiles.push({ prefix: "MIXED", user, pass, host, port, secure, from, fromName, replyTo });
+})();
 
 if (profiles.length === 0) {
-  // Fail fast: env yok → route'lar net hata döndürsün
-  throw new Error(
-    "MAIL_NOT_CONFIGURED: set EMAIL_USER/EMAIL_PASS (recommended) or SMTP_USER/SMTP_PASS or MAIL_USER/MAIL_PASS"
-  );
+  throw new Error("MAIL_NOT_CONFIGURED: set EMAIL_USER/EMAIL_PASS (recommended) or SMTP_* / MAIL_*");
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +148,6 @@ if (profiles.length === 0) {
 // ---------------------------------------------------------------------------
 let activeIdx = 0;
 let transporter = null;
-let verifiedOnce = false;
-let verifyPromise = null;
 
 function createTransporter(p) {
   return nodemailer.createTransport({
@@ -129,7 +156,6 @@ function createTransporter(p) {
     secure: p.secure,
     auth: { user: p.user, pass: p.pass },
 
-    // Stabilite
     pool: true,
     maxConnections: 3,
     maxMessages: 200,
@@ -146,8 +172,6 @@ function createTransporter(p) {
 function useProfile(idx) {
   activeIdx = idx;
   transporter = createTransporter(profiles[activeIdx]);
-  verifiedOnce = false;
-  verifyPromise = null;
 
   if (MAIL_DEBUG) {
     const p = profiles[activeIdx];
@@ -164,45 +188,32 @@ function useProfile(idx) {
 
 useProfile(0);
 
-async function verifyTransporterOnce() {
-  if (verifiedOnce) return true;
-  if (verifyPromise) return verifyPromise;
-
-  verifyPromise = transporter
-    .verify()
-    .then(() => {
-      verifiedOnce = true;
-      return true;
-    })
-    .catch((e) => {
-      if (MAIL_DEBUG) console.error("[mail] verify failed", e?.code, e?.message || e);
-      throw e;
-    });
-
-  return verifyPromise;
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function isTransient(err) {
-  return ["ETIMEDOUT", "ECONNRESET", "ESOCKET", "EADDRINUSE"].includes(err?.code);
+async function verifyIfEnabled() {
+  if (!MAIL_VERIFY) return true;
+  try {
+    await transporter.verify();
+    return true;
+  } catch (e) {
+    if (MAIL_DEBUG) console.error("[mail] verify failed", e?.code, e?.message || e);
+    // verify fail: mail gönderimini burada öldürme — fallback'e izin ver
+    throw e;
+  }
 }
 
-function isAuthOrEnvelope(err) {
-  const code = err?.code || "";
-  const msg = String(err?.message || "");
-  if (code === "EAUTH" || code === "EENVELOPE") return true;
-  if (msg.includes("535") || msg.toLowerCase().includes("username and password")) return true;
-  return false;
-}
-
+// ---------------------------------------------------------------------------
+// Core send (retry + profile fallback)
+// ---------------------------------------------------------------------------
 async function sendMailCore({ to, subject, text, html }, { attempts = 3 } = {}) {
+  const safeSubject = `=?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`;
+
   const makeOptions = (p) => ({
     from: { name: p.fromName, address: p.from },
     to,
-    subject,
+    subject: safeSubject,
     text: text || "",
     html: html || (text ? `<p>${text}</p>` : undefined),
     ...(p.replyTo ? { replyTo: p.replyTo } : {}),
@@ -212,42 +223,38 @@ async function sendMailCore({ to, subject, text, html }, { attempts = 3 } = {}) 
 
   for (let pi = 0; pi < profiles.length; pi++) {
     if (pi !== activeIdx) useProfile(pi);
+
     const p = profiles[activeIdx];
     const mailOptions = makeOptions(p);
 
+    // verify (optional)
     if (MAIL_VERIFY) {
-      await verifyTransporterOnce();
+      try {
+        await verifyIfEnabled();
+      } catch (e) {
+        lastErr = e;
+        // verify fail → sonraki profile'a geç
+        if (pi < profiles.length - 1) continue;
+        throw e;
+      }
     }
 
     for (let i = 0; i < attempts; i++) {
       try {
         const info = await transporter.sendMail(mailOptions);
-        if (MAIL_DEBUG) {
-          console.log("[mail] sent", { prefix: p.prefix, to, messageId: info?.messageId });
-        }
+        if (MAIL_DEBUG) console.log("[mail] sent", { prefix: p.prefix, to, messageId: info?.messageId });
         return info;
       } catch (e) {
         lastErr = e;
+        if (MAIL_DEBUG) console.error("[mail] send failed", { prefix: p.prefix, code: e?.code, message: e?.message });
 
-        if (MAIL_DEBUG) {
-          console.error("[mail] send failed", {
-            prefix: p.prefix,
-            code: e?.code,
-            message: e?.message,
-            response: e?.response,
-          });
-        }
+        if (shouldTryNextProfile(e)) break; // başka profile
 
-        // auth/envelope → diğer profile'a geç
-        if (isAuthOrEnvelope(e)) break;
-
-        // transient → retry
-        if (isTransient(e) && i < attempts - 1) {
+        if (isTransient(e)) {
           await sleep(400 * Math.pow(2, i));
           continue;
         }
 
-        // başka hata → retry yok
         break;
       }
     }
@@ -260,9 +267,7 @@ async function sendMailCore({ to, subject, text, html }, { attempts = 3 } = {}) 
 // Public exports
 // ---------------------------------------------------------------------------
 export async function sendEmail(to, subject, text, html = null) {
-  // UTF-8 subject safe (base64)
-  const safeSubject = `=?UTF-8?B?${Buffer.from(String(subject || "")).toString("base64")}?=`;
-  return sendMailCore({ to, subject: safeSubject, text, html }, { attempts: 3 });
+  return sendMailCore({ to, subject, text, html }, { attempts: 3 });
 }
 
 export async function sendActivationEmail(to, code, username = "") {
@@ -273,7 +278,9 @@ export async function sendActivationEmail(to, code, username = "") {
       <h2>FindAllEasy</h2>
       ${hello}
       <p>Hesabınızı aktifleştirmek için aşağıdaki kodu kullanın:</p>
-      <div style="font-size:22px;font-weight:bold;padding:10px 0;">${code}</div>
+      <div style="font-size:22px;font-weight:bold;padding:10px 0;">
+        ${code}
+      </div>
       <p style="color:#666;font-size:12px;">Bu kod 24 saat geçerlidir.</p>
     </div>
   `;
@@ -288,9 +295,47 @@ export async function sendPasswordResetCode(to, code, username = "") {
       <h2>FindAllEasy</h2>
       ${hello}
       <p>Şifre sıfırlamak için gerekli kod:</p>
-      <div style="font-size:22px;font-weight:bold;padding:10px 0;">${code}</div>
+      <div style="font-size:22px;font-weight:bold;padding:10px 0;">
+        ${code}
+      </div>
       <p style="color:#666;font-size:12px;">Eğer bu isteği siz yapmadıysanız, bu e-postayı yok sayın.</p>
     </div>
   `;
   return sendEmail(to, subject, `Şifre sıfırlama kodunuz: ${code}`, html);
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics helpers (safe to expose ONLY behind a token)
+// ---------------------------------------------------------------------------
+function maskEmail(s) {
+  const e = String(s || "");
+  const at = e.indexOf("@");
+  if (at <= 1) return "***";
+  return e[0] + "***" + e.slice(at);
+}
+
+export function getMailHealth() {
+  const active = profiles[activeIdx];
+  return {
+    active: active
+      ? {
+          prefix: active.prefix,
+          host: active.host,
+          port: active.port,
+          secure: active.secure,
+          from: active.from,
+          user: maskEmail(active.user),
+        }
+      : null,
+    profiles: profiles.map((p) => ({
+      prefix: p.prefix,
+      host: p.host,
+      port: p.port,
+      secure: p.secure,
+      from: p.from,
+      user: maskEmail(p.user),
+    })),
+    verifyEnabled: MAIL_VERIFY,
+    debugEnabled: MAIL_DEBUG,
+  };
 }
