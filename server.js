@@ -56,6 +56,45 @@ function fail(res, status = 400, data = {}) {
 }
 
 // =============================================================================
+// ✅ safeImportRouter (relative to THIS file, Render-safe)
+// - Logs failures
+// - AUTH is critical: if it fails, crash early (so deploy doesn't look "green" while login is dead)
+// =============================================================================
+async function safeImportRouter(specOrSpecs, name) {
+  const specs = Array.isArray(specOrSpecs) ? specOrSpecs : [specOrSpecs];
+
+  let lastErr = null;
+
+  for (const spec of specs) {
+    try {
+      if (!spec) continue;
+
+      // Resolve relative to THIS file, not process.cwd()
+      const modUrl = String(spec).startsWith("file://")
+        ? new URL(spec)
+        : new URL(spec, import.meta.url);
+
+      const m = await import(modUrl.href);
+      const router = m?.default || m?.router || null;
+
+      if (!router) throw new Error(`Router export missing in ${spec}`);
+
+      console.log(`[router:${name}] loaded -> ${modUrl.pathname || modUrl.href}`);
+      return router;
+    } catch (err) {
+      lastErr = err;
+      console.error(`[router:${name}] load failed (${spec})`, err);
+
+      // auth kritik: yoksa sistem "çalışıyor gibi" görünür ama login/register ölür.
+      if (name === "auth") throw err;
+    }
+  }
+
+  return null;
+}
+
+
+// =============================================================================
 // Frontend static hosting (OPTIONAL)
 // =============================================================================
 function resolveFrontendDist() {
@@ -390,6 +429,7 @@ async function registerRouterRoutes(appInstance) {
     }
   }
 
+<<<<<<< HEAD
   // ✅ FIXED: resolve relative to server.js location (import.meta.url), not process.cwd()
   async function safeImportRouter(specOrSpecs, name) {
     const specs = Array.isArray(specOrSpecs) ? specOrSpecs : [specOrSpecs];
@@ -434,6 +474,9 @@ async function registerRouterRoutes(appInstance) {
     return null;
   }
 
+=======
+  // (router loader) using global safeImportRouter
+>>>>>>> 2fd178d (fix: router import relative + resolve auth conflict markers)
   mountOnce("/api/verify", await safeImportRouter("./server/routes/verify.js", "verify"));
   mountOnce("/api/auth", await safeImportRouter("./server/routes/auth.js", "auth"));
 
