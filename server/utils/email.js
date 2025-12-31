@@ -113,7 +113,8 @@ function buildProfile(prefix) {
 }
 
 // ✅ ÖNEMLİ: Öncelik EMAIL → SMTP → MAIL
-const profiles = ["SMTP", "MAIL", "EMAIL"].map(buildProfile).filter(Boolean);
+// Render'da en stabil kurulum genelde EMAIL_* setidir.
+const profiles = ["EMAIL", "SMTP", "MAIL"].map(buildProfile).filter(Boolean);
 
 // Mixed profile (her şey karmaysa son çare)
 (function addMixed() {
