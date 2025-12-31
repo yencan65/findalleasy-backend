@@ -300,7 +300,9 @@ app.use("/api/csp", (err, req, res, next) => {
       (err.type === "entity.parse.failed" ||
         err instanceof SyntaxError ||
         String(err.message || "").toLowerCase().includes("unexpected token") ||
-        String(err.message || "").toLowerCase().includes("expected property name"));
+        String(err.message || "")
+          .toLowerCase()
+          .includes("expected property name"));
 
     // CSP endpoint telemetri: parse bozulsa bile 204 dön, tarayıcıyı / sistemi yorma
     if (isCsp && isParseErr && !res.headersSent) {
@@ -361,8 +363,10 @@ async function registerRouterRoutes(appInstance) {
   globalThis.__FAE_ROUTER_ROUTES_REGISTERED = true;
 
   const reg = getRouteRegistry(appInstance);
-  const strict = String(process.env.FINDALLEASY_STRICT_BOOT || "").toLowerCase() === "1";
-  const routeDebug = String(process.env.FINDALLEASY_ROUTE_DEBUG || "") === "1";
+  const strict =
+    String(process.env.FINDALLEASY_STRICT_BOOT || "").toLowerCase() === "1";
+  const routeDebug =
+    String(process.env.FINDALLEASY_ROUTE_DEBUG || "") === "1";
 
   function mountOnce(prefix, router, aliases = []) {
     if (!router) {
@@ -386,45 +390,47 @@ async function registerRouterRoutes(appInstance) {
     }
   }
 
-  async function safeImportRouter(specOrSpecs, label) {
+  // ✅ FIXED: resolve relative to server.js location (import.meta.url), not process.cwd()
+  async function safeImportRouter(specOrSpecs, name) {
     const specs = Array.isArray(specOrSpecs) ? specOrSpecs : [specOrSpecs];
-    let triedAnyExisting = false;
     let lastErr = null;
 
     for (const spec of specs) {
+      if (!spec) continue;
+
       try {
-        if (!spec) continue;
+        const s = String(spec);
 
-        let fileUrl = null;
-        if (String(spec).startsWith("file://")) {
-          fileUrl = String(spec);
-          triedAnyExisting = true;
-        } else {
-          const absPath = path.isAbsolute(spec)
-            ? spec
-            : path.join(process.cwd(), String(spec).replace(/^\.\/?/, ""));
+        // Resolve relative to THIS file, not cwd
+        const modUrl = s.startsWith("file://")
+          ? new URL(s)
+          : new URL(s, import.meta.url);
 
-          if (!fs.existsSync(absPath)) continue;
-          triedAnyExisting = true;
-          fileUrl = pathToFileURL(absPath).href;
-        }
+        const m = await import(modUrl.href);
+        const router = m?.default || m?.router || null;
 
-        const mod = await import(fileUrl);
-        const router = mod?.default || mod?.router || null;
-        if (!router) throw new Error(`Router export not found (${label || spec})`);
+        if (!router) throw new Error(`Router export missing in ${s}`);
+
+        console.log(`[router:${name}] loaded -> ${modUrl.pathname}`);
         return router;
-      } catch (e) {
-        lastErr = e;
-        console.error(`❌ Route import FAIL: ${label || spec} ->`, e?.message || e);
-        if (strict) throw e;
+      } catch (err) {
+        lastErr = err;
+        console.error(
+          `[router:${name}] load failed (${spec})`,
+          err?.message || err
+        );
+
+        // strict boot açık: yutma
+        if (strict) throw err;
+
+        // strict kapalı: sıradaki adayı dene
+        continue;
       }
     }
 
-    if (!triedAnyExisting) {
-      if (routeDebug) console.log(`⏭️ Route skip (not found): ${label || "(unknown)"}`);
-      return null;
-    }
-    if (lastErr && strict) throw lastErr;
+    // auth kritik: yoksa sistem "çalışıyor gibi" görünür ama login/register ölür.
+    if (name === "auth") throw (lastErr || new Error("Auth router missing"));
+
     return null;
   }
 
@@ -510,7 +516,8 @@ function registerInlineRoutes(appInstance) {
 
   const reg = getRouteRegistry(appInstance);
   const routeDebug = String(process.env.FINDALLEASY_ROUTE_DEBUG || "") === "1";
-  const INLINE_UNDER_ROUTER = String(process.env.FINDALLEASY_INLINE_UNDER_ROUTER || "0") === "1";
+  const INLINE_UNDER_ROUTER =
+    String(process.env.FINDALLEASY_INLINE_UNDER_ROUTER || "0") === "1";
 
   function inlineAllowed(prefix) {
     return INLINE_UNDER_ROUTER || !reg.mounted.has(prefix);
