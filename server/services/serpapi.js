@@ -1,5 +1,5 @@
 // server/services/serpapi.js
-export async function serpSearch({ q, engine = "google_shopping", gl = "tr", hl = "tr" }) {
+export async function serpSearch({ q, engine = "google_shopping", gl = "tr", hl = "tr", signal }) {
   const apiKey = process.env.SERPAPI_KEY;
   if (!apiKey) throw new Error("SERPAPI_KEY missing");
 
@@ -10,7 +10,7 @@ export async function serpSearch({ q, engine = "google_shopping", gl = "tr", hl 
   url.searchParams.set("hl", hl);
   url.searchParams.set("api_key", apiKey);
 
-  const r = await fetch(url, { method: "GET" });
+  const r = await fetch(url, { method: "GET", signal });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     throw new Error(`SerpApi error ${r.status}: ${text.slice(0, 200)}`);

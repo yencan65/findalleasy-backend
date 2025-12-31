@@ -2307,6 +2307,9 @@ async function safeRun(
       ? ctx.providerKey.trim()
       : null;
 
+  // Engine options (diagCollector, shadow flags, etc.)
+  const opts = (ctx && typeof ctx === "object" ? ctx.engineOpts : null) || {};
+
   let adapterName = ctxAdapterName || "unknown_adapter";
   let fn = null;
   let timeoutMs = DEFAULT_ADAPTER_TIMEOUT_MS;

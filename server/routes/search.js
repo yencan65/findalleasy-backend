@@ -20,6 +20,7 @@ import path from "path";
 import crypto from "crypto";
 import { fixQueryTyposTR } from "../utils/queryTypoFixer.js";
 import { getDb } from "../db.js";
+import { applyS200FallbackIfEmpty, shouldExposeDiagnostics } from "../core/s200Fallback.js";
 
 const router = express.Router();
 
@@ -712,6 +713,11 @@ async function handle(req, res) {
       (req.method === "POST" ? req.body?.region : req.query?.region) ||
         REGION_DEFAULT
     ) || REGION_DEFAULT;
+  const locale =
+    safeStr(
+      (req.method === "POST" ? req.body?.locale : req.query?.locale) || "tr"
+    ) || "tr";
+
   const currencyParam = safeStr(req.method === "POST" ? req.body?.currency : req.query?.currency);
 
   // Provider filter (request-level OR env allowlist)
@@ -858,12 +864,17 @@ async function handle(req, res) {
       appendJsonl(INTENT_LOG_PATH, payload);
       emitTelemetry("intent.search.catalog_only", payload, req);
 
-      return res.status(200).json({
+      let response = {
         ok: true,
         reqId,
         ts,
         q,
+        query: q,
+        category: "product",
         group: "product",
+        region,
+        locale,
+
         usedGroup: "product",
         intent: safeStr(autoMeta?.intent) || safeStr(autoMeta?.category) || "product",
         results: items,
@@ -885,7 +896,39 @@ async function handle(req, res) {
           catalog: cat?.meta || cat?._meta || null,
           ...(autoMeta ? { auto: autoMeta } : {}),
         },
-      });
+      };
+
+
+      // Fallback if catalog is empty: SerpApi bandajı (reviewer için ürün göster).
+      try {
+        response = await applyS200FallbackIfEmpty({
+          req,
+          result: response,
+          q: response?.q ?? q,
+          group: "product",
+          region,
+          locale,
+          limit: reqLimit,
+          reason: "CATALOG_EMPTY",
+        });
+      } catch {
+        // ignore
+      }
+
+      const exposeDiag = shouldExposeDiagnostics(req);
+      if (!exposeDiag) {
+        try {
+          if (Array.isArray(response?.items)) {
+            response.items = response.items.map((it) => {
+              const { _raw, ...rest } = it || {};
+              return rest;
+            });
+          }
+          if (Array.isArray(response?.results)) response.results = response.items;
+        } catch {}
+      }
+
+      return res.status(200).json(response);
     } catch (e) {
       const msg = safeStr(e?.message || e);
       console.warn(`[${reqId}] catalog_only failed -> adapters`, msg);
@@ -1107,10 +1150,15 @@ async function handle(req, res) {
   const msTotal = Date.now() - t0;
 
   // Response (dual-compat: results + items)
-  return res.json({
+  let response = {
     ok: true,
     q,
+    query: q,
+    category: resolvedGroup,
     group: resolvedGroup,
+    region,
+    locale,
+
     results: items,
     items,
     count,
@@ -1142,7 +1190,57 @@ async function handle(req, res) {
       ...(usedAuto ? { auto: autoMeta } : {}),
       ...(typo?.fixed ? { qOriginal: qRaw, typoFix: typo.changes } : {}),
     },
-  });
+  };
+
+
+  // -------------------------------------------------------------------------
+  // Fallback (only if empty): reviewer-facing "ürün var" bandajı.
+  // ZERO-DELETE: primary doluysa dokunmaz.
+  // -------------------------------------------------------------------------
+  try {
+    const reason =
+      response?._meta?.upstreamMeta?.deadlineHit ? "DEADLINE_HIT" : "EMPTY_PRIMARY";
+
+    response = await applyS200FallbackIfEmpty({
+      req,
+      result: response,
+      q: response?.q ?? response?.query ?? q,
+      group: response?.group ?? resolvedGroup,
+      region: response?.region ?? region,
+      locale: response?.locale ?? locale,
+      limit: reqLimit,
+      reason,
+    });
+  } catch {
+    // do not crash the route
+  }
+
+  // -------------------------------------------------------------------------
+  // Diagnostics gate: prod'da herkese adapterDiagnostics + ham _raw açma.
+  // -------------------------------------------------------------------------
+  const exposeDiag = shouldExposeDiagnostics(req);
+  if (!exposeDiag) {
+    try {
+      const um = response?._meta?.upstreamMeta;
+      if (um && typeof um === "object") {
+        if (Array.isArray(um.adapterDiagnostics)) um.adapterDiagnostics = [];
+      }
+    } catch {}
+
+    // Strip any raw blobs (fallback items may carry _raw)
+    try {
+      if (Array.isArray(response?.items)) {
+        response.items = response.items.map((it) => {
+          const { _raw, ...rest } = it || {};
+          return rest;
+        });
+      }
+      if (Array.isArray(response?.results)) response.results = response.items;
+    } catch {}
+  }
+
+  return res.json(response);
+
 }
 
 // ---------------------------------------------------------------------------
