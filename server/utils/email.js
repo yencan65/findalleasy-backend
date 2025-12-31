@@ -22,6 +22,9 @@ function pickEnv(...names) {
 }
 
 const MAIL_DEBUG = pickEnv("MAIL_DEBUG") === "1";
+// Bazı SMTP'ler verify() çağrısını sevmez (özellikle bazı kurumsal sunucular).
+// Default ON, ama Render ENV: MAIL_VERIFY=0 ile kapatılabilir.
+const MAIL_VERIFY = pickEnv("MAIL_VERIFY") !== "0";
 
 // Çok isimli ENV desteği (Render'da bazen farklı adla set ediliyor)
 const SMTP_USER = pickEnv("EMAIL_USER", "SMTP_USER", "MAIL_USER");
@@ -33,8 +36,11 @@ const SMTP_SECURE =
   pickEnv("EMAIL_SECURE", "SMTP_SECURE", "MAIL_SECURE") === "1" ||
   SMTP_PORT === 465;
 
-const MAIL_FROM_NAME = pickEnv("EMAIL_FROM_NAME", "MAIL_FROM_NAME") || "FindAllEasy";
-const MAIL_FROM = pickEnv("EMAIL_FROM", "SMTP_FROM", "MAIL_FROM") || SMTP_USER;
+const MAIL_FROM_NAME =
+  pickEnv("EMAIL_FROM_NAME", "MAIL_FROM_NAME", "FROM_NAME") || "FindAllEasy";
+// Render'da senin kullandığın isim: FROM_EMAIL
+const MAIL_FROM =
+  pickEnv("EMAIL_FROM", "SMTP_FROM", "MAIL_FROM", "FROM_EMAIL") || SMTP_USER;
 const MAIL_REPLY_TO = pickEnv("EMAIL_REPLY_TO", "MAIL_REPLY_TO") || "";
 
 // ---------------------------------------------------------------------------
@@ -72,6 +78,10 @@ function getTransporter() {
     tls: {
       minVersion: "TLSv1.2",
     },
+
+    // Debug (şifreyi basmaz) — Render Logs için çok faydalı
+    logger: MAIL_DEBUG,
+    debug: MAIL_DEBUG,
   });
 
   return transporter;
@@ -146,7 +156,10 @@ async function safeSend(mailOptions, { attempts = 3 } = {}) {
   const tx = getTransporter();
 
   // İlk denemede verify (ayar gerçekten düzgün mü?)
-  await verifyTransporterOnce();
+  // Bazı sağlayıcılarda verify gereksiz fail üretebilir → MAIL_VERIFY=0 ile kapat.
+  if (MAIL_VERIFY) {
+    await verifyTransporterOnce();
+  }
 
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
