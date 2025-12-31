@@ -1,151 +1,130 @@
 // server/core/s200Fallback.js
 // ============================================================================
-// S200 FALLBACK + DIAGNOSTICS HELPERS — ZERO DELETE
-// - Primary S200 empty/deadline -> fallback to SerpApi (google_shopping)
-// - Adds minimal, safe meta flags for reviewers and debugging
+// S200 FALLBACK — reviewer-bandaj + diag gate
+// - applyS200FallbackIfEmpty: product empty ise serpapi/google_shopping fallback
+// - shouldExposeDiagnostics: prod'da token, dev'de serbest (veya header ile)
 // ============================================================================
 
-import crypto from "crypto";
-
-// Var olan serpapi servisini kullanıyoruz (senin projende bu dosya zaten vardı)
 import { serpSearch } from "../services/serpapi.js";
 
-// Var olan cacheEngine (vitrine tarafında kullanıyordun)
-import { getCachedResult, setCachedResult } from "./cacheEngine.js";
+const SERPAPI_ENABLED = !!(
+  process.env.SERPAPI_KEY ||
+  process.env.SERPAPI_API_KEY ||
+  process.env.SERP_API_KEY
+);
 
-const FALLBACK_ENABLE = String(process.env.FINDALLEASY_FALLBACK_ENABLE ?? "1") !== "0";
-const FALLBACK_TIMEOUT_MS = Number(process.env.FINDALLEASY_FALLBACK_TIMEOUT_MS ?? 5200);
-const FALLBACK_CACHE_TTL_MS = Number(process.env.FINDALLEASY_FALLBACK_CACHE_TTL_MS ?? 10 * 60 * 1000);
-const FALLBACK_CACHE_TTL_SEC = Math.max(1, Math.round(FALLBACK_CACHE_TTL_MS / 1000));
-
-// SerpApi: ENV’de key yoksa fallback çalışamaz (bilerek)
-const SERPAPI_ENABLED = !!process.env.SERPAPI_KEY;
-
-// Diagnostics exposure: prod’da herkese açık diag istemiyoruz.
 export function shouldExposeDiagnostics(req) {
-  const diagQuery = String(req?.query?.diag ?? "") === "1";
-  const tokenHeader = String(req?.headers?.["x-fae-diag"] ?? "");
-  const tokenEnv = String(process.env.FAE_DIAG_TOKEN ?? "");
-  const isProd = String(process.env.NODE_ENV ?? "").toLowerCase() === "production";
+  try {
+    const q = String(req?.query?.diag || "").trim().toLowerCase();
+    const diagQuery = q === "1" || q === "true" || q === "yes";
 
-  // Prod: token şart. Non-prod: ?diag=1 yeter.
-  if (isProd) return tokenEnv && tokenHeader && tokenHeader === tokenEnv;
-  return diagQuery || (tokenEnv && tokenHeader === tokenEnv);
-}
+    const h = String(req?.headers?.["x-fae-diag"] || "").trim();
+    const token = String(
+      process.env.FINDALLEASY_DIAG_TOKEN || process.env.FAE_DIAG_TOKEN || ""
+    ).trim();
+    const isProd =
+      String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
 
-function sha1_16(input) {
-  return crypto.createHash("sha1").update(String(input || "")).digest("hex").slice(0, 16);
-}
+    // Query ile diag istendi:
+    // - non-prod: her zaman aç
+    // - prod: token varsa header token match şart, token yoksa aç
+    if (diagQuery) {
+      if (isProd && token) return h === token;
+      return true;
+    }
 
-function normQ(q) {
-  const s = String(q ?? "").trim();
-  return s.length ? s : "";
-}
-
-function parseCurrencyFromPriceString(priceStr) {
-  const s = String(priceStr || "");
-  if (s.includes("₺")) return "TRY";
-  if (s.includes("€")) return "EUR";
-  if (s.includes("$")) return "USD";
-  if (s.toLowerCase().includes("gbp") || s.includes("£")) return "GBP";
-  return "TRY"; // TR default (gl=tr)
-}
-
-function parseExtractedPrice(item) {
-  if (typeof item?.extracted_price === "number" && Number.isFinite(item.extracted_price)) {
-    return item.extracted_price;
+    // Header-based diag (token opsiyonel)
+    if (!h) return false;
+    if (!token) return true;
+    return h === token;
+  } catch {
+    return false;
   }
-  // price string -> number (best-effort)
-  const s = String(item?.price || "").replace(/\s/g, "");
-  // örn: "₺12.999,00" / "12.999₺"
-  const cleaned = s
-    .replace(/[^\d,.-]/g, "")
-    .replace(/\.(?=\d{3}(\D|$))/g, "") // binlik noktaları sil
-    .replace(",", "."); // virgül -> nokta
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
 }
 
-function mapSerpItemToS200(raw, { locale = "tr", region = "TR" } = {}) {
-  const originUrl = raw?.link || raw?.product_link || raw?.link_href || "";
-  const id = `disc_${sha1_16(originUrl || raw?.title || JSON.stringify(raw).slice(0, 200))}`;
+function safeStr(v) {
+  return v == null ? "" : String(v).trim();
+}
 
-  const priceNum = parseExtractedPrice(raw);
-  const currency = parseCurrencyFromPriceString(raw?.price);
+function pick(obj, keys) {
+  for (const k of keys) {
+    if (obj && obj[k] != null) return obj[k];
+  }
+  return undefined;
+}
+
+function normalizeSerpItem(it) {
+  const obj = it && typeof it === "object" ? it : {};
+  const title = safeStr(obj.title || obj.name || obj.product_title);
+  const link = safeStr(obj.link || obj.product_link || obj.url);
+  const img = safeStr(obj.thumbnail || obj.image || obj.img);
+  const priceStr = safeStr(
+    pick(obj, ["price", "extracted_price", "price_value", "price_num"])
+  );
+
+  // extracted_price might already be a number
+  const priceNum =
+    typeof obj.extracted_price === "number"
+      ? obj.extracted_price
+      : Number(String(priceStr || "").replace(",", ".").replace(/[^\d.]/g, ""));
+
+  const price = Number.isFinite(priceNum) ? priceNum : 0;
 
   return {
-    // S200 minimal item schema (senin sistemde alanlar daha zengin olabilir; eklemeye açık)
-    id,
-    title: String(raw?.title || raw?.name || "Ürün"),
-    price: priceNum ?? null,
-    finalPrice: priceNum ?? null,
-    currency,
-    image: raw?.thumbnail || raw?.thumbnail_url || raw?.image || null,
+    id: `serpapi:${cryptoSafeHash(title + "|" + link)}`,
     provider: "serpapi",
-    providerKey: "discovery_serpapi",
-    region,
-    locale,
-    originUrl: originUrl || null,
-    finalUrl: originUrl || null,
-    url: originUrl || null,
-    ratingValue: raw?.rating ?? null,
-    reviewCount: raw?.reviews ?? null,
-
-    // Debug için ham data (prod’da diag kapalıysa zaten dönmeyecek)
-    _raw: raw,
+    providerKey: "serpapi",
+    title,
+    price,
+    finalPrice: price,
+    currency: safeStr(obj.currency || obj.price_currency || "TRY"),
+    image: img,
+    url: link,
+    finalUrl: link,
+    originUrl: link,
+    _raw: obj,
   };
 }
 
-async function serpFallbackSearch({ q, limit = 10, region = "TR", locale = "tr" }) {
-  if (!SERPAPI_ENABLED) {
-    return { items: [], diag: { provider: "serpapi", enabled: false, reason: "SERPAPI_KEY_MISSING" } };
-  }
-
-  const gl = region?.toLowerCase?.() === "tr" ? "tr" : "tr";
-  const hl = locale?.toLowerCase?.().startsWith("tr") ? "tr" : "tr";
-
-  const cacheKey = `S200_FALLBACK_SERP:${gl}:${hl}:${normQ(q)}:${limit}`;
-  const cached = await getCachedResult(cacheKey).catch(() => null);
-  if (cached?.ok && Array.isArray(cached?.items)) {
-    return {
-      items: cached.items,
-      diag: { provider: "serpapi", enabled: true, cached: true, count: cached.items.length },
-    };
-  }
-
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(new Error("FALLBACK_TIMEOUT")), FALLBACK_TIMEOUT_MS);
-
-  const t0 = Date.now();
+function cryptoSafeHash(s) {
   try {
-    const data = await serpSearch({ q, engine: "google_shopping", gl, hl, signal: ac.signal });
-    const rawList = Array.isArray(data?.shopping_results) ? data.shopping_results : [];
-    const sliced = rawList.slice(0, Math.max(1, Number(limit) || 10));
-    const items = sliced.map((r) => mapSerpItemToS200(r, { region, locale }));
+    // lazy import to avoid bundlers
+    // eslint-disable-next-line global-require
+    const crypto = require("crypto");
+    return crypto.createHash("sha1").update(String(s || "")).digest("hex").slice(0, 16);
+  } catch {
+    // fallback
+    const x = String(s || "");
+    let h = 0;
+    for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(16);
+  }
+}
 
-    // cache (best-effort)
-        const cacheItems = items.map(({ _raw, ...rest }) => rest);
-    await setCachedResult(cacheKey, { ok: true, items: cacheItems }, FALLBACK_CACHE_TTL_SEC).catch(() => null);
+async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
+  const diag = { provider: "serpapi", enabled: SERPAPI_ENABLED };
+  const t0 = Date.now();
 
+  if (!SERPAPI_ENABLED) {
+    return { items: [], diag: { ...diag, error: "SERPAPI_DISABLED", ms: Date.now() - t0 } };
+  }
+
+  try {
+    const r = await serpSearch({ q, engine: "google_shopping", gl, hl });
+    const arr =
+      Array.isArray(r?.shopping_results) ? r.shopping_results : Array.isArray(r?.results) ? r.results : [];
+
+    const items = arr.map(normalizeSerpItem).filter((x) => x?.title && x?.url);
     return {
-      items,
-      diag: {
-        provider: "serpapi",
-        enabled: true,
-        cached: false,
-        ms: Date.now() - t0,
-        rawCount: rawList.length,
-        count: items.length,
-      },
+      items: items.slice(0, Math.max(1, Math.min(50, Number(limit) || 8))),
+      diag: { ...diag, ms: Date.now() - t0, count: items.length },
     };
-  } catch (err) {
-    const e = err?.name === "AbortError" ? "ABORT" : (err?.message || "ERROR").slice(0, 120);
+  } catch (e) {
+    const msg = safeStr(e?.message || e);
     return {
       items: [],
-      diag: { provider: "serpapi", enabled: true, error: e, ms: Date.now() - t0 },
+      diag: { ...diag, error: msg, ms: Date.now() - t0 },
     };
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -153,53 +132,42 @@ export async function applyS200FallbackIfEmpty({
   req,
   result,
   q,
-  group = "product",
-  region = "TR",
-  locale = "tr",
+  group,
+  region,
+  locale,
   limit = 10,
   reason = "EMPTY_PRIMARY",
 }) {
-  if (!FALLBACK_ENABLE) return result;
-
-  const qq = normQ(q);
-  if (qq.length < 2) return result;
-
-  const itemsArr =
-    Array.isArray(result?.items) ? result.items :
-    Array.isArray(result?.results) ? result.results :
-    [];
-
-  if (itemsArr.length > 0) return result; // primary zaten dolu
-
-  const fb = await serpFallbackSearch({ q: qq, limit, region, locale });
-
+  const base = result && typeof result === "object" ? result : {};
+  const items = Array.isArray(base?.items) ? base.items : Array.isArray(base?.results) ? base.results : [];
   const exposeDiag = shouldExposeDiagnostics(req);
 
-  // meta alanlarını güçlendir (ZERO-DELETE: sadece ekliyoruz)
-  const meta = result?._meta && typeof result._meta === "object" ? result._meta : {};
-  const next = { ...result, _meta: meta };
-
-  const fbItems = (Array.isArray(fb.items) ? fb.items : []).map((it) => {
-    if (exposeDiag) return it;
-    const { _raw, ...rest } = it || {};
-    return rest;
-  });
-
-  next._meta.fallback = {
-    used: fbItems.length > 0,
-    strategy: "serpapi_google_shopping",
-    reason,
-    serpapiEnabled: SERPAPI_ENABLED,
-    count: fbItems.length,
-    diag: fb.diag,
-  };
-
-  if (fbItems.length === 0) {
-    // boş kaldıysa yine boş dön; ama artık “neden” meta’da var.
-    return next;
+  // If already has items, do nothing
+  if (items.length > 0) {
+    try {
+      if (base?._meta && typeof base._meta === "object") {
+        if (!base._meta.fallback) base._meta.fallback = { attempted: false, used: false, strategy: "none" };
+      }
+    } catch {}
+    return base;
   }
 
-  // Fallback ürünleri “asıl result” gibi koyuyoruz (reviewer ürünü görsün)
+  // Only for product group
+  const g = safeStr(group || base?.group || base?.category).toLowerCase();
+  if (g !== "product") return base;
+
+  // Try serpapi
+  const fb = await serpFallback({
+    q: safeStr(q || base?.q || base?.query),
+    gl: safeStr(region || "TR").toLowerCase(),
+    hl: safeStr(locale || "tr").toLowerCase(),
+    limit,
+  });
+
+  const fbItems = Array.isArray(fb?.items) ? fb.items : [];
+
+  // Merge into response (never crash)
+  const next = { ...base };
   next.items = fbItems;
   next.results = fbItems;
   next.count = fbItems.length;
@@ -207,9 +175,42 @@ export async function applyS200FallbackIfEmpty({
   next.hasMore = false;
   next.nextOffset = 0;
 
-  // ok flag: primary ok:true bile olsa aynı; ama primary ok:false ise fallback ile true yapmak tartışmalı.
-  // Burada mevcut ok değerini koruyoruz; sadece ürünleri sağlıyoruz.
-  // İstersen ok:true zorlayabilirsin ama ben “dürüst meta” tarafındayım.
+  next._meta = next._meta && typeof next._meta === "object" ? next._meta : {};
+  next._meta.engineVariant = next._meta.engineVariant || "S200_FALLBACK";
+  if (typeof next._meta.deadlineHit !== "boolean") next._meta.deadlineHit = false;
+
+  next._meta.fallback = (() => {
+    const attemptedStrategy = "serpapi_google_shopping";
+    const used = fbItems.length > 0;
+
+    // Semantics:
+    // - attempted: fallback denendi
+    // - used: fallback usable item üretti
+    // - strategy: sadece used=true ise "none" dışı
+    return {
+      attempted: true,
+      used,
+      strategy: used ? attemptedStrategy : "none",
+      attemptedStrategy,
+      reason,
+      serpapiEnabled: SERPAPI_ENABLED,
+      count: fbItems.length,
+      ...(exposeDiag ? { diag: fb.diag } : {}),
+    };
+  })();
+
+  // Strip _raw if diag not exposed
+  if (!exposeDiag) {
+    try {
+      next.items = Array.isArray(next.items)
+        ? next.items.map((it) => {
+            const { _raw, ...rest } = it || {};
+            return rest;
+          })
+        : [];
+      next.results = next.items;
+    } catch {}
+  }
 
   return next;
 }
