@@ -12,8 +12,6 @@
 // ✅ group accepts BOTH {group} and {category}
 // ✅ _meta always exposes: engineVariant, deadlineHit, rateLimit, fallback, adapterDiagnosticsSummary
 // ✅ catalog_only supports proper paging (offset/limit/total/hasMore)
-// ✅ CATALOG_ONLY diag summary is NOT blank anymore (adapterDiagnosticsSummary filled)
-// ✅ _meta.deadlineHit + _meta.fallback determinism hardened
 // ✅ no-crash discipline preserved
 // ============================================================================
 
@@ -222,12 +220,10 @@ function ensureDiagKeys(meta, { engineVariant } = {}) {
   if (engineVariant && !m.engineVariant) m.engineVariant = engineVariant;
 
   // Common keys your PowerShell expects at top-level:
-  if (typeof m.deadlineHit !== "boolean")
-    m.deadlineHit = !!m.upstreamMeta?.deadlineHit;
+  if (m.deadlineHit == null) m.deadlineHit = !!m.upstreamMeta?.deadlineHit;
   if (m.rateLimit == null) m.rateLimit = m.upstreamMeta?.rateLimit || null;
   if (m.adapterDiagnosticsSummary == null)
-    m.adapterDiagnosticsSummary =
-      m.upstreamMeta?.adapterDiagnosticsSummary || null;
+    m.adapterDiagnosticsSummary = m.upstreamMeta?.adapterDiagnosticsSummary || null;
 
   if (m.fallback == null) m.fallback = { used: false, strategy: "none" };
   if (m.fallback && typeof m.fallback === "object") {
@@ -357,7 +353,6 @@ async function fetchCatalogFallback({
     // Total (best effort; can be heavy with regex, so guard)
     let total = docs.length;
     try {
-      // Keep it bounded in time
       total = await col.countDocuments(filter, { maxTimeMS: 1500 });
     } catch {
       // ignore, keep docs.length
@@ -374,9 +369,7 @@ async function fetchCatalogFallback({
 
         const p = typeof d.price === "number" ? d.price : safeInt(d.price, 0);
         const fp =
-          typeof d.finalPrice === "number"
-            ? d.finalPrice
-            : safeInt(d.finalPrice, 0);
+          typeof d.finalPrice === "number" ? d.finalPrice : safeInt(d.finalPrice, 0);
 
         return {
           id: `${pk2}:${cid2}:${offerId}`,
@@ -447,8 +440,7 @@ function inferProviderKeyFromId(id) {
 function normalizeProviderKeyLoose(k) {
   const s = safeStr(k).toLowerCase();
   if (!s) return "";
-  if (s === "unknown" || s === "unknown_provider" || s === "unknownprovider")
-    return "";
+  if (s === "unknown" || s === "unknown_provider" || s === "unknownprovider") return "";
   return s;
 }
 
@@ -519,8 +511,7 @@ function keywordOverride(qNorm) {
     hasAnyInText("konaklama", "otel rezervasyon", "hotel booking");
   if (hotelSig) return { group: "hotel", reason: "keyword_hotel", keyword: "hotel" };
 
-  const flightSig =
-    has("ucak", "bilet") || hasAnyInText("ucak bileti", "uçak bileti", "flight ticket");
+  const flightSig = has("ucak", "bilet") || hasAnyInText("ucak bileti", "uçak bileti", "flight ticket");
   if (flightSig) return { group: "flight", reason: "keyword_flight", keyword: "flight" };
 
   const tourSig = has("tur", "turu", "tour") || hasAnyInText("tur", "turu");
@@ -537,10 +528,7 @@ function keywordOverride(qNorm) {
     return { group: "estate", reason: "keyword_estate", keyword: "estate" };
   }
 
-  if (
-    has("tamir", "servis", "usta", "onarim", "beyazesya", "kombiservis", "klimaservis") ||
-    hasAnyInText("servis")
-  ) {
+  if (has("tamir", "servis", "usta", "onarim", "beyazesya", "kombiservis", "klimaservis") || hasAnyInText("servis")) {
     return { group: "repair", reason: "keyword_repair", keyword: "repair" };
   }
 
@@ -775,10 +763,9 @@ async function handle(req, res) {
 
   const currencyParam = safeStr(req.method === "POST" ? req.body?.currency : req.query?.currency);
 
-  const providerIn =
-    req.method === "POST"
-      ? (req.body?.provider ?? req.body?.providers)
-      : (req.query?.provider ?? req.query?.providers);
+  const providerIn = req.method === "POST"
+    ? (req.body?.provider ?? req.body?.providers)
+    : (req.query?.provider ?? req.query?.providers);
 
   const requestedProviders = parseList(providerIn)
     .map((s) => String(s).trim().toLowerCase())
@@ -819,10 +806,7 @@ async function handle(req, res) {
       nextOffset: 0,
       hasMore: false,
       cards: [],
-      _meta: ensureDiagKeys(
-        { reqId, ms: Date.now() - t0, engineVariant: "MISSING_Q" },
-        { engineVariant: "MISSING_Q" }
-      ),
+      _meta: ensureDiagKeys({ reqId, ms: Date.now() - t0, engineVariant: "MISSING_Q" }, { engineVariant: "MISSING_Q" }),
     });
   }
 
@@ -856,10 +840,7 @@ async function handle(req, res) {
       nextOffset: 0,
       hasMore: false,
       cards: [],
-      _meta: ensureDiagKeys(
-        { reqId, ms: Date.now() - t0, engineVariant: "ENGINE_LOAD_FAIL" },
-        { engineVariant: "ENGINE_LOAD_FAIL" }
-      ),
+      _meta: ensureDiagKeys({ reqId, ms: Date.now() - t0, engineVariant: "ENGINE_LOAD_FAIL" }, { engineVariant: "ENGINE_LOAD_FAIL" }),
     });
   }
 
@@ -890,18 +871,9 @@ async function handle(req, res) {
     try {
       const ts = nowIso();
 
-      const catProviderKey = safeStr(
-        process.env.CATALOG_PROVIDER_KEY ||
-          process.env.FEED_PROVIDER_KEY ||
-          "admitad"
-      );
+      const catProviderKey = safeStr(process.env.CATALOG_PROVIDER_KEY || process.env.FEED_PROVIDER_KEY || "admitad");
       const catCampaignId = safeInt(process.env.CATALOG_CAMPAIGN_ID, 0);
-      const catCurrency = safeStr(
-        currencyParam ||
-          process.env.CATALOG_CURRENCY ||
-          process.env.FEED_DEFAULT_CURRENCY ||
-          ""
-      );
+      const catCurrency = safeStr(currencyParam || process.env.CATALOG_CURRENCY || process.env.FEED_DEFAULT_CURRENCY || "");
 
       const cat = await fetchCatalogFallback({
         q,
@@ -914,8 +886,7 @@ async function handle(req, res) {
       });
 
       const items = Array.isArray(cat?.items) ? cat.items : [];
-      const baseCount = items.length; // ✅ patch: keep pre-fallback count
-
+      const baseCount = items.length;
       const total = safeInt(cat?.total, items.length);
       const nextOffset = safeInt(cat?.nextOffset, reqOffset + items.length);
       const hasMore = Boolean(cat?.hasMore);
@@ -956,10 +927,10 @@ async function handle(req, res) {
         _meta: ensureDiagKeys(
           {
             engineVariant: "CATALOG_ONLY",
-            deadlineHit: false, // ✅ deterministic
+            deadlineHit: false,
             rateLimit: null,
             adapterDiagnosticsSummary: null,
-            fallback: { used: false, strategy: "none" }, // ✅ deterministic
+            fallback: { used: false, strategy: "none" },
 
             offset: reqOffset,
             limit: reqLimit,
@@ -989,30 +960,20 @@ async function handle(req, res) {
       }
 
       // Ensure diag keys survive fallback merge
-      response._meta = ensureDiagKeys(response._meta, {
-        engineVariant: response?._meta?.engineVariant || "CATALOG_ONLY",
-      });
+      response._meta = ensureDiagKeys(response._meta, { engineVariant: response?._meta?.engineVariant || "CATALOG_ONLY" });
 
-      // ✅ patch: Fill diagnostics summary even for catalog-only (so diag=1 isn't blank)
+      // Fill diagnostics summary even for catalog-only (so diag=1 isn't "blank")
+      // NOTE: This summary is intentionally small/non-sensitive; DO NOT gate it.
       try {
         response._meta = response._meta || {};
-        if (typeof response._meta.deadlineHit !== "boolean")
-          response._meta.deadlineHit = false;
-        if (!response._meta.fallback)
-          response._meta.fallback = { used: false, strategy: "none" };
-        if (response._meta.fallback && typeof response._meta.fallback === "object") {
-          if (response._meta.fallback.used == null) response._meta.fallback.used = false;
-          if (response._meta.fallback.strategy == null)
-            response._meta.fallback.strategy = "none";
-        }
+        if (typeof response._meta.deadlineHit !== "boolean") response._meta.deadlineHit = false;
+        if (!response._meta.fallback) response._meta.fallback = { used: false, strategy: "none" };
 
-        const exposeDiag = shouldExposeDiagnostics(req);
-        if (exposeDiag && !response._meta.adapterDiagnosticsSummary) {
+        if (!response._meta.adapterDiagnosticsSummary) {
           const finalCount = Array.isArray(response.items) ? response.items.length : 0;
-
           const cmeta = response._meta.catalog || {};
-          const pk = safeStr(cmeta?.providerKey || catProviderKey || "");
-          const cid = Number(cmeta?.campaignId ?? catCampaignId ?? 0) || 0;
+          const pk = String(cmeta?.providerKey || catProviderKey || "");
+          const cid = Number(cmeta?.campaignId || catCampaignId || 0) || 0;
 
           response._meta.adapterDiagnosticsSummary = {
             variant: String(response._meta.engineVariant || "CATALOG_ONLY"),
@@ -1334,9 +1295,7 @@ async function handle(req, res) {
   }
 
   // Ensure diag keys survive fallback merge
-  response._meta = ensureDiagKeys(response._meta, {
-    engineVariant: response?._meta?.engineVariant || upstreamVariant,
-  });
+  response._meta = ensureDiagKeys(response._meta, { engineVariant: response?._meta?.engineVariant || upstreamVariant });
 
   // Diagnostics gate
   const exposeDiag = shouldExposeDiagnostics(req);
