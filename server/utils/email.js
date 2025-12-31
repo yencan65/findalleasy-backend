@@ -1,4 +1,5 @@
 // ============================================================================
+<<<<<<< HEAD
 // FAE EMAIL ENGINE — S113 RELIABLE (AUTO-PROFILE FALLBACK + GMAIL APPPASS SAFE)
 //
 // Fixes:
@@ -9,6 +10,21 @@
 //  - Retry + transient error handling
 //
 // ZERO-DELETE: export imzaları korunur: sendEmail, sendActivationEmail, sendPasswordResetCode
+=======
+// FAE EMAIL ENGINE — S114 RELIABLE (MULTI-PROFILE + SANDBOX + GMAIL SAFE)
+// ----------------------------------------------------------------------------
+// Goals:
+//  - Never crash server at import-time if mail env is missing (routes handle it)
+//  - Support Render/Cloudflare env naming chaos: EMAIL_*, MAIL_*, SMTP_*, GMAIL_*
+//  - Gmail App Password copy/paste whitespace -> strip
+//  - Optional SANDBOX mode for testing without sending real emails
+//  - Multi-profile fallback: try next profile if one fails
+//
+// ZERO-DELETE: export signatures preserved:
+//   - sendEmail({ to, subject, text, html, from })
+//   - sendActivationEmail(to, code, username)
+//   - sendPasswordResetCode(to, code, username)
+>>>>>>> 0b88fab (fix: email activation/reset + env fallbacks + sandbox)
 // ============================================================================
 
 import nodemailer from "nodemailer";
@@ -19,6 +35,7 @@ function pickEnv(...names) {
     if (v != null && String(v).trim() !== "") return String(v).trim();
   }
   return "";
+<<<<<<< HEAD
 }
 
 const MAIL_DEBUG = pickEnv("MAIL_DEBUG") === "1";
@@ -303,6 +320,266 @@ export async function sendPasswordResetCode(to, code, username = "") {
     </div>
   `;
   return sendEmail(to, subject, `Şifre sıfırlama kodunuz: ${code}`, html);
+=======
+}
+
+function toBool(v, def = false) {
+  if (v == null || String(v).trim() === "") return def;
+  const s = String(v).trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+function toPort(v, def) {
+  const n = Number(String(v || "").trim());
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+const MAIL_DEBUG = toBool(pickEnv("MAIL_DEBUG", "EMAIL_DEBUG", "SMTP_DEBUG"), false);
+const MAIL_SANDBOX = toBool(pickEnv("MAIL_SANDBOX", "EMAIL_SANDBOX", "SMTP_SANDBOX"), false);
+const MAIL_TLS_INSECURE = toBool(pickEnv("MAIL_TLS_INSECURE"), false);
+
+const GLOBAL_FROM = pickEnv("MAIL_FROM", "EMAIL_FROM", "SMTP_FROM");
+
+// -----------------------------------------------------------------------------
+// Profile builder
+// -----------------------------------------------------------------------------
+function buildProfile(prefix) {
+  const user = pickEnv(
+    `${prefix}_USER`,
+    `${prefix}_USERNAME`,
+    `${prefix}_EMAIL`,
+    `${prefix}_ADDRESS`
+  );
+  const passRaw = pickEnv(
+    `${prefix}_PASS`,
+    `${prefix}_PASSWORD`,
+    `${prefix}_APP_PASS`,
+    `${prefix}_APP_PASSWORD`
+  );
+  const pass = passRaw ? String(passRaw).replace(/\s+/g, "") : ""; // Gmail app-pass whitespace killer
+
+  const host = pickEnv(`${prefix}_HOST`, `${prefix}_SMTP_HOST`);
+  const service = pickEnv(`${prefix}_SERVICE`);
+  const port = toPort(pickEnv(`${prefix}_PORT`, `${prefix}_SMTP_PORT`), 0);
+
+  // If secure isn't provided, infer from port if possible.
+  const secure = toBool(pickEnv(`${prefix}_SECURE`, `${prefix}_SMTP_SECURE`), port === 465);
+
+  const from = pickEnv(`${prefix}_FROM`) || GLOBAL_FROM || user;
+
+  const p = {
+    prefix,
+    user,
+    pass,
+    host,
+    port,
+    secure,
+    service,
+    from
+  };
+
+  // Minimal validity: auth is required (for our use-case)
+  if (!p.user || !p.pass) return null;
+  return p;
+}
+
+function inferGmail(profile) {
+  const email = String(profile.user || "").toLowerCase();
+  if (profile.service) return profile;
+  if (profile.host) return profile;
+
+  // If it's gmail, prefer service or standard host/port.
+  if (email.endsWith("@gmail.com") || email.endsWith("@googlemail.com")) {
+    return {
+      ...profile,
+      host: "smtp.gmail.com",
+      port: profile.port || 465,
+      secure: profile.port ? profile.secure : true
+    };
+  }
+  return profile;
+}
+
+const RAW_PROFILES = [
+  buildProfile("EMAIL"),
+  buildProfile("MAIL"),
+  buildProfile("SMTP"),
+  buildProfile("GMAIL")
+].filter(Boolean).map(inferGmail);
+
+// De-dup by signature
+const PROFILES = [];
+const seen = new Set();
+for (const p of RAW_PROFILES) {
+  const key = [p.user, p.host, p.port, p.secure, p.service].join("|");
+  if (seen.has(key)) continue;
+  seen.add(key);
+  PROFILES.push(p);
+}
+
+class MailConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "MailConfigError";
+    this.code = "MAIL_NOT_CONFIGURED";
+  }
+}
+
+// Cache transporters (avoid reconnect spam)
+const transporterCache = new Map();
+
+function transporterKey(p) {
+  return [p.user, p.host, p.port, p.secure, p.service].join("|");
+}
+
+function createTransporter(p) {
+  const key = transporterKey(p);
+  const cached = transporterCache.get(key);
+  if (cached) return cached;
+
+  const opts = p.service
+    ? {
+        service: p.service,
+        auth: { user: p.user, pass: p.pass }
+      }
+    : {
+        host: p.host,
+        port: p.port || (p.secure ? 465 : 587),
+        secure: !!p.secure,
+        auth: { user: p.user, pass: p.pass },
+        // Default: verify TLS certs. If your host has TLS issues, set MAIL_TLS_INSECURE=1.
+        tls: {
+          rejectUnauthorized: !MAIL_TLS_INSECURE
+        }
+      };
+
+  const t = nodemailer.createTransport(opts);
+  transporterCache.set(key, t);
+  return t;
+}
+
+// -----------------------------------------------------------------------------
+// Core sender
+// -----------------------------------------------------------------------------
+async function sendMailCore({ to, subject, text, html, from }) {
+  const _to = String(to || "").trim();
+  const _subject = String(subject || "").trim();
+  if (!_to) throw new Error("sendEmail: 'to' is required");
+  if (!_subject) throw new Error("sendEmail: 'subject' is required");
+
+  const payload = {
+    to: _to,
+    subject: _subject,
+    text: text ? String(text) : undefined,
+    html: html ? String(html) : undefined
+  };
+
+  if (MAIL_SANDBOX) {
+    console.log("[MAIL_SANDBOX] sendEmail:", { ...payload, from: from || GLOBAL_FROM || "(auto)" });
+    return { ok: true, sandbox: true };
+  }
+
+  if (!PROFILES.length) {
+    throw new MailConfigError(
+      "Mail is not configured. Set EMAIL_USER/EMAIL_PASS (or MAIL_*/SMTP_* envs)."
+    );
+  }
+
+  let lastErr = null;
+
+  for (const p of PROFILES) {
+    const transporter = createTransporter(p);
+    const fromFinal = String(from || p.from || GLOBAL_FROM || p.user).trim();
+
+    try {
+      if (MAIL_DEBUG) {
+        console.log("[MAIL_DEBUG] Trying profile:", {
+          prefix: p.prefix,
+          user: p.user,
+          host: p.host || p.service,
+          port: p.port || (p.secure ? 465 : 587),
+          secure: !!p.secure
+        });
+      }
+
+      const info = await transporter.sendMail({
+        from: fromFinal,
+        to: _to,
+        subject: _subject,
+        text: payload.text,
+        html: payload.html
+      });
+
+      if (MAIL_DEBUG) {
+        console.log("[MAIL_DEBUG] sendMail OK:", {
+          messageId: info?.messageId,
+          accepted: info?.accepted,
+          rejected: info?.rejected
+        });
+      }
+
+      return { ok: true, info };
+    } catch (err) {
+      lastErr = err;
+      console.error("[MAIL] sendMail failed (profile fallback):", {
+        prefix: p.prefix,
+        user: p.user,
+        host: p.host || p.service,
+        port: p.port || (p.secure ? 465 : 587),
+        secure: !!p.secure,
+        err: String(err?.message || err)
+      });
+      // try next profile
+    }
+  }
+
+  // all failed
+  throw lastErr || new Error("sendEmail failed");
+}
+
+// -----------------------------------------------------------------------------
+// Public API (exports)
+// -----------------------------------------------------------------------------
+export async function sendEmail({ to, subject, text, html, from }) {
+  return sendMailCore({ to, subject, text, html, from });
+}
+
+export async function sendActivationEmail(to, code, username = "") {
+  const safeName = String(username || "").trim() || "there";
+  const subject = "FindAllEasy — Activation Code";
+  const text = `Hi ${safeName},\n\nYour activation code is: ${code}\n\nIf you did not request this, ignore this email.\n`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <h2 style="margin:0 0 12px;">FindAllEasy Activation</h2>
+      <p>Hi <b>${safeName}</b>,</p>
+      <p>Your activation code is:</p>
+      <div style="font-size: 22px; font-weight: 700; letter-spacing: 2px; padding: 10px 14px; border: 1px solid #d4af37; display: inline-block; border-radius: 10px;">
+        ${code}
+      </div>
+      <p style="margin-top:16px;">If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `;
+  return sendMailCore({ to, subject, text, html });
+}
+
+export async function sendPasswordResetCode(to, code, username = "") {
+  const safeName = String(username || "").trim() || "there";
+  const subject = "FindAllEasy — Password Reset Code";
+  const text = `Hi ${safeName},\n\nYour password reset code is: ${code}\n\nThis code expires in 15 minutes.\nIf you did not request this, ignore this email.\n`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <h2 style="margin:0 0 12px;">FindAllEasy Password Reset</h2>
+      <p>Hi <b>${safeName}</b>,</p>
+      <p>Your password reset code is:</p>
+      <div style="font-size: 22px; font-weight: 700; letter-spacing: 2px; padding: 10px 14px; border: 1px solid #d4af37; display: inline-block; border-radius: 10px;">
+        ${code}
+      </div>
+      <p style="margin-top:16px;">This code expires in <b>15 minutes</b>.</p>
+      <p>If you did not request this, you can safely ignore this email.</p>
+    </div>
+  `;
+  return sendMailCore({ to, subject, text, html });
+>>>>>>> 0b88fab (fix: email activation/reset + env fallbacks + sandbox)
 }
 
 // ---------------------------------------------------------------------------
