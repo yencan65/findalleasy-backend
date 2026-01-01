@@ -6,12 +6,89 @@
 // ============================================================================
 
 import { serpSearch } from "../services/serpapi.js";
+import { getCachedResult, setCachedResult } from "./cacheEngine.js";
 
 const SERPAPI_ENABLED = !!(
   process.env.SERPAPI_KEY ||
   process.env.SERPAPI_API_KEY ||
   process.env.SERP_API_KEY
 );
+
+// ============================================================================
+//  CREDIT-SAVING DISCIPLINE (SerpApi fallback)
+//   (1) Empty query guard
+//   (2) Submit-only is FE-side, but BE still guards empty/short
+//   (3) No pagination: fallback only for offset==0
+//   (4) Double cache: our cache (L1 memory + L2 NodeCache) + SerpApi's own cache
+// ============================================================================
+
+const FB_CACHE_TTL_MS = (() => {
+  const v = Number(process.env.SERP_FALLBACK_CACHE_MS || 6 * 60 * 60 * 1000);
+  if (!Number.isFinite(v) || v <= 0) return 6 * 60 * 60 * 1000;
+  return Math.min(Math.max(v, 60 * 1000), 24 * 60 * 60 * 1000);
+})();
+
+const FB_CACHE_MAX_KEYS = (() => {
+  const v = Number(process.env.SERP_FALLBACK_CACHE_MAX_KEYS || 400);
+  if (!Number.isFinite(v) || v <= 0) return 400;
+  return Math.min(Math.max(v, 50), 3000);
+})();
+
+function _getFbCache() {
+  const k = "__FAE_S200_SERP_FALLBACK_CACHE";
+  if (!globalThis[k]) globalThis[k] = new Map();
+  return globalThis[k];
+}
+
+function _getFbInflight() {
+  const k = "__FAE_S200_SERP_FALLBACK_INFLIGHT";
+  if (!globalThis[k]) globalThis[k] = new Map();
+  return globalThis[k];
+}
+
+function _fbCachePrune(cache) {
+  try {
+    if (!cache || typeof cache.size !== "number") return;
+    // Soft prune: oldest-first eviction
+    while (cache.size > FB_CACHE_MAX_KEYS) {
+      const firstKey = cache.keys().next()?.value;
+      if (!firstKey) break;
+      cache.delete(firstKey);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function normalizeQForCache(q) {
+  const s = safeStr(q)
+    .toLowerCase()
+    .replace(/[\u0000-\u001f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  // avoid pathological keys
+  return s.slice(0, 140);
+}
+
+function getReqOffset(req, base) {
+  // Route is drift-safe: read from req first, then base meta
+  try {
+    const o =
+      req?.method === "POST"
+        ? (req?.body?.offset ?? req?.body?.skip)
+        : (req?.query?.offset ?? req?.query?.skip);
+
+    const n = Number.parseInt(String(o ?? "0"), 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {}
+
+  try {
+    const n2 = Number.parseInt(String(base?._meta?.offset ?? "0"), 10);
+    if (Number.isFinite(n2) && n2 > 0) return n2;
+  } catch {}
+
+  return 0;
+}
 
 export function shouldExposeDiagnostics(req) {
   try {
@@ -82,7 +159,6 @@ function normalizeSerpItem(it) {
     url: link,
     finalUrl: link,
     originUrl: link,
-    _raw: obj,
   };
 }
 
@@ -109,15 +185,100 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     return { items: [], diag: { ...diag, error: "SERPAPI_DISABLED", ms: Date.now() - t0 } };
   }
 
-  try {
-    const r = await serpSearch({ q, engine: "google_shopping", gl, hl });
-    const arr =
-      Array.isArray(r?.shopping_results) ? r.shopping_results : Array.isArray(r?.results) ? r.results : [];
+  // (1) Empty query guard (do not burn credits)
+  const q0 = safeStr(q);
+  if (!q0) {
+    return { items: [], diag: { ...diag, error: "EMPTY_QUERY", ms: Date.now() - t0 } };
+  }
 
-    const items = arr.map(normalizeSerpItem).filter((x) => x?.title && x?.url);
+  const gl0 = safeStr(gl || "tr").toLowerCase() || "tr";
+  const hl0 = safeStr(hl || "tr").toLowerCase() || "tr";
+  const qKey = normalizeQForCache(q0);
+  const cacheKey = `s200:fb:serpapi:google_shopping:${gl0}:${hl0}:${qKey}`;
+
+  // (4) OUR CACHE — L1 memory (longer TTL) + L2 NodeCache (shorter, async-safe)
+  // L1
+  try {
+    const mem = _getFbCache();
+    const hit = mem.get(cacheKey);
+    if (hit && (Date.now() - (hit.ts || 0)) <= FB_CACHE_TTL_MS) {
+      return {
+        items: Array.isArray(hit.items) ? hit.items : [],
+        diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "L1", count: (hit.items || []).length },
+      };
+    }
+  } catch {}
+
+  // L2
+  try {
+    const hit2 = await getCachedResult(cacheKey);
+    if (hit2 && Array.isArray(hit2.items)) {
+      try {
+        const mem = _getFbCache();
+        mem.set(cacheKey, { ts: Date.now(), items: hit2.items });
+        _fbCachePrune(mem);
+      } catch {}
+      return {
+        items: hit2.items,
+        diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "L2", count: hit2.items.length },
+      };
+    }
+  } catch {}
+
+  // Inflight de-dupe (prevents double billing on concurrent requests)
+  try {
+    const inflight = _getFbInflight();
+    const p = inflight.get(cacheKey);
+    if (p && typeof p.then === "function") {
+      const got = await p;
+      const gotItems = Array.isArray(got?.items) ? got.items : [];
+      return {
+        items: gotItems,
+        diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "INFLIGHT", count: gotItems.length },
+      };
+    }
+  } catch {}
+
+  try {
+    const inflight = _getFbInflight();
+    const job = (async () => {
+      const r = await serpSearch({ q: q0, engine: "google_shopping", gl: gl0, hl: hl0 });
+      const arr =
+        Array.isArray(r?.shopping_results) ? r.shopping_results : Array.isArray(r?.results) ? r.results : [];
+
+      const itemsAll = arr.map(normalizeSerpItem).filter((x) => x?.title && x?.url);
+      const items = itemsAll.slice(0, Math.max(1, Math.min(50, Number(limit) || 8)));
+
+      // Store caches
+      try {
+        const mem = _getFbCache();
+        mem.set(cacheKey, { ts: Date.now(), items });
+        _fbCachePrune(mem);
+      } catch {}
+
+      try {
+        // CacheEngine TTL is capped internally; still useful.
+        await setCachedResult(cacheKey, { items }, 3600);
+      } catch {}
+
+      return { items };
+    })();
+
+    try {
+      inflight.set(cacheKey, job);
+    } catch {}
+
+    const out = await job;
+    try {
+      inflight.delete(cacheKey);
+    } catch {}
+
+    const arr =
+      Array.isArray(out?.items) ? out.items : [];
+
     return {
-      items: items.slice(0, Math.max(1, Math.min(50, Number(limit) || 8))),
-      diag: { ...diag, ms: Date.now() - t0, count: items.length },
+      items: arr,
+      diag: { ...diag, ms: Date.now() - t0, count: arr.length },
     };
   } catch (e) {
     const msg = safeStr(e?.message || e);
@@ -125,6 +286,11 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
       items: [],
       diag: { ...diag, error: msg, ms: Date.now() - t0 },
     };
+  } finally {
+    try {
+      const inflight = _getFbInflight();
+      inflight.delete(cacheKey);
+    } catch {}
   }
 }
 
@@ -155,6 +321,60 @@ export async function applyS200FallbackIfEmpty({
   // Only for product group
   const g = safeStr(group || base?.group || base?.category).toLowerCase();
   if (g !== "product") return base;
+
+  // Optional: caller can explicitly skip fallback (telemetry, smoke-tests, etc.)
+  // This must NEVER break existing callers: flag is opt-in only.
+  const skipFallback = (() => {
+    try {
+      const h = String(req?.headers?.["x-fae-skip-fallback"] || req?.headers?.["x-skip-fallback"] || "")
+        .trim()
+        .toLowerCase();
+      if (h === "1" || h === "true" || h === "yes") return true;
+    } catch {}
+
+    try {
+      const b = req?.method === "POST" ? (req?.body || {}) : {};
+      if (b?.skipFallback === true || b?.telemetryOnly === true) return true;
+      const s = String(b?.skipFallback || b?.telemetryOnly || "").trim().toLowerCase();
+      if (s === "1" || s === "true" || s === "yes") return true;
+    } catch {}
+
+    try {
+      const qv = String(req?.query?.skipFallback || req?.query?.telemetryOnly || "").trim().toLowerCase();
+      if (qv === "1" || qv === "true" || qv === "yes") return true;
+    } catch {}
+
+    return false;
+  })();
+
+  if (skipFallback) {
+    try {
+      if (base?._meta && typeof base._meta === "object") {
+        base._meta.fallback = base._meta.fallback || { attempted: false, used: false, strategy: "none" };
+        base._meta.fallback.attempted = false;
+        base._meta.fallback.used = false;
+        base._meta.fallback.strategy = "none";
+        base._meta.fallback.reason = "SKIP_FLAG";
+      }
+    } catch {}
+    return base;
+  }
+
+  // (3) No pagination: only allow fallback on first page
+  // If FE requests offset>0 (infinite scroll), DO NOT call SerpApi again.
+  const reqOffset = getReqOffset(req, base);
+  if (reqOffset > 0) {
+    try {
+      if (base?._meta && typeof base._meta === "object") {
+        base._meta.fallback = base._meta.fallback || { attempted: false, used: false, strategy: "none" };
+        base._meta.fallback.attempted = false;
+        base._meta.fallback.used = false;
+        base._meta.fallback.strategy = "none";
+        base._meta.fallback.reason = "PAGINATION_SKIP";
+      }
+    } catch {}
+    return base;
+  }
 
   // Try serpapi
   const fb = await serpFallback({
