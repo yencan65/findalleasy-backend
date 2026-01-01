@@ -179,7 +179,7 @@ function detectMimeType(rawImage) {
 /* ============================================================
    🔥 VISION API — Fotoğraf Analizi (S30 VISION-NEXUS)
    ============================================================ */
-const visionHandler = async (req, res) => {
+async function handleVision(req, res) {
   const startedAt = Date.now();
   const ip = getIP(req);
   const ua = getUA(req);
@@ -210,13 +210,32 @@ const visionHandler = async (req, res) => {
       );
     }
 
+    
+    // ✅ TEST MODE (kredi yakmayan): VISION_MOCK_QUERY set ise API çağırma
+    const mockQuery = String(process.env.VISION_MOCK_QUERY || "").trim();
+    if (mockQuery) {
+      const latencyMs = Date.now() - startedAt;
+      return safeJson(res, {
+        ok: true,
+        query: safeStr(mockQuery, 120),
+        rawText: "VISION_MOCK_QUERY",
+        raw: null,
+        meta: {
+          ipHash: ip ? String(ip).slice(0, 8) : null,
+          uaSnippet: ua,
+          latencyMs,
+          mock: true,
+        },
+      });
+    }
+
     const apiKey = process.env.GOOGLE_API_KEY;
     if (!apiKey) {
       console.error("❌ [vision] GOOGLE_API_KEY tanımlı değil");
       return safeJson(
         res,
-        { ok: false, error: "API_KEY_MISSING" },
-        500
+        { ok: false, error: "VISION_DISABLED", detail: "GOOGLE_API_KEY missing" },
+        200
       );
     }
 
@@ -381,12 +400,12 @@ const visionHandler = async (req, res) => {
       500
     );
   }
-};
+}
 
-// Compatibility aliases:
-// - Frontend currently calls POST /api/vision
-// - Legacy clients may call POST /api/vision/vision
-router.post("/vision", visionHandler);
-router.post("/", visionHandler);
+// Backward-compatible route map:
+//  - POST /api/vision        (new canonical)
+//  - POST /api/vision/vision  (legacy)
+router.post("/", handleVision);
+router.post("/vision", handleVision);
 
 export default router;
