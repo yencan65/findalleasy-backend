@@ -179,7 +179,7 @@ function detectMimeType(rawImage) {
 /* ============================================================
    🔥 VISION API — Fotoğraf Analizi (S30 VISION-NEXUS)
    ============================================================ */
-router.post("/vision", async (req, res) => {
+const visionHandler = async (req, res) => {
   const startedAt = Date.now();
   const ip = getIP(req);
   const ua = getUA(req);
@@ -381,6 +381,12 @@ router.post("/vision", async (req, res) => {
       500
     );
   }
-});
+};
+
+// Compatibility aliases:
+// - Frontend currently calls POST /api/vision
+// - Legacy clients may call POST /api/vision/vision
+router.post("/vision", visionHandler);
+router.post("/", visionHandler);
 
 export default router;
