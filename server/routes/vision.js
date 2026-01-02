@@ -17,6 +17,11 @@ import crypto from "crypto";
 
 const router = express.Router();
 
+// ✅ Vision router kendi body parser'ını taşır (global middleware sırası bozuk olsa bile)
+const VISION_BODY_LIMIT = String(process.env.VISION_BODY_LIMIT || "20mb");
+router.use(express.json({ limit: VISION_BODY_LIMIT }));
+router.use(express.urlencoded({ extended: true, limit: VISION_BODY_LIMIT }));
+
 /* ============================================================
    S31 — SERPAPI LENS FALLBACK + TEMP IMAGE URL
    - GOOGLE_API_KEY yoksa VEYA Gemini hata verirse SerpApi google_lens fallback çalışır.
@@ -102,7 +107,8 @@ function buildPublicOrigin(req) {
     .trim();
   const cfVisitor = safeStr(req.headers["cf-visitor"] || "");
   let proto =
-    xfProto || (cfVisitor.includes('"https"') ? "https" : req.protocol || "https");
+    xfProto ||
+    (cfVisitor.includes('"https"') ? "https" : req.protocol || "https");
   if (proto !== "https" && proto !== "http") proto = "https";
 
   const xfHost = safeStr(req.headers["x-forwarded-host"] || "")
@@ -205,6 +211,26 @@ function safeJson(res, obj, status = 200) {
 // Body guard: sadece düz obje kabul et
 function safeBody(req) {
   const b = req && req.body;
+  if (!b) return {};
+
+  // Eğer globalde raw/text middleware body'yi Buffer/string yaptıysa burada toparlarız.
+  if (Buffer.isBuffer(b)) {
+    try {
+      const s = b.toString("utf8");
+      const obj = JSON.parse(s);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    } catch {}
+    return {};
+  }
+
+  if (typeof b === "string") {
+    try {
+      const obj = JSON.parse(b);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    } catch {}
+    return {};
+  }
+
   if (b && typeof b === "object" && !Array.isArray(b)) return b;
   return {};
 }
@@ -533,11 +559,7 @@ async function handleVision(req, res) {
     });
   } catch (e) {
     console.error("❌ [vision] genel hata:", e);
-    return safeJson(
-      res,
-      { ok: false, error: "Vision API error", detail: e?.message },
-      500
-    );
+    return safeJson(res, { ok: false, error: "Vision API error", detail: e?.message }, 500);
   }
 }
 
