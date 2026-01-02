@@ -3,11 +3,11 @@
 //   VISION ROUTER — S30 VISION-NEXUS FORTRESS
 //   • S20 mantık %100 KORUNDU (extractSearchQuery, base64 akışı, Gemini call)
 //   • Ekstra güvenlik:
-//        - Body guard (plain object + RAW Buffer JSON parse)
+//        - Body guard (plain object + RAW Buffer JSON parse + UTF16LE fallback)
 //        - IPv6-safe IP algılama
-//        - Rate-limit + mini GC (RL Map şişmesini azaltır)
-//        - Base64 flood koruması (imageTooLarge + minLength guard)
-//        - JSON-safe response + hata kodu netleştirme
+//        - Rate-limit + mini GC
+//        - Base64 flood koruması
+//        - JSON-safe response
 //   • Zero-breaking-change: /vision cevabının şeması aynı
 // ======================================================================
 
@@ -19,9 +19,6 @@ const router = express.Router();
 
 /* ============================================================
    S31 — SERPAPI LENS FALLBACK + TEMP IMAGE URL
-   - GOOGLE_API_KEY yoksa VEYA Gemini hata verirse SerpApi google_lens fallback çalışır.
-   - SerpApi, public URL ister; o yüzden görseli geçici olarak /api/vision/i/:id altında servis ederiz.
-   - In-memory TTL + cap ile güvenli (listeleme yok, sadece random id).
    ============================================================ */
 
 const IMG_TTL_MS = Number(process.env.VISION_IMG_TTL_MS || 5 * 60_000);
@@ -35,11 +32,10 @@ const imgStore = new Map(); // id -> { buf: Buffer, mime: string, ts: number, by
 function gcImgStore() {
   try {
     const now = Date.now();
-    // TTL cleanup
     for (const [id, it] of imgStore.entries()) {
       if (!it || !it.ts || now - it.ts > IMG_TTL_MS) imgStore.delete(id);
     }
-    // size caps
+
     let total = 0;
     const arr = [];
     for (const [id, it] of imgStore.entries()) {
@@ -47,7 +43,7 @@ function gcImgStore() {
       total += bytes;
       arr.push([id, it?.ts || 0, bytes]);
     }
-    // oldest-first eviction
+
     arr.sort((a, b) => a[1] - b[1]);
     while (imgStore.size > IMG_MAX_ITEMS || total > IMG_MAX_BYTES_TOTAL) {
       const oldest = arr.shift();
@@ -88,7 +84,7 @@ function safeStr(v, max = 500) {
     let s = String(v)
       .trim()
       .normalize("NFKC")
-      .replace(/[<>$;{}\[\]()]/g, ""); // XSS + basic injection
+      .replace(/[<>$;{}\[\]()]/g, "");
     if (s.length > max) s = s.slice(0, max);
     return s;
   } catch {
@@ -110,8 +106,10 @@ function buildPublicOrigin(req) {
     .split(",")[0]
     .trim();
   const host = xfHost || safeStr(req.headers.host || "");
-  // Basit sanitizasyon
   const safeHost = host.replace(/[^a-zA-Z0-9\-\.:]/g, "");
+
+  // host boş gelirse lens fallback patlamasın
+  if (!safeHost) return "https://api.findalleasy.com";
   return `${proto}://${safeHost}`;
 }
 
@@ -185,7 +183,7 @@ router.get("/i/:id", (req, res) => {
 });
 
 /* ============================================================
-   S30 — SAFE HELPERS (JSON, BODY GUARD, BASE64, IP, UA)
+   S30 — SAFE HELPERS (JSON, BODY, BASE64, IP, UA)
    ============================================================ */
 
 function safeJson(res, obj, status = 200) {
@@ -195,10 +193,7 @@ function safeJson(res, obj, status = 200) {
   } catch (err) {
     console.error("❌ [vision] safeJson ERROR:", err);
     try {
-      return res.status(500).json({
-        ok: false,
-        error: "JSON_SERIALIZATION_ERROR",
-      });
+      return res.status(500).json({ ok: false, error: "JSON_SERIALIZATION_ERROR" });
     } catch {
       return;
     }
@@ -213,32 +208,63 @@ function isPlainObject(v) {
   return true;
 }
 
-// ✅ Body guard (KUSURSUZ):
-// - Normal JSON: req.body already object
-// - Ama server.js /api/vision altında bodyParser.raw kullandığı için req.body Buffer geliyor.
-//   Buffer/string ise JSON.parse dene.
+function stripBom(s) {
+  if (!s) return "";
+  // U+FEFF BOM
+  if (s.charCodeAt(0) === 0xfeff) return s.slice(1);
+  return s;
+}
+
+function looksUtf16le(buf) {
+  // UTF-16LE JSON genelde "{\0"\0i\0m\0a\0g\0e\0..."
+  // Çok sayıda 0x00 varsa kuvvetli sinyal.
+  try {
+    if (!Buffer.isBuffer?.(buf)) return false;
+    const n = Math.min(buf.length, 256);
+    let zeros = 0;
+    for (let i = 0; i < n; i++) if (buf[i] === 0x00) zeros++;
+    return zeros > n * 0.2;
+  } catch {
+    return false;
+  }
+}
+
+// ✅ KUSURSUZ Body guard:
+// - object ise direkt
+// - Buffer ise: UTF-8 parse + BOM temizle; olmazsa UTF-16LE dene
+// - string ise: BOM temizle ve parse
 function safeBody(req) {
   const b = req && req.body;
 
   if (isPlainObject(b)) return b;
 
-  // Buffer -> JSON parse dene
+  // Buffer -> JSON parse
   try {
     if (Buffer.isBuffer?.(b)) {
-      const s = b.toString("utf8").trim();
+      // 1) UTF-8 dene
+      let s = stripBom(b.toString("utf8")).trim();
       if (s && (s.startsWith("{") || s.startsWith("["))) {
         const j = JSON.parse(s);
         if (isPlainObject(j)) return j;
+      }
+
+      // 2) UTF-16LE fallback
+      if (looksUtf16le(b)) {
+        s = stripBom(b.toString("utf16le")).trim();
+        if (s && (s.startsWith("{") || s.startsWith("["))) {
+          const j = JSON.parse(s);
+          if (isPlainObject(j)) return j;
+        }
       }
     }
   } catch {
     // ignore
   }
 
-  // String -> JSON parse dene
+  // String -> JSON parse
   try {
     if (typeof b === "string") {
-      const s = b.trim();
+      const s = stripBom(b).trim();
       if (s && (s.startsWith("{") || s.startsWith("["))) {
         const j = JSON.parse(s);
         if (isPlainObject(j)) return j;
@@ -258,7 +284,6 @@ function safeBase64(str) {
   return s.replace(/[^0-9A-Za-z+/=]/g, "");
 }
 
-// Base64 boyut kontrolü (approx): maxBytes üstüne çıkarsa null
 function clampBase64Size(b64, maxBytes = 6 * 1024 * 1024) {
   const len = b64.length;
   const approxBytes = Math.floor((len * 3) / 4);
@@ -289,7 +314,7 @@ function getUA(req) {
 }
 
 /* ============================================================
-   ⚡ RATE-LIMIT (S30) — IP bazlı + mini GC
+   ⚡ RATE-LIMIT
    ============================================================ */
 const RL = new Map();
 function rateLimit(ip, limit = 40, windowMs = 60_000) {
@@ -304,28 +329,23 @@ function rateLimit(ip, limit = 40, windowMs = 60_000) {
   entry.count++;
   RL.set(ip, entry);
 
-  // Mini GC — arada bir eski entry'leri temizle
   if (Math.random() < 0.01) {
     for (const [key, e] of RL.entries()) {
       if (now > e.resetAt) RL.delete(key);
     }
   }
 
-  return {
-    allowed: entry.count <= limit,
-    retryMs: entry.resetAt - now,
-  };
+  return { allowed: entry.count <= limit, retryMs: entry.resetAt - now };
 }
 
 /* ============================================================
-   🔥 GÜÇLENDİRİLMİŞ ÜRÜN ADI EXTRACTOR — S20 → S30
+   🔥 EXTRACTOR
    ============================================================ */
 function extractSearchQuery(text = "") {
   if (!text) return "";
 
   let t = text.toLowerCase();
 
-  // Türkçe + İngilizce doğal dil çöplüğü temizlik
   t = t
     .replace(
       /bu fotoğrafta|görünüyor|görünmektedir|olabilir|resimde|fotoğrafta/g,
@@ -338,40 +358,29 @@ function extractSearchQuery(text = "") {
     .replace(/this is|it is|there is|object/g, "")
     .replace(/product|item|thing/g, "");
 
-  // Karakter filtresi
   t = t.replace(/[^a-zA-Z0-9ğüşöçİıĞÜŞÖÇ\s]/g, "");
   t = t.replace(/\s\s+/g, " ").trim();
 
   if (!t) return "";
 
   const words = t.split(" ").filter(Boolean);
-
-  // Çok uzun response'larda ilk 3–4 kelime iyidir
-  if (words.length > 5) {
-    t = words.slice(0, 4).join(" ");
-  }
+  if (words.length > 5) t = words.slice(0, 4).join(" ");
 
   return t.trim();
 }
 
-/* ============================================================
-   🔍 MIME TESPİTİ — DATA URL'den veya fallback
-   ============================================================ */
 function detectMimeType(rawImage) {
   if (!rawImage) return "image/jpeg";
   const s = String(rawImage);
-
   if (s.startsWith("data:image/png")) return "image/png";
   if (s.startsWith("data:image/webp")) return "image/webp";
   if (s.startsWith("data:image/jpg")) return "image/jpeg";
   if (s.startsWith("data:image/jpeg")) return "image/jpeg";
-
-  // data URL değilse: en güvenli default
   return "image/jpeg";
 }
 
 /* ============================================================
-   🔥 VISION API — Fotoğraf Analizi (S30 VISION-NEXUS)
+   🔥 VISION API
    ============================================================ */
 async function handleVision(req, res) {
   const startedAt = Date.now();
@@ -379,30 +388,18 @@ async function handleVision(req, res) {
   const ua = getUA(req);
 
   try {
-    // Rate-limit
     const rl = rateLimit(ip, 40, 60_000);
     if (!rl.allowed) {
       return safeJson(
         res,
-        {
-          ok: false,
-          throttled: true,
-          retryAfterMs: rl.retryMs,
-        },
+        { ok: false, throttled: true, retryAfterMs: rl.retryMs },
         429
       );
     }
 
     const body = safeBody(req);
 
-    // Bazı client’lar farklı alan adı yollayabiliyor, tolerans:
-    const rawImage = body.imageBase64 || body.image || body.base64 || "";
-
-    if (!rawImage) {
-      return safeJson(res, { ok: false, error: "imageBase64 eksik" }, 400);
-    }
-
-    // ✅ TEST MODE (kredi yakmayan): VISION_MOCK_QUERY set ise API çağırma
+    // ✅ MOCK MODE: imageBase64 zorunlu değil (deploy test için altın değerinde)
     const mockQuery = String(process.env.VISION_MOCK_QUERY || "").trim();
     if (mockQuery) {
       const latencyMs = Date.now() - startedAt;
@@ -420,10 +417,40 @@ async function handleVision(req, res) {
       });
     }
 
+    // toleranslı alanlar
+    const rawImage =
+      body.imageBase64 ||
+      body.image ||
+      body.base64 ||
+      body?.data?.imageBase64 ||
+      body?.payload?.imageBase64 ||
+      "";
+
+    if (!rawImage) {
+      // debug istersen VISION_DEBUG=1 yap
+      const debugOn = String(process.env.VISION_DEBUG || "") === "1";
+      const diag = debugOn
+        ? {
+            contentType: safeStr(req.headers["content-type"] || "", 200),
+            bodyType: Buffer.isBuffer?.(req.body)
+              ? "buffer"
+              : typeof req.body,
+            bodyLen: Buffer.isBuffer?.(req.body)
+              ? req.body.length
+              : safeStr(req.body || "", 0).length,
+          }
+        : undefined;
+
+      return safeJson(
+        res,
+        { ok: false, error: "imageBase64 eksik", ...(diag ? { diag } : {}) },
+        400
+      );
+    }
+
     const apiKey = process.env.GOOGLE_API_KEY;
     const serpKey = process.env.SERPAPI_KEY;
 
-    // İkisi de yoksa vision kapalı
     if (!apiKey && !serpKey) {
       console.error("❌ [vision] GOOGLE_API_KEY ve SERPAPI_KEY tanımlı değil");
       return safeJson(
@@ -437,7 +464,6 @@ async function handleVision(req, res) {
       );
     }
 
-    // DATA URL → raw base64
     const mimeType = detectMimeType(rawImage);
     const base64Part = String(rawImage).includes(",")
       ? String(rawImage).split(",")[1]
@@ -449,7 +475,6 @@ async function handleVision(req, res) {
       return safeJson(res, { ok: false, error: "BASE64_INVALID" }, 400);
     }
 
-    // Boyut sınırı (örn. ~15MB)
     cleanBase64 = clampBase64Size(cleanBase64, 15 * 1024 * 1024);
     if (!cleanBase64) {
       return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
@@ -462,7 +487,6 @@ async function handleVision(req, res) {
     let lensOut = null;
     let used = null;
 
-    // 1) Gemini (if available)
     if (apiKey) {
       used = "gemini";
       try {
@@ -482,10 +506,7 @@ async function handleVision(req, res) {
                     "Örn: 'iPhone 14 Pro', 'Nike koşu ayakkabısı', 'gaming laptop'.",
                 },
                 {
-                  inlineData: {
-                    mimeType,
-                    data: cleanBase64,
-                  },
+                  inlineData: { mimeType, data: cleanBase64 },
                 },
               ],
             },
@@ -510,16 +531,12 @@ async function handleVision(req, res) {
           gemOut?.candidates?.[0]?.content?.parts?.[0]?.content ||
           "";
       } catch (err) {
-        console.warn(
-          "⚠️ [vision] Gemini fail, SerpApi Lens fallback denenecek:",
-          err?.message || err
-        );
+        console.warn("⚠️ [vision] Gemini fail, SerpApi Lens fallback:", err?.message || err);
         rawText = "";
         used = null;
       }
     }
 
-    // 2) SerpApi google_lens fallback
     if ((!rawText || !String(rawText).trim()) && serpKey) {
       try {
         const buf = Buffer.from(cleanBase64, "base64");
@@ -533,11 +550,7 @@ async function handleVision(req, res) {
         lensUrl.searchParams.set("hl", hl);
         lensUrl.searchParams.set("gl", gl);
 
-        const rr = await fetchWithTimeout(
-          lensUrl.toString(),
-          { method: "GET" },
-          12_000
-        );
+        const rr = await fetchWithTimeout(lensUrl.toString(), { method: "GET" }, 12_000);
         lensOut = await rr.json().catch(() => null);
         if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
 
@@ -548,12 +561,10 @@ async function handleVision(req, res) {
       }
     }
 
-    // Backward-compatible debug payload
     const out = gemOut || lensOut;
     const text = String(rawText || "").trim();
     let query = extractSearchQuery(text);
 
-    // Eğer extractor hiçbir şey bulamazsa, kaba fallback
     if (!query && text) {
       const words = text
         .toLowerCase()
@@ -564,7 +575,6 @@ async function handleVision(req, res) {
       if (words.length > 0) query = words.slice(0, 3).join(" ");
     }
 
-    // Hâlâ yoksa: son çare
     if (!query) query = "ürün";
 
     const latencyMs = Date.now() - startedAt;
@@ -583,17 +593,10 @@ async function handleVision(req, res) {
     });
   } catch (e) {
     console.error("❌ [vision] genel hata:", e);
-    return safeJson(
-      res,
-      { ok: false, error: "Vision API error", detail: e?.message },
-      500
-    );
+    return safeJson(res, { ok: false, error: "Vision API error", detail: e?.message }, 500);
   }
 }
 
-// Backward-compatible route map:
-//  - POST /api/vision         (new canonical)
-//  - POST /api/vision/vision  (legacy)
 router.post("/", handleVision);
 router.post("/vision", handleVision);
 
