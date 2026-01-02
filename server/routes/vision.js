@@ -3,7 +3,7 @@
 //   VISION ROUTER — S30 VISION-NEXUS FORTRESS
 //   • S20 mantık %100 KORUNDU (extractSearchQuery, base64 akışı, Gemini call)
 //   • Ekstra güvenlik:
-//        - Body guard (sadece plain object kabul)
+//        - Body guard (plain object + RAW Buffer JSON parse)
 //        - IPv6-safe IP algılama
 //        - Rate-limit + mini GC (RL Map şişmesini azaltır)
 //        - Base64 flood koruması (imageTooLarge + minLength guard)
@@ -16,11 +16,6 @@ import fetch from "node-fetch";
 import crypto from "crypto";
 
 const router = express.Router();
-
-// ✅ Vision router kendi body parser'ını taşır (global middleware sırası bozuk olsa bile)
-const VISION_BODY_LIMIT = String(process.env.VISION_BODY_LIMIT || "20mb");
-router.use(express.json({ limit: VISION_BODY_LIMIT }));
-router.use(express.urlencoded({ extended: true, limit: VISION_BODY_LIMIT }));
 
 /* ============================================================
    S31 — SERPAPI LENS FALLBACK + TEMP IMAGE URL
@@ -152,7 +147,9 @@ function pickSerpLensText(out) {
   try {
     const kg = out?.knowledge_graph;
     const vm = Array.isArray(out?.visual_matches) ? out.visual_matches : [];
-    const shop = Array.isArray(out?.shopping_results) ? out.shopping_results : [];
+    const shop = Array.isArray(out?.shopping_results)
+      ? out.shopping_results
+      : [];
     const org = Array.isArray(out?.organic_results) ? out.organic_results : [];
 
     const t1 = safeStr(kg?.title || kg?.name || "");
@@ -208,30 +205,49 @@ function safeJson(res, obj, status = 200) {
   }
 }
 
-// Body guard: sadece düz obje kabul et
+function isPlainObject(v) {
+  if (!v) return false;
+  if (Array.isArray(v)) return false;
+  if (typeof v !== "object") return false;
+  if (Buffer.isBuffer?.(v)) return false;
+  return true;
+}
+
+// ✅ Body guard (KUSURSUZ):
+// - Normal JSON: req.body already object
+// - Ama server.js /api/vision altında bodyParser.raw kullandığı için req.body Buffer geliyor.
+//   Buffer/string ise JSON.parse dene.
 function safeBody(req) {
   const b = req && req.body;
-  if (!b) return {};
 
-  // Eğer globalde raw/text middleware body'yi Buffer/string yaptıysa burada toparlarız.
-  if (Buffer.isBuffer(b)) {
-    try {
-      const s = b.toString("utf8");
-      const obj = JSON.parse(s);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
-    } catch {}
-    return {};
+  if (isPlainObject(b)) return b;
+
+  // Buffer -> JSON parse dene
+  try {
+    if (Buffer.isBuffer?.(b)) {
+      const s = b.toString("utf8").trim();
+      if (s && (s.startsWith("{") || s.startsWith("["))) {
+        const j = JSON.parse(s);
+        if (isPlainObject(j)) return j;
+      }
+    }
+  } catch {
+    // ignore
   }
 
-  if (typeof b === "string") {
-    try {
-      const obj = JSON.parse(b);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
-    } catch {}
-    return {};
+  // String -> JSON parse dene
+  try {
+    if (typeof b === "string") {
+      const s = b.trim();
+      if (s && (s.startsWith("{") || s.startsWith("["))) {
+        const j = JSON.parse(s);
+        if (isPlainObject(j)) return j;
+      }
+    }
+  } catch {
+    // ignore
   }
 
-  if (b && typeof b === "object" && !Array.isArray(b)) return b;
   return {};
 }
 
@@ -378,7 +394,9 @@ async function handleVision(req, res) {
     }
 
     const body = safeBody(req);
-    const rawImage = body.imageBase64;
+
+    // Bazı client’lar farklı alan adı yollayabiliyor, tolerans:
+    const rawImage = body.imageBase64 || body.image || body.base64 || "";
 
     if (!rawImage) {
       return safeJson(res, { ok: false, error: "imageBase64 eksik" }, 400);
@@ -421,7 +439,10 @@ async function handleVision(req, res) {
 
     // DATA URL → raw base64
     const mimeType = detectMimeType(rawImage);
-    const base64Part = rawImage.includes(",") ? rawImage.split(",")[1] : rawImage;
+    const base64Part = String(rawImage).includes(",")
+      ? String(rawImage).split(",")[1]
+      : String(rawImage);
+
     let cleanBase64 = safeBase64(base64Part);
 
     if (!cleanBase64 || cleanBase64.length < 50) {
@@ -434,7 +455,6 @@ async function handleVision(req, res) {
       return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
     }
 
-    // Prefer Gemini when GOOGLE_API_KEY exists; otherwise use SerpApi Lens.
     const { hl, gl } = pickHlGlFromLocale(body.locale || body.localeHint || "tr");
 
     let rawText = "";
@@ -513,7 +533,11 @@ async function handleVision(req, res) {
         lensUrl.searchParams.set("hl", hl);
         lensUrl.searchParams.set("gl", gl);
 
-        const rr = await fetchWithTimeout(lensUrl.toString(), { method: "GET" }, 12_000);
+        const rr = await fetchWithTimeout(
+          lensUrl.toString(),
+          { method: "GET" },
+          12_000
+        );
         lensOut = await rr.json().catch(() => null);
         if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
 
@@ -549,7 +573,7 @@ async function handleVision(req, res) {
       ok: true,
       query,
       rawText: safeStr(text, 2000),
-      raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out }, // debug için bırakıldı
+      raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
       meta: {
         ipHash: ip ? String(ip).slice(0, 8) : null,
         uaSnippet: ua,
@@ -559,7 +583,11 @@ async function handleVision(req, res) {
     });
   } catch (e) {
     console.error("❌ [vision] genel hata:", e);
-    return safeJson(res, { ok: false, error: "Vision API error", detail: e?.message }, 500);
+    return safeJson(
+      res,
+      { ok: false, error: "Vision API error", detail: e?.message },
+      500
+    );
   }
 }
 
