@@ -165,7 +165,9 @@ function markBad(qr) {
 // ======================================================================
 async function handleProduct(req, res) {
   try {
-    let qr = sanitizeQR(req.body?.qr);
+    // Bazı client sürümleri GET /product?code=... kullanabilir.
+    // Kırılmaması için hem body hem query'i kabul ediyoruz.
+    let qr = sanitizeQR(req.body?.qr || req.query?.code || req.query?.qr);
     if (!qr) return safeJson(res, { ok: false, error: "Geçersiz QR" }, 400);
 
     const ip = getClientIp(req);
@@ -264,5 +266,9 @@ async function handleProduct(req, res) {
 // ======================================================================
 router.post("/product", handleProduct);
 router.post("/product-info", handleProduct);
+
+// Backward/forward compatibility: eski client GET kullanırsa da çalışsın
+router.get("/product", handleProduct);
+router.get("/product-info", handleProduct);
 
 export default router;
