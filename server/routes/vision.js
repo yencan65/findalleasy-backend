@@ -21,7 +21,9 @@ const router = express.Router();
 
 const IMG_TTL_MS = Number(process.env.VISION_IMG_TTL_MS || 5 * 60_000);
 const IMG_MAX_ITEMS = Number(process.env.VISION_IMG_MAX_ITEMS || 64);
-const IMG_MAX_BYTES_TOTAL = Number(process.env.VISION_IMG_MAX_BYTES_TOTAL || 40 * 1024 * 1024);
+const IMG_MAX_BYTES_TOTAL = Number(
+  process.env.VISION_IMG_MAX_BYTES_TOTAL || 40 * 1024 * 1024
+);
 
 const imgStore = new Map(); // id -> { buf: Buffer, mime: string, ts: number, bytes: number }
 
@@ -91,12 +93,17 @@ function safeStr(v, max = 500) {
 }
 
 function buildPublicOrigin(req) {
-  const xfProto = safeStr(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const xfProto = safeStr(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim();
   const cfVisitor = safeStr(req.headers["cf-visitor"] || "");
-  let proto = xfProto || (cfVisitor.includes('"https"') ? "https" : req.protocol || "https");
+  let proto =
+    xfProto || (cfVisitor.includes('"https"') ? "https" : req.protocol || "https");
   if (proto !== "https" && proto !== "http") proto = "https";
 
-  const xfHost = safeStr(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  const xfHost = safeStr(req.headers["x-forwarded-host"] || "")
+    .split(",")[0]
+    .trim();
   const host = xfHost || safeStr(req.headers.host || "");
   const safeHost = host.replace(/[^a-zA-Z0-9\-\.:]/g, "");
   return `${proto}://${safeHost}`;
@@ -105,10 +112,15 @@ function buildPublicOrigin(req) {
 function pickHlGlFromLocale(locale) {
   const l = safeStr(locale || "tr").toLowerCase();
   const hl =
-    l.startsWith("tr") ? "tr" :
-    l.startsWith("ru") ? "ru" :
-    l.startsWith("ar") ? "ar" :
-    l.startsWith("fr") ? "fr" : "en";
+    l.startsWith("tr")
+      ? "tr"
+      : l.startsWith("ru")
+      ? "ru"
+      : l.startsWith("ar")
+      ? "ar"
+      : l.startsWith("fr")
+      ? "fr"
+      : "en";
   const gl = l.startsWith("tr") ? "tr" : "us";
   return { hl, gl };
 }
@@ -133,21 +145,58 @@ function pickSerpLensText(out) {
     const shop = Array.isArray(out?.shopping_results) ? out.shopping_results : [];
     const org = Array.isArray(out?.organic_results) ? out.organic_results : [];
 
-    const t1 = safeStr(kg?.title || kg?.name || "");
-    if (t1) return t1;
+    const candidates = [];
+    const push = (val, base) => {
+      const s = safeStr(val || "");
+      if (!s) return;
+      candidates.push({ s, base });
+    };
 
-    const t2 = safeStr(vm?.[0]?.title || vm?.[0]?.snippet || "");
-    if (t2) return t2;
+    // Adayları topla (ilkler daha değerli)
+    push(kg?.title || kg?.name, 12);
+    for (let i = 0; i < Math.min(vm.length, 3); i++) {
+      push(vm[i]?.title || vm[i]?.snippet, 10 - i);
+    }
+    for (let i = 0; i < Math.min(shop.length, 3); i++) {
+      push(shop[i]?.title || shop[i]?.product_title || shop[i]?.product, 11 - i);
+    }
+    for (let i = 0; i < Math.min(org.length, 2); i++) {
+      push(org[i]?.title || org[i]?.snippet, 8 - i);
+    }
 
-    const t3 = safeStr(shop?.[0]?.title || shop?.[0]?.product_title || "");
-    if (t3) return t3;
+    if (candidates.length === 0) return "";
 
-    const t4 = safeStr(org?.[0]?.title || org?.[0]?.snippet || "");
-    if (t4) return t4;
+    const veryGeneric = new Set([
+      "ürün",
+      "product",
+      "item",
+      "object",
+      "thing",
+      "unknown",
+    ]);
+    const scoreText = (s, base) => {
+      const t = String(s || "").trim();
+      if (!t) return -1e9;
+      const lower = t.toLowerCase();
+      const words = t.split(/\s+/).filter(Boolean);
+
+      let sc = Number(base || 0);
+      sc += Math.min(words.length, 6) * 2; // daha çok kelime → daha spesifik
+      sc += Math.min(t.length, 50) / 10;
+      if (words.length <= 1) sc -= 1.5; // tek kelime bazen olur, ama çoğu zaman fazla genel
+      if (veryGeneric.has(lower)) sc -= 12;
+      return sc;
+    };
+
+    let best = { s: "", sc: -1e9 };
+    for (const c of candidates) {
+      const sc = scoreText(c.s, c.base);
+      if (sc > best.sc) best = { s: c.s, sc };
+    }
+    return best.s || "";
   } catch {
-    // ignore
+    return "";
   }
-  return "";
 }
 
 // Temp image endpoint
@@ -176,7 +225,9 @@ function safeJson(res, obj, status = 200) {
   } catch (err) {
     console.error("❌ [vision] safeJson ERROR:", err);
     try {
-      return res.status(500).json({ ok: false, error: "JSON_SERIALIZATION_ERROR" });
+      return res
+        .status(500)
+        .json({ ok: false, error: "JSON_SERIALIZATION_ERROR" });
     } catch {
       return;
     }
@@ -204,6 +255,22 @@ function stripBomAndNulls(s) {
 function parseJsonMaybe(s) {
   const t = stripBomAndNulls(String(s || "")).trim();
   if (!t) return null;
+
+  // Bazı client'lar gövdeyi "{...}" şeklinde (string içinde JSON) yollayabiliyor.
+  // Önce outer JSON.parse dene, sonra içeriği tekrar parse et.
+  if (t.startsWith('"') && t.endsWith('"')) {
+    try {
+      const outer = JSON.parse(t);
+      if (isPlainObject(outer)) return outer;
+      if (typeof outer === "string") {
+        const inner = parseJsonMaybe(outer);
+        if (inner) return inner;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   const startsOk = t.startsWith("{") || t.startsWith("[");
   if (!startsOk) return null;
   try {
@@ -322,7 +389,10 @@ function extractSearchQuery(text = "") {
   let t = String(text).toLowerCase();
 
   t = t
-    .replace(/bu fotoğrafta|görünüyor|görünmektedir|olabilir|resimde|fotoğrafta/g, "")
+    .replace(
+      /bu fotoğrafta|görünüyor|görünmektedir|olabilir|resimde|fotoğrafta/g,
+      ""
+    )
     .replace(/looks like|maybe|probably|appears to be/g, "")
     .replace(/bir\s+/g, "")
     .replace(/çok\s+/g, "")
@@ -357,12 +427,18 @@ async function handleVision(req, res) {
   const startedAt = Date.now();
   const ip = getIP(req);
   const ua = getUA(req);
-  const debug = String(process.env.VISION_DEBUG || "") === "1" || String(req.query?.diag || "") === "1";
+  const debug =
+    String(process.env.VISION_DEBUG || "") === "1" ||
+    String(req.query?.diag || "") === "1";
 
   try {
     const rl = rateLimit(ip, 40, 60_000);
     if (!rl.allowed) {
-      return safeJson(res, { ok: false, throttled: true, retryAfterMs: rl.retryMs }, 429);
+      return safeJson(
+        res,
+        { ok: false, throttled: true, retryAfterMs: rl.retryMs },
+        429
+      );
     }
 
     const body = safeBody(req);
@@ -386,11 +462,17 @@ async function handleVision(req, res) {
               : typeof req.body === "string"
               ? req.body.length
               : null,
-            parsedKeys: isPlainObject(body) ? Object.keys(body).slice(0, 20) : null,
+            parsedKeys: isPlainObject(body)
+              ? Object.keys(body).slice(0, 20)
+              : null,
           }
         : undefined;
 
-      return safeJson(res, { ok: false, error: "imageBase64 eksik", ...(diag ? { diag } : {}) }, 400);
+      return safeJson(
+        res,
+        { ok: false, error: "imageBase64 eksik", ...(diag ? { diag } : {}) },
+        400
+      );
     }
 
     // ✅ TEST MODE (kredi yakmayan)
@@ -402,7 +484,12 @@ async function handleVision(req, res) {
         query: safeStr(mockQuery, 120),
         rawText: "VISION_MOCK_QUERY",
         raw: null,
-        meta: { ipHash: ip ? String(ip).slice(0, 8) : null, uaSnippet: ua, latencyMs, mock: true },
+        meta: {
+          ipHash: ip ? String(ip).slice(0, 8) : null,
+          uaSnippet: ua,
+          latencyMs,
+          mock: true,
+        },
       });
     }
 
@@ -410,11 +497,21 @@ async function handleVision(req, res) {
     const serpKey = process.env.SERPAPI_KEY;
 
     if (!apiKey && !serpKey) {
-      return safeJson(res, { ok: false, error: "VISION_DISABLED", detail: "GOOGLE_API_KEY & SERPAPI_KEY missing" }, 200);
+      return safeJson(
+        res,
+        {
+          ok: false,
+          error: "VISION_DISABLED",
+          detail: "GOOGLE_API_KEY & SERPAPI_KEY missing",
+        },
+        200
+      );
     }
 
     const mimeType = detectMimeType(rawImage);
-    const base64Part = String(rawImage).includes(",") ? String(rawImage).split(",")[1] : String(rawImage);
+    const base64Part = String(rawImage).includes(",")
+      ? String(rawImage).split(",")[1]
+      : String(rawImage);
     let cleanBase64 = safeBase64(base64Part);
 
     if (!cleanBase64 || cleanBase64.length < 50) {
@@ -438,7 +535,8 @@ async function handleVision(req, res) {
       used = "gemini";
       try {
         const url =
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
+          apiKey;
 
         const payload = {
           contents: [
@@ -459,7 +557,11 @@ async function handleVision(req, res) {
 
         const r = await fetchWithTimeout(
           url,
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
           10_000
         );
 
@@ -471,7 +573,10 @@ async function handleVision(req, res) {
           gemOut?.candidates?.[0]?.content?.parts?.[0]?.content ||
           "";
       } catch (err) {
-        console.warn("⚠️ [vision] Gemini fail, SerpApi Lens fallback denenecek:", err?.message || err);
+        console.warn(
+          "⚠️ [vision] Gemini fail, SerpApi Lens fallback denenecek:",
+          err?.message || err
+        );
         rawText = "";
         used = null;
       }
@@ -491,7 +596,11 @@ async function handleVision(req, res) {
         lensUrl.searchParams.set("hl", hl);
         lensUrl.searchParams.set("gl", gl);
 
-        const rr = await fetchWithTimeout(lensUrl.toString(), { method: "GET" }, 12_000);
+        const rr = await fetchWithTimeout(
+          lensUrl.toString(),
+          { method: "GET" },
+          12_000
+        );
         lensOut = await rr.json().catch(() => null);
         if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
 
@@ -524,11 +633,20 @@ async function handleVision(req, res) {
       query,
       rawText: safeStr(text, 2000),
       raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
-      meta: { ipHash: ip ? String(ip).slice(0, 8) : null, uaSnippet: ua, latencyMs, used: used || null },
+      meta: {
+        ipHash: ip ? String(ip).slice(0, 8) : null,
+        uaSnippet: ua,
+        latencyMs,
+        used: used || null,
+      },
     });
   } catch (e) {
     console.error("❌ [vision] genel hata:", e);
-    return safeJson(res, { ok: false, error: "Vision API error", detail: e?.message }, 500);
+    return safeJson(
+      res,
+      { ok: false, error: "Vision API error", detail: e?.message },
+      500
+    );
   }
 }
 
