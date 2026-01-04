@@ -223,7 +223,7 @@ function cleanTitle(t) {
 
 // ======================================================================
 // SerpAPI fallback (barcode -> product title)
-//  - NOT: Bunun tam çalışması için altta verdiğim serpApi adapter patch’i şart.
+//  - NOT: Bunun tam çalışması için serpApi adapter patch’i şart.
 // ======================================================================
 async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
