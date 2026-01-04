@@ -16,8 +16,6 @@ import axios from "axios";
 import crypto from "crypto"; // ZERO DELETE (legacy)
 import { rateLimiter } from "../utils/rateLimiter.js";
 
-
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -70,13 +68,12 @@ function _serpCacheSet(key, data) {
   } catch {}
 }
 
-
-
 function clampNum(n, lo, hi) {
   const x = Number(n);
   if (!Number.isFinite(x)) return null;
   return Math.max(lo, Math.min(hi, Math.floor(x)));
 }
+
 import {
   normalizeItemS200,
   coerceItemsS200,
@@ -176,7 +173,31 @@ function tokenize(q) {
   return Array.from(new Set(tokens));
 }
 
+// ======================================================================
+// BARCODE QUERY DETECTOR (kritik fix)
+//  - Barcode aramalarında title içinde barkod geçmeyebilir.
+//  - Eski relevance filtresi her şeyi çöpe atıyordu => kredi yanıp items:[].
+// ======================================================================
+function isBarcodeQuery(q) {
+  const s = safe(q, 300).toLowerCase();
+  if (!s) return false;
+
+  const hasCode = /\b\d{8,18}\b/.test(s);
+  if (!hasCode) return false;
+
+  // anahtar kelime varsa direkt barcode
+  if (/\b(ean|gtin|upc|barcode|barkod|ean13|ean-13|ean_13)\b/.test(s)) return true;
+
+  // hepsi neredeyse rakamsa barcode kabul et (phone/otp gibi şeyler de gelebilir ama burada amaç çözüm)
+  const digits = (s.match(/\d/g) || []).length;
+  const alpha = (s.match(/[a-zğüşöçı]/gi) || []).length;
+  return digits >= 8 && alpha <= 3;
+}
+
 function relevanceScore(query, title) {
+  // ✅ BARCODE MODE: relevance filtresi yüzünden item kaybetme
+  if (isBarcodeQuery(query)) return 1;
+
   const qt = tokenize(query);
   const tt = tokenize(title);
   if (!qt.length || !tt.length) return 0;
@@ -201,7 +222,8 @@ function isProbablyProduct(query, opts = {}) {
   if (intentType === "product") return true;
 
   const cat = safe(opts?.category || opts?.group || opts?.vertical || "");
-  if (cat && /^(product|tech|electronics|device|gadget|appliance|market|fashion|food|grocery|supermarket)$/i.test(cat)) return true;
+  if (cat && /^(product|tech|electronics|device|gadget|appliance|market|fashion|food|grocery|supermarket)$/i.test(cat))
+    return true;
 
   const q = safe(query, 300).toLowerCase();
   if (
@@ -223,7 +245,12 @@ function _mkRes(ok, items, meta = {}) {
   // Back-compat: allow legacy code to treat response like an array
   try {
     Object.defineProperty(res, "length", { value: arr.length, enumerable: false });
-    Object.defineProperty(res, Symbol.iterator, { enumerable: false, value: function* () { yield* arr; } });
+    Object.defineProperty(res, Symbol.iterator, {
+      enumerable: false,
+      value: function* () {
+        yield* arr;
+      },
+    });
   } catch {}
   return res;
 }
@@ -261,6 +288,9 @@ export async function searchWithSerpApi(query, opts = {}) {
     });
   }
 
+  // ✅ BARCODE MODE (kritik): filtreleri kapatır
+  const barcodeMode = opts?.barcode === true || isBarcodeQuery(q);
+
   const productMode =
     opts?.mode === "shopping" ||
     opts?.forceShopping === true ||
@@ -289,6 +319,7 @@ export async function searchWithSerpApi(query, opts = {}) {
         ms: Date.now() - t0,
         region: regionUpper,
         engine,
+        barcodeMode,
       });
     }
   } catch {
@@ -298,7 +329,8 @@ export async function searchWithSerpApi(query, opts = {}) {
   try {
     const httpTimeout = Math.max(1000, Math.min(30000, timeoutMs - 150));
 
-    const cacheKey = `serpapi:${engine}:${gl}:${hl}:${q.toLowerCase()}`;
+    // cacheKey barcodeMode ile de ayrışsın (aynı q ile farklı modlar karışmasın)
+    const cacheKey = `serpapi:${engine}:${gl}:${hl}:${barcodeMode ? "B" : "N"}:${q.toLowerCase()}`;
     const cached = _serpCacheGet(cacheKey, 30_000);
 
     const fetchOnce = async () => {
@@ -311,7 +343,7 @@ export async function searchWithSerpApi(query, opts = {}) {
             api_key: SERPAPI_KEY,
             hl,
             gl,
-            num: (clampNum(opts?.num, 1, 20) ?? (productMode ? 20 : 10)),
+            num: clampNum(opts?.num, 1, 20) ?? (productMode ? 20 : 10),
           },
           headers: {
             "User-Agent":
@@ -346,21 +378,20 @@ export async function searchWithSerpApi(query, opts = {}) {
       } catch (e) {
         const status = Number(e?.status || e?.response?.status || 0);
 
-      // One retry on 429/5xx — best effort within remaining time.
-      if (status === 429 || (status >= 500 && status <= 599)) {
-        const elapsed = Date.now() - t0;
-        const remaining = timeoutMs - elapsed - 300;
-        if (remaining > 0) {
-          await sleep(Math.min(700, remaining));
-          data = await withTimeout(fetchOnce(), timeoutMs, `${ADAPTER_KEY}.fetch_retry`);
+        // One retry on 429/5xx — best effort within remaining time.
+        if (status === 429 || (status >= 500 && status <= 599)) {
+          const elapsed = Date.now() - t0;
+          const remaining = timeoutMs - elapsed - 300;
+          if (remaining > 0) {
+            await sleep(Math.min(700, remaining));
+            data = await withTimeout(fetchOnce(), timeoutMs, `${ADAPTER_KEY}.fetch_retry`);
+          } else {
+            throw e;
+          }
         } else {
           throw e;
         }
-      } else {
-        throw e;
       }
-    }
-
     }
 
     if (data) _serpCacheSet(cacheKey, data);
@@ -433,11 +464,13 @@ export async function searchWithSerpApi(query, opts = {}) {
         })
         .filter(Boolean);
 
-      const qTokens = tokenize(q);
-      const minRel = qTokens.length >= 3 ? 0.5 : 0.34;
-      candidates = candidates.filter((it) => (it.__relevance ?? 0) >= minRel);
-
-      candidates.sort((a, b) => (b.__relevance ?? 0) - (a.__relevance ?? 0));
+      // ✅ BARCODE MODE: relevance filtrelerini kapat (kredi yanıp boş dönmesin)
+      if (!barcodeMode) {
+        const qTokens = tokenize(q);
+        const minRel = qTokens.length >= 3 ? 0.5 : 0.34;
+        candidates = candidates.filter((it) => (it.__relevance ?? 0) >= minRel);
+        candidates.sort((a, b) => (b.__relevance ?? 0) - (a.__relevance ?? 0));
+      }
     } else {
       const locals = Array.isArray(data?.local_results) ? data.local_results : [];
       const organic = Array.isArray(data?.organic_results) ? data.organic_results : [];
@@ -486,8 +519,11 @@ export async function searchWithSerpApi(query, opts = {}) {
         })
         .filter(Boolean);
 
-      candidates = candidates.filter((it) => (it.__relevance ?? 0) >= 0.25);
-      candidates.sort((a, b) => (b.__relevance ?? 0) - (a.__relevance ?? 0));
+      // ✅ BARCODE MODE: relevance filtrelerini kapat
+      if (!barcodeMode) {
+        candidates = candidates.filter((it) => (it.__relevance ?? 0) >= 0.25);
+        candidates.sort((a, b) => (b.__relevance ?? 0) - (a.__relevance ?? 0));
+      }
     }
 
     // Normalize via kit (contract lock + URL priority + badUrl check + deterministic id)
@@ -519,6 +555,7 @@ export async function searchWithSerpApi(query, opts = {}) {
       code: items.length ? "OK" : "OK_EMPTY",
       engine,
       productMode,
+      barcodeMode,
       region: regionUpper,
       hl,
       gl,
@@ -533,6 +570,7 @@ export async function searchWithSerpApi(query, opts = {}) {
       region: regionUpper,
       ms: Date.now() - t0,
       timeoutMs,
+      barcodeMode: opts?.barcode === true || isBarcodeQuery(query),
     });
   } finally {
     globalThis.__S200_ADAPTER_CTX = prevCtx;
