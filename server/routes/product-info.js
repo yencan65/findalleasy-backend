@@ -239,10 +239,29 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr") {
   const { hl, gl, region } = localePack(localeShort);
 
   const tries = [
-    { q: `ean ${code}`, mode: "shopping" },
-    { q: `${code} barcode`, mode: "google" },
-    { q: `${code}`, mode: "google" },
-  ];
+  // Shopping
+  { q: `ean ${code}`, mode: "shopping" },
+  { q: `${code} barkod`, mode: "shopping" },
+
+  // Organic (genel)
+  { q: `${code} barkod`, mode: "google" },
+  { q: `"${code}" barkod`, mode: "google" },
+  { q: `"${code}" ean`, mode: "google" },
+
+  // TR marketplace sniper (çok işe yarar)
+  { q: `site:trendyol.com ${code}`, mode: "google" },
+  { q: `site:hepsiburada.com ${code}`, mode: "google" },
+  { q: `site:n11.com ${code}`, mode: "google" },
+  { q: `site:ciceksepeti.com ${code}`, mode: "google" },
+  { q: `site:migros.com.tr ${code}`, mode: "google" },
+  { q: `site:carrefoursa.com ${code}`, mode: "google" },
+  { q: `site:a101.com.tr ${code}`, mode: "google" },
+  { q: `site:sokmarket.com.tr ${code}`, mode: "google" },
+
+  // Son çare
+  { q: `${code}`, mode: "google" },
+];
+
 
   for (const tr of tries) {
     try {
@@ -263,10 +282,26 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr") {
       for (const it of items) {
         const title = cleanTitle(it?.title || "");
         if (!title) continue;
-        if (/^\d+$/.test(title.replace(/\s+/g, ""))) continue;
-        if (title.length < 6) continue;
-        best = it;
-        break;
+       const t = title.toLowerCase();
+
+// tamamen sayı ise at
+if (/^\d+$/.test(title.replace(/\s+/g, ""))) continue;
+
+// çok kısa ise at
+if (title.length < 6) continue;
+
+// barcode sayfası / arama çöpleri
+if (t.includes("barkod") && title.length < 12) continue;
+if (t.includes("arama sonuç")) continue;
+if (t.includes("search results")) continue;
+
+// domain adı gibi saçmalıkları at
+if (t.includes("trendyol") && title.length < 10) continue;
+if (t.includes("hepsiburada") && title.length < 10) continue;
+
+best = it;
+break;
+
       }
       if (!best) best = items[0];
 
