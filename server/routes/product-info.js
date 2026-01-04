@@ -1,11 +1,12 @@
 // backend/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S21 GOD-KERNEL FINAL FORM
-//  ZERO DELETE — Eski davranış %100 korunur
-//  + S21 anti-poison
-//  + S21 URL/Barcode normalizer
-//  + S21 negative-cache
-//  + S21 safe-json
+//  PRODUCT INFO ENGINE — S21 GOD-KERNEL FINAL FORM (PATCHED)
+//  ZERO DELETE — Eski davranış korunur, sadece daha sağlam input kabulü
+//  Fix:
+//   - Body'den qr/code/data/text kabul et (bazı client'lar qr yerine code gönderiyor)
+//   - JSON body string/buffer gelirse güvenli parse et
+//   - Barcode regex 8-18 (GTIN/EAN/UPC) — "Geçersiz QR" saçmalığını bitir
+//   - sanitizeQR: javascript:/data:/vbscript:/file: gibi şüpheli şemaları kes
 // ======================================================================
 
 import express from "express";
@@ -40,11 +41,14 @@ function burst(ip, qr, ttl = 1500) {
 // S21 SANITIZATION + NORMALIZATION
 // ======================================================================
 function sanitizeQR(v) {
-  if (!v) return "";
+  if (v == null) return "";
   let s = String(v).trim();
 
-  // QR → %00, script, js, data: girişleri kes
+  // null byte / angle bracket temizle
   s = s.replace(/[\0<>]/g, "");
+
+  // şüpheli şemaları kes (comment vardı ama uygulanmıyordu)
+  if (/^(javascript|data|vbscript|file):/i.test(s)) return "";
 
   return s.length > 500 ? s.slice(0, 500) : s;
 }
@@ -74,6 +78,20 @@ function getClientIp(req) {
     req.connection?.remoteAddress ||
     "unknown"
   );
+}
+
+// Body bazen string/buffer gelebiliyor (proxy/middleware karmaşası)
+function pickBody(req) {
+  const b = req?.body;
+  if (!b) return {};
+  if (typeof b === "object" && !Buffer.isBuffer(b)) return b;
+  try {
+    const s = Buffer.isBuffer(b) ? b.toString("utf8") : String(b);
+    const j = JSON.parse(s);
+    return j && typeof j === "object" ? j : {};
+  } catch {
+    return {};
+  }
 }
 
 // ======================================================================
@@ -171,7 +189,8 @@ function cleanTitle(t) {
 
 async function resolveBarcodeViaSerp(barcode, localeShort = "tr") {
   const code = String(barcode || "").trim();
-  if (!/^\d{8,14}$/.test(code)) return null;
+  // ✅ 8-18 GTIN/EAN/UPC
+  if (!/^\d{8,18}$/.test(code)) return null;
 
   const cacheKey = `${localeShort}:${code}`;
   const cached = cacheGetBarcode(cacheKey);
@@ -243,7 +262,6 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr") {
   return null;
 }
 
-
 // ======================================================================
 // S21 — OpenFoodFacts Safe Wrapper (timeout + failover)
 // ======================================================================
@@ -300,8 +318,19 @@ async function handleProduct(req, res) {
   try {
     // Bazı client sürümleri GET /product?code=... kullanabilir.
     // Kırılmaması için hem body hem query'i kabul ediyoruz.
-    let qr = sanitizeQR(req.body?.qr || req.query?.code || req.query?.qr);
+    const body = pickBody(req);
+
+    const raw =
+      body?.qr ??
+      body?.code ??
+      body?.data ??
+      body?.text ??
+      req.query?.qr ??
+      req.query?.code;
+
+    let qr = sanitizeQR(raw);
     const localeShort = pickLocale(req);
+
     if (!qr) return safeJson(res, { ok: false, error: "Geçersiz QR" }, 400);
 
     const ip = getClientIp(req);
@@ -335,8 +364,8 @@ async function handleProduct(req, res) {
       console.warn("Mongo cache skip:", e?.message);
     }
 
-    // 2) Barcode
-    if (/^\d{8,14}$/.test(qr)) {
+    // 2) Barcode (8-18 GTIN/EAN/UPC)
+    if (/^\d{8,18}$/.test(qr)) {
       const off = await fetchOpenFoodFacts(qr);
       if (off) {
         try {
@@ -365,8 +394,8 @@ async function handleProduct(req, res) {
 
     // 3) URL
     if (qr.startsWith("http")) {
-      let provider = detectProviderFromUrl(qr);
-      let title = extractTitleFromUrl(qr) || `${provider} ${providerProductWord(localeShort)}`;
+      const provider = detectProviderFromUrl(qr);
+      const title = extractTitleFromUrl(qr) || `${provider} ${providerProductWord(localeShort)}`;
 
       const product = {
         name: safeStr(title, 200),
