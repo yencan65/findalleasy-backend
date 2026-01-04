@@ -258,7 +258,18 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 const VISION_RAW_LIMIT = String(process.env.VISION_BODY_LIMIT || "25mb");
 app.use("/api/vision", bodyParser.raw({ type: "*/*", limit: VISION_RAW_LIMIT }));
 
-app.use(bodyParser.json({ limit: "15mb" }));
+app.use(
+  bodyParser.json({
+    limit: "15mb",
+    verify: (req, res, buf) => {
+      try {
+        // büyük body'leri şişirmeyelim (1MB üstünü tutma)
+        if (buf && buf.length <= 1024 * 1024) req.__rawBody = buf;
+      } catch {}
+    },
+  })
+);
+
 
 
 // ============================================================================
