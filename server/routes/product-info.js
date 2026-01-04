@@ -12,6 +12,7 @@ import express from "express";
 import fetch from "node-fetch";
 import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
+import { searchWithSerpApi } from "../adapters/serpApi.js";
 
 const router = express.Router();
 
@@ -112,6 +113,138 @@ function extractTitleFromUrl(url) {
 }
 
 // ======================================================================
+// S21 — LOCALE PICKER (client optional)
+// ======================================================================
+function pickLocale(req) {
+  try {
+    const raw = String(req?.body?.locale || req?.query?.locale || "").trim().toLowerCase();
+    if (!raw) return "tr";
+    return raw.split("-")[0] || "tr";
+  } catch {
+    return "tr";
+  }
+}
+
+function localePack(localeShort) {
+  const l = String(localeShort || "tr").toLowerCase();
+  if (l === "tr") return { hl: "tr", gl: "tr", region: "TR" };
+  if (l === "fr") return { hl: "fr", gl: "fr", region: "TR" };
+  if (l === "ru") return { hl: "ru", gl: "ru", region: "TR" };
+  if (l === "ar") return { hl: "ar", gl: "sa", region: "TR" };
+  return { hl: "en", gl: "us", region: "TR" };
+}
+
+function providerProductWord(localeShort) {
+  const l = String(localeShort || "tr").toLowerCase();
+  if (l === "en") return "product";
+  if (l === "fr") return "produit";
+  if (l === "ru") return "товар";
+  if (l === "ar") return "منتج";
+  return "ürünü";
+}
+
+// ======================================================================
+// S21 — BARCODE → PRODUCT TITLE (SerpAPI fallback)
+// ======================================================================
+const barcodeCache = new Map(); // key -> {ts, product}
+const BARCODE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function cacheGetBarcode(key) {
+  const hit = barcodeCache.get(key);
+  if (!hit) return null;
+  const age = Date.now() - (hit.ts || 0);
+  if (age > BARCODE_CACHE_MS) return null;
+  return hit.product || null;
+}
+
+function cacheSetBarcode(key, product) {
+  try {
+    barcodeCache.set(key, { ts: Date.now(), product });
+  } catch {}
+}
+
+function cleanTitle(t) {
+  const s = safeStr(t, 240);
+  if (!s) return "";
+  return s.replace(/\s+[\|\-–]\s+.+$/, "").trim();
+}
+
+async function resolveBarcodeViaSerp(barcode, localeShort = "tr") {
+  const code = String(barcode || "").trim();
+  if (!/^\d{8,14}$/.test(code)) return null;
+
+  const cacheKey = `${localeShort}:${code}`;
+  const cached = cacheGetBarcode(cacheKey);
+  if (cached) return cached;
+
+  const { hl, gl, region } = localePack(localeShort);
+
+  const tries = [
+    { q: `ean ${code}`, mode: "shopping" },
+    { q: `${code} barcode`, mode: "google" },
+    { q: `${code}`, mode: "google" },
+  ];
+
+  for (const tr of tries) {
+    try {
+      const r = await searchWithSerpApi(tr.q, {
+        mode: tr.mode,
+        region,
+        hl,
+        gl,
+        num: 10,
+        timeoutMs: 12000,
+        includeRaw: true,
+      });
+
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (!items.length) continue;
+
+      let best = null;
+      for (const it of items) {
+        const title = cleanTitle(it?.title || "");
+        if (!title) continue;
+        if (/^\d+$/.test(title.replace(/\s+/g, ""))) continue;
+        if (title.length < 6) continue;
+        best = it;
+        break;
+      }
+      if (!best) best = items[0];
+
+      const name = cleanTitle(best?.title || "");
+      if (!name) continue;
+
+      const raw = best?.raw || {};
+      const desc =
+        safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 260) || "";
+      const img = safeStr(best?.image || raw?.thumbnail || raw?.image || "", 2000) || "";
+
+      const product = {
+        name,
+        title: name,
+        description: desc,
+        image: img,
+        brand: safeStr(raw?.brand || raw?.brands || "", 120),
+        category: "product",
+        region,
+        qrCode: code,
+        provider: "barcode",
+        source: "serpapi",
+        raw: best,
+      };
+
+      cacheSetBarcode(cacheKey, product);
+      return product;
+    } catch {
+      // next try
+    }
+  }
+
+  return null;
+}
+
+
+// ======================================================================
 // S21 — OpenFoodFacts Safe Wrapper (timeout + failover)
 // ======================================================================
 async function fetchOpenFoodFacts(barcode) {
@@ -168,6 +301,7 @@ async function handleProduct(req, res) {
     // Bazı client sürümleri GET /product?code=... kullanabilir.
     // Kırılmaması için hem body hem query'i kabul ediyoruz.
     let qr = sanitizeQR(req.body?.qr || req.query?.code || req.query?.qr);
+    const localeShort = pickLocale(req);
     if (!qr) return safeJson(res, { ok: false, error: "Geçersiz QR" }, 400);
 
     const ip = getClientIp(req);
@@ -214,12 +348,25 @@ async function handleProduct(req, res) {
           source: "openfoodfacts",
         });
       }
+
+      // 2B) SerpAPI fallback: barcode -> product title (OFF'ta yoksa)
+      const serp = await resolveBarcodeViaSerp(qr, localeShort);
+      if (serp?.name) {
+        try {
+          await Product.create(serp);
+        } catch {}
+        return safeJson(res, {
+          ok: true,
+          product: serp,
+          source: "serpapi-barcode",
+        });
+      }
     }
 
     // 3) URL
     if (qr.startsWith("http")) {
       let provider = detectProviderFromUrl(qr);
-      let title = extractTitleFromUrl(qr) || `${provider} ürünü`;
+      let title = extractTitleFromUrl(qr) || `${provider} ${providerProductWord(localeShort)}`;
 
       const product = {
         name: safeStr(title, 200),
