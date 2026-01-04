@@ -1,16 +1,16 @@
-// backend/routes/product-info.js
+// server/routes/product-info.js
 // ======================================================================
 //  PRODUCT INFO ENGINE — S21 GOD-KERNEL FINAL FORM (HARDENED)
-//  ZERO DELETE — Eski davranış korunur, sadece daha sağlam input + barcode resolve
+//  ZERO DELETE — Eski davranış korunur, sadece daha sağlam input kabulü
 //
 //  Fix:
 //   - Body'den qr/code/data/text kabul et
+//   - JSON parse fail olursa req.__rawBody üstünden tekrar parse et
+//   - curl.exe + PowerShell kaçış hatalarında gelen {\"qr\":...} gibi body'leri kurtar
 //   - Barcode regex 8-18 (GTIN/EAN/UPC/SSCC)
 //   - sanitizeQR: javascript:/data:/vbscript:/file: gibi şüpheli şemaları kes
-//   - force=1 → mongo-cache + bad-cache bypass (re-resolve)
-//   - Placeholder cache (text) barkod ise kendini iyileştir (cache'e takılı kalma)
-//   - Upsert cache (duplicate birikmesin)
-//   - diag=1 → _diag döndür
+//   - force=1 => mongo-cache'i bypass et (fresh resolve)
+//   - diag=1 => _diag ile adım adım debug dön
 // ======================================================================
 
 import express from "express";
@@ -22,15 +22,11 @@ import { searchWithSerpApi } from "../adapters/serpApi.js";
 const router = express.Router();
 
 // ======================================================================
-// S21 RATE LIMIT (S16 korunur + burst control)
+// RATE LIMIT + micro-burst
 // ======================================================================
-const limiter = rateLimit({
-  windowMs: 5000,
-  max: 40,
-});
+const limiter = rateLimit({ windowMs: 5000, max: 40 });
 router.use(limiter);
 
-// Çok kısa aralıkta spam QR gönderimini kesen mikro burst
 const burstMap = new Map();
 function burst(ip, qr, ttl = 1500) {
   const key = ip + "::" + qr;
@@ -42,19 +38,13 @@ function burst(ip, qr, ttl = 1500) {
 }
 
 // ======================================================================
-// S21 SANITIZATION + NORMALIZATION
+// Sanitization
 // ======================================================================
 function sanitizeQR(v) {
   if (v == null) return "";
   let s = String(v).trim();
-
-  // null byte / angle bracket temizle
   s = s.replace(/[\0<>]/g, "");
-
-  // şüpheli şemaları kes
   if (/^(javascript|data|vbscript|file):/i.test(s)) return "";
-
-  // çok uzunsa kırp
   return s.length > 500 ? s.slice(0, 500) : s;
 }
 
@@ -86,25 +76,63 @@ function getClientIp(req) {
 }
 
 // ======================================================================
-// BODY PICKER (robust)
-// - Not: server.js JSON parse shield devredeyse req.body {} kalabilir.
-// - Browser fetch düzgün JSON gönderdiği için pratikte sorun yok.
+// Body picker (robust) — req.body boşsa req.__rawBody'ye düş
+//  - ayrıca PowerShell curl kaçışlarında gelen {\"qr\":\"...\"} gibi body'leri kurtarır
 // ======================================================================
-function pickBody(req) {
-  const b = req?.body;
-  if (!b) return {};
-  if (typeof b === "object" && !Buffer.isBuffer(b)) return b;
+function _parseMaybeJson(raw) {
+  if (!raw) return {};
+  let s = String(raw).trim();
+  if (!s) return {};
+
+  // BOM temizle
+  s = s.replace(/^\uFEFF/, "").trim();
+
+  // bazen body "'{...}'" veya "\"{...}\"" gibi sarılı gelir
+  if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"'))) {
+    const inner = s.slice(1, -1).trim();
+    if (inner.startsWith("{") && inner.endsWith("}")) s = inner;
+  }
+
+  // 1) normal parse
   try {
-    const s = Buffer.isBuffer(b) ? b.toString("utf8") : String(b);
     const j = JSON.parse(s);
     return j && typeof j === "object" ? j : {};
-  } catch {
-    return {};
+  } catch {}
+
+  // 2) PowerShell/curl kaçışı: {\"qr\":\"...\"}
+  if (s.includes('\\"')) {
+    const s2 = s.replace(/\\"/g, '"');
+    try {
+      const j2 = JSON.parse(s2);
+      return j2 && typeof j2 === "object" ? j2 : {};
+    } catch {}
   }
+
+  return {};
+}
+
+function pickBody(req) {
+  const b = req?.body;
+
+  // normal object body
+  if (b && typeof b === "object" && !Buffer.isBuffer(b)) {
+    if (Object.keys(b).length) return b;
+  }
+
+  // buffer/string body
+  if (Buffer.isBuffer(b)) return _parseMaybeJson(b.toString("utf8"));
+  if (typeof b === "string") return _parseMaybeJson(b);
+
+  // rawBody fallback (server.js verify yakalamış olmalı)
+  const rb = req?.__rawBody;
+  if (Buffer.isBuffer(rb)) return _parseMaybeJson(rb.toString("utf8"));
+  if (typeof rb === "string") return _parseMaybeJson(rb);
+
+  return {};
 }
 
 // ======================================================================
-// S21 — PROVIDER DETECTOR
+// Provider detector + URL title
 // ======================================================================
 function detectProviderFromUrl(url) {
   const s = String(url).toLowerCase();
@@ -117,9 +145,6 @@ function detectProviderFromUrl(url) {
   return "unknown";
 }
 
-// ======================================================================
-// S21 — URL TITLE EXTRACTOR
-// ======================================================================
 function extractTitleFromUrl(url) {
   try {
     const cleanUrl = url.split("?")[0].split("&")[0];
@@ -140,7 +165,7 @@ function extractTitleFromUrl(url) {
 }
 
 // ======================================================================
-// LOCALE
+// Locale
 // ======================================================================
 function pickLocale(req, body) {
   try {
@@ -171,7 +196,7 @@ function providerProductWord(localeShort) {
 }
 
 // ======================================================================
-// BARCODE → PRODUCT TITLE (SerpAPI fallback)
+// Barcode cache + helpers
 // ======================================================================
 const barcodeCache = new Map(); // key -> {ts, product}
 const BARCODE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -196,101 +221,65 @@ function cleanTitle(t) {
   return s.replace(/\s+[\|\-–]\s+.+$/, "").trim();
 }
 
-function looksLikeBarcode(s) {
-  return /^\d{8,18}$/.test(String(s || "").trim());
-}
-
-function isPlaceholderDoc(doc, qr) {
-  if (!doc) return false;
-  const code = String(qr || "").trim();
-  if (!looksLikeBarcode(code)) return false;
-
-  const name = String(doc.name || doc.title || "").trim();
-  const provider = String(doc.provider || "").toLowerCase();
-  const source = String(doc.source || "").toLowerCase();
-
-  const hasAnyDetails =
-    !!String(doc.brand || "").trim() ||
-    !!String(doc.image || "").trim() ||
-    !!String(doc.description || "").trim();
-
-  // “8690...” gibi numeric şeyi text diye cache'lediyse → placeholder say
-  if (!hasAnyDetails && name === code && (provider === "text" || source === "text")) return true;
-
-  // açıkça unresolved işaretlediysek → placeholder say
-  if (doc.needsResolve === true) return true;
-
-  return false;
-}
-
-async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diagArr = null) {
+// ======================================================================
+// SerpAPI fallback (barcode -> product title)
+//  - NOT: Bunun tam çalışması için altta verdiğim serpApi adapter patch’i şart.
+// ======================================================================
+async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
-  if (!looksLikeBarcode(code)) return null;
+  if (!/^\d{8,18}$/.test(code)) return null;
 
   const cacheKey = `${localeShort}:${code}`;
   const cached = cacheGetBarcode(cacheKey);
-  if (cached) {
-    if (Array.isArray(diagArr)) diagArr.push({ step: "mem-cache", hit: true });
-    return cached;
-  }
+  if (cached) return cached;
 
   const { hl, gl, region } = localePack(localeShort);
 
-  // Not: SerpAPI kredi = deneme sayısı. Az ama etkili tutuyoruz.
   const tries = [
     { q: `ean ${code}`, mode: "shopping" },
-    { q: `gtin ${code}`, mode: "shopping" },
-    { q: `${code}`, mode: "shopping" },
-    { q: `"${code}"`, mode: "shopping" },
+    { q: `${code} barkod`, mode: "google" },
+    { q: `site:trendyol.com ${code}`, mode: "google" },
+    { q: `site:hepsiburada.com ${code}`, mode: "google" },
+    { q: `${code}`, mode: "google" },
   ];
 
   for (const tr of tries) {
     try {
+      diag?.tries?.push?.({ step: "serpapi", q: tr.q, mode: tr.mode });
+
+      // barcode:true => serpApi adapter patch’inden sonra relevance filtresi ezilir
       const r = await searchWithSerpApi(tr.q, {
-        mode: tr.mode,     // shopping => google_shopping engine
+        mode: tr.mode,
         region,
         hl,
         gl,
         num: 10,
         timeoutMs: 12000,
         includeRaw: true,
+        barcode: true,
+        intent: { type: "barcode" },
       });
 
       const items = Array.isArray(r?.items) ? r.items : [];
-      if (Array.isArray(diagArr)) {
-        diagArr.push({
-          q: tr.q,
-          mode: tr.mode,
-          ok: !!r?.ok,
-          n: items.length,
-          top: items.slice(0, 3).map((x) => String(x?.title || "").slice(0, 80)),
-        });
+      if (!items.length) {
+        diag?.tries?.push?.({ step: "serpapi_empty", q: tr.q, mode: tr.mode });
+        continue;
       }
 
-      if (!items.length) continue;
-
+      // En iyi başlığı seç
       let best = null;
-
       for (const it of items) {
         const title = cleanTitle(it?.title || "");
         if (!title) continue;
 
-        const tl = title.toLowerCase();
-
-        // tamamen sayı ise at
+        const t = title.toLowerCase();
         if (/^\d+$/.test(title.replace(/\s+/g, ""))) continue;
-
-        // çok kısa ise at
         if (title.length < 6) continue;
-
-        // arama çöpü
-        if (tl.includes("arama sonuç")) continue;
-        if (tl.includes("search results")) continue;
+        if (t.includes("arama sonuç") || t.includes("search results")) continue;
 
         best = it;
         break;
       }
-
       if (!best) best = items[0];
 
       const name = cleanTitle(best?.title || "");
@@ -298,15 +287,7 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diagArr = null
 
       const raw = best?.raw || {};
       const desc =
-        safeStr(
-          raw?.snippet ||
-            raw?.description ||
-            raw?.summary ||
-            raw?.product_description ||
-            "",
-          260
-        ) || "";
-
+        safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 260) || "";
       const img = safeStr(best?.image || raw?.thumbnail || raw?.image || "", 2000) || "";
 
       const product = {
@@ -326,7 +307,7 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diagArr = null
       cacheSetBarcode(cacheKey, product);
       return product;
     } catch (e) {
-      if (Array.isArray(diagArr)) diagArr.push({ q: tr.q, mode: tr.mode, error: String(e?.message || e) });
+      diag?.tries?.push?.({ step: "serpapi_error", q: tr.q, mode: tr.mode, error: String(e?.message || e) });
       // next try
     }
   }
@@ -335,12 +316,15 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diagArr = null
 }
 
 // ======================================================================
-// OpenFoodFacts (best effort)
+// OpenFoodFacts best effort
 // ======================================================================
-async function fetchOpenFoodFacts(barcode) {
+async function fetchOpenFoodFacts(barcode, diag) {
   try {
+    diag?.tries?.push?.({ step: "openfoodfacts", barcode });
+
     const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`, {
-      timeout: 4000, // node-fetch bazı sürümlerde ignore olabilir; best-effort
+      // node-fetch bazı sürümlerde timeout ignore edebilir; best effort
+      timeout: 4000,
     });
 
     if (!r.ok) return null;
@@ -365,36 +349,23 @@ async function fetchOpenFoodFacts(barcode) {
       qrCode: barcode,
       provider: "barcode",
       source: "openfoodfacts",
-      region: "TR",
-      description: "",
     };
   } catch (err) {
-    console.warn("OFF error:", err?.message);
+    diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(err?.message || err) });
   }
   return null;
 }
 
 // ======================================================================
-// NEGATIVE CACHE
+// Negative cache
 // ======================================================================
 const badCache = new Map();
 function isBadQR(qr) {
   const ts = badCache.get(qr);
-  return ts && Date.now() - ts < 30 * 60 * 1000; // 30 dakika
+  return ts && Date.now() - ts < 30 * 60 * 1000;
 }
 function markBad(qr) {
   badCache.set(qr, Date.now());
-}
-
-// ======================================================================
-// DB UPSERT (duplicate birikmesin)
-// ======================================================================
-async function upsertByQr(product) {
-  try {
-    const qrCode = String(product?.qrCode || "").trim();
-    if (!qrCode) return;
-    await Product.updateOne({ qrCode }, { $set: product }, { upsert: true });
-  } catch {}
 }
 
 // ======================================================================
@@ -405,10 +376,8 @@ async function handleProduct(req, res) {
     const body = pickBody(req);
 
     const force = String(req.query?.force || body?.force || "0") === "1";
-    const diag = String(req.query?.diag || body?.diag || "0") === "1";
-    const diagArr = diag ? [] : null;
+    const diagOn = String(req.query?.diag || body?.diag || "0") === "1";
 
-    // Body + Query accept
     const raw =
       body?.qr ??
       body?.code ??
@@ -417,78 +386,89 @@ async function handleProduct(req, res) {
       req.query?.qr ??
       req.query?.code;
 
-    const qr = sanitizeQR(raw);
+    let qr = sanitizeQR(raw);
     const localeShort = pickLocale(req, body);
+
+    const diag = diagOn
+      ? {
+          force,
+          locale: localeShort,
+          parseError: req.__jsonParseError ? true : false,
+          tries: [],
+        }
+      : null;
+
+    try {
+      res.setHeader("x-product-info-ver", "S21");
+      res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
+    } catch {}
 
     if (!qr) return safeJson(res, { ok: false, error: "Geçersiz QR" }, 400);
 
     const ip = getClientIp(req);
 
-    // burst spam blokla (force bile olsa spam'i kesmek mantıklı)
     if (!burst(ip, qr)) {
-      return safeJson(res, {
-        ok: true,
-        cached: true,
-        product: null,
-        source: "burst-limit",
-        ...(diag ? { _diag: diagArr } : {}),
-      });
+      const out = { ok: true, cached: true, product: null, source: "burst-limit" };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
     }
 
-    // BAD-QR cache → force değilse çalışsın
-    if (!force && isBadQR(qr)) {
-      return safeJson(res, { ok: false, error: "QR bulunamadı", cached: true, ...(diag ? { _diag: diagArr } : {}) });
+    if (isBadQR(qr)) {
+      const out = { ok: false, error: "QR bulunamadı", cached: true };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
     }
 
-    const barcode = looksLikeBarcode(qr);
-
-    // 1) Mongo cache (force=1 ise atla) — placeholder barkod ise cache'e takılma
+    // 1) Mongo cache (force=1 ise atla)
     if (!force) {
       try {
+        diag?.tries?.push?.({ step: "mongo_cache_lookup" });
         const cached = await Product.findOne({ qrCode: qr }).lean();
-        if (cached && !isPlaceholderDoc(cached, qr)) {
-          return safeJson(res, { ok: true, product: cached, source: "mongo-cache", ...(diag ? { _diag: diagArr } : {}) });
-        }
-        if (cached && isPlaceholderDoc(cached, qr) && Array.isArray(diagArr)) {
-          diagArr.push({ step: "mongo-cache", placeholder: true, provider: cached.provider, source: cached.source });
+        if (cached) {
+          const out = { ok: true, product: cached, source: "mongo-cache" };
+          if (diag) out._diag = diag;
+          return safeJson(res, out);
         }
       } catch (e) {
-        console.warn("Mongo cache skip:", e?.message);
+        diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
       }
+    } else {
+      diag?.tries?.push?.({ step: "mongo_cache_skipped_force" });
     }
 
-    // 2) Barcode path
-    if (barcode) {
-      const off = await fetchOpenFoodFacts(qr);
+    // 2) Barcode (8-18)
+    if (/^\d{8,18}$/.test(qr)) {
+      const off = await fetchOpenFoodFacts(qr, diag);
       if (off) {
-        await upsertByQr(off);
-        return safeJson(res, { ok: true, product: off, source: "openfoodfacts", ...(diag ? { _diag: diagArr } : {}) });
+        try {
+          await Product.create(off);
+        } catch {}
+        const out = { ok: true, product: off, source: "openfoodfacts" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
       }
 
-      // SerpAPI fallback
-      const serp = await resolveBarcodeViaSerp(qr, localeShort, diagArr);
+      const serp = await resolveBarcodeViaSerp(qr, localeShort, diag);
       if (serp?.name) {
-        await upsertByQr(serp);
-        return safeJson(res, { ok: true, product: serp, source: "serpapi-barcode", ...(diag ? { _diag: diagArr } : {}) });
+        try {
+          await Product.create(serp);
+        } catch {}
+        const out = { ok: true, product: serp, source: "serpapi-barcode" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
       }
 
-      // Çözülemediyse: text diye cache'leyip kilitleme — barcode-unresolved olarak işaretle
-      const unresolved = {
+      // Barcode çözülemedi: gene de fallback dön (eski davranış: en azından qr kaybolmasın)
+      const product = {
         name: qr,
         title: qr,
         qrCode: qr,
         provider: "barcode",
         source: "barcode-unresolved",
-        needsResolve: true,
-        region: "TR",
-        category: "product",
-        brand: "",
-        image: "",
-        description: "",
       };
-
-      await upsertByQr(unresolved);
-      return safeJson(res, { ok: true, product: unresolved, source: "barcode-unresolved", ...(diag ? { _diag: diagArr } : {}) });
+      const out = { ok: true, product, source: "barcode-unresolved" };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
     }
 
     // 3) URL
@@ -496,43 +476,34 @@ async function handleProduct(req, res) {
       const provider = detectProviderFromUrl(qr);
       const title = extractTitleFromUrl(qr) || `${provider} ${providerProductWord(localeShort)}`;
 
-      const product = {
-        name: safeStr(title, 200),
-        title: safeStr(title, 200),
-        provider,
-        qrCode: qr,
-        source: "link",
-        region: "TR",
-        category: "product",
-      };
+      const product = { name: safeStr(title, 200), title: safeStr(title, 200), provider, qrCode: qr, source: "url" };
 
-      await upsertByQr(product);
+      try {
+        await Product.create(product);
+      } catch {}
 
-      return safeJson(res, { ok: true, product, source: `${provider}-link`, ...(diag ? { _diag: diagArr } : {}) });
+      const out = { ok: true, product, source: `${provider}-link` };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
     }
 
     // 4) RAW TEXT
     if (qr.length < 3) {
       markBad(qr);
-      return safeJson(res, { ok: false, error: "Geçersiz içerik", ...(diag ? { _diag: diagArr } : {}) });
+      const out = { ok: false, error: "Geçersiz içerik" };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
     }
 
-    const product = {
-      name: qr,
-      title: qr,
-      qrCode: qr,
-      provider: "text",
-      source: "text",
-      region: "TR",
-      category: "product",
-      brand: "",
-      image: "",
-      description: "",
-    };
+    const product = { name: qr, title: qr, qrCode: qr, provider: "text", source: "text" };
 
-    await upsertByQr(product);
+    try {
+      await Product.create(product);
+    } catch {}
 
-    return safeJson(res, { ok: true, product, source: "raw-text", ...(diag ? { _diag: diagArr } : {}) });
+    const out = { ok: true, product, source: "raw-text" };
+    if (diag) out._diag = diag;
+    return safeJson(res, out);
   } catch (err) {
     console.error("🚨 product-info ERROR:", err);
     return safeJson(res, { ok: false, error: "SERVER_ERROR" }, 500);
@@ -540,7 +511,7 @@ async function handleProduct(req, res) {
 }
 
 // ======================================================================
-// ROUTE MAP (legacy support)
+// ROUTES (legacy destek)
 // ======================================================================
 router.post("/product", handleProduct);
 router.post("/product-info", handleProduct);
