@@ -188,7 +188,7 @@ function isBarcodeQuery(q) {
   // anahtar kelime varsa direkt barcode
   if (/\b(ean|gtin|upc|barcode|barkod|ean13|ean-13|ean_13)\b/.test(s)) return true;
 
-  // hepsi neredeyse rakamsa barcode kabul et (phone/otp gibi şeyler de gelebilir ama burada amaç çözüm)
+  // hepsi neredeyse rakamsa barcode kabul et
   const digits = (s.match(/\d/g) || []).length;
   const alpha = (s.match(/[a-zğüşöçı]/gi) || []).length;
   return digits >= 8 && alpha <= 3;
@@ -226,12 +226,7 @@ function isProbablyProduct(query, opts = {}) {
     return true;
 
   const q = safe(query, 300).toLowerCase();
-  if (
-    /\biphone\b|\bsamsung\b|\bgalaxy\b|\bps5\b|\bplaystation\b|\bdyson\b|\bmacbook\b/.test(
-      q
-    )
-  )
-    return true;
+  if (/\biphone\b|\bsamsung\b|\bgalaxy\b|\bps5\b|\bplaystation\b|\bdyson\b|\bmacbook\b/.test(q)) return true;
 
   const t = tokenize(q);
   const hasNum = t.some((x) => /^\d+$/.test(x));
@@ -329,7 +324,7 @@ export async function searchWithSerpApi(query, opts = {}) {
   try {
     const httpTimeout = Math.max(1000, Math.min(30000, timeoutMs - 150));
 
-    // cacheKey barcodeMode ile de ayrışsın (aynı q ile farklı modlar karışmasın)
+    // cacheKey barcodeMode ile de ayrışsın
     const cacheKey = `serpapi:${engine}:${gl}:${hl}:${barcodeMode ? "B" : "N"}:${q.toLowerCase()}`;
     const cached = _serpCacheGet(cacheKey, 30_000);
 
@@ -350,7 +345,6 @@ export async function searchWithSerpApi(query, opts = {}) {
               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             Accept: "application/json",
           },
-          // Keep body for non-2xx so we can surface real SerpAPI errors.
           validateStatus: () => true,
         });
 
@@ -396,14 +390,9 @@ export async function searchWithSerpApi(query, opts = {}) {
 
     if (data) _serpCacheSet(cacheKey, data);
 
-    // SerpAPI sometimes returns HTTP 200 with an "error" field.
-    if (data?.error) {
-      throw new Error(`SERPAPI_ERROR: ${String(data.error)}`);
-    }
+    if (data?.error) throw new Error(`SERPAPI_ERROR: ${String(data.error)}`);
     const metaStatus = String(data?.search_metadata?.status || "");
-    if (metaStatus && metaStatus.toLowerCase() !== "success") {
-      throw new Error(`SERPAPI_STATUS: ${metaStatus}`);
-    }
+    if (metaStatus && metaStatus.toLowerCase() !== "success") throw new Error(`SERPAPI_STATUS: ${metaStatus}`);
 
     // Build candidates
     let candidates = [];
@@ -420,30 +409,25 @@ export async function searchWithSerpApi(query, opts = {}) {
           const title = safe(r?.title || r?.name, 280);
           const link = sanitizeUrl(r?.link || r?.product_link || r?.product_url || r?.url);
           const thumb = safe(r?.thumbnail || r?.image || r?.thumbnail_url, 2000);
-
           if (!title || !link) return null;
 
           const rel = relevanceScore(q, title);
 
-          // DISCOVERY SOURCE RULE: price forced null, affiliate injection OFF
-          const item = {
+          return {
             id: stableIdS200(PROVIDER_KEY, link, title),
             title,
-
             provider: PROVIDER_KEY,
             providerKey: PROVIDER_KEY,
             providerType: "aggregator",
             providerFamily: PROVIDER_FAMILY,
             vertical: "discovery",
-
             category: "product",
             region: regionUpper,
-
             url: link,
             originUrl: link,
-
             image: thumb || null,
 
+            // DISCOVERY SOURCE RULE: price forced null
             price: null,
             finalPrice: null,
             optimizedPrice: null,
@@ -453,18 +437,13 @@ export async function searchWithSerpApi(query, opts = {}) {
             qualityScore: 0.75,
 
             __relevance: rel,
-
-            // keep price hints in raw/meta only
             priceHint: safe(r?.price || r?.price_raw || "", 120) || null,
-
             raw: opts?.includeRaw ? r : undefined,
           };
-
-          return item;
         })
         .filter(Boolean);
 
-      // ✅ BARCODE MODE: relevance filtrelerini kapat (kredi yanıp boş dönmesin)
+      // ✅ BARCODE MODE: relevance filtrelerini kapat
       if (!barcodeMode) {
         const qTokens = tokenize(q);
         const minRel = qTokens.length >= 3 ? 0.5 : 0.34;
@@ -481,7 +460,6 @@ export async function searchWithSerpApi(query, opts = {}) {
           const title = safe(r?.title || r?.name, 280);
           const link = sanitizeUrl(r?.link || r?.website || r?.url);
           const thumb = safe(r?.thumbnail || r?.image, 2000);
-
           if (!title || !link) return null;
 
           const rel = relevanceScore(q, title);
@@ -489,19 +467,15 @@ export async function searchWithSerpApi(query, opts = {}) {
           return {
             id: stableIdS200(PROVIDER_KEY, link, title),
             title,
-
             provider: PROVIDER_KEY,
             providerKey: PROVIDER_KEY,
             providerType: "search",
             providerFamily: PROVIDER_FAMILY,
             vertical: "discovery",
-
             category: "service",
             region: regionUpper,
-
             url: link,
             originUrl: link,
-
             image: thumb || null,
 
             // DISCOVERY SOURCE RULE: price forced null
@@ -519,14 +493,13 @@ export async function searchWithSerpApi(query, opts = {}) {
         })
         .filter(Boolean);
 
-      // ✅ BARCODE MODE: relevance filtrelerini kapat
       if (!barcodeMode) {
         candidates = candidates.filter((it) => (it.__relevance ?? 0) >= 0.25);
         candidates.sort((a, b) => (b.__relevance ?? 0) - (a.__relevance ?? 0));
       }
     }
 
-    // Normalize via kit (contract lock + URL priority + badUrl check + deterministic id)
+    // Normalize via kit
     const normalized = [];
     for (const it of coerceItemsS200(candidates)) {
       const n = normalizeItemS200(it, PROVIDER_KEY, {
@@ -535,7 +508,6 @@ export async function searchWithSerpApi(query, opts = {}) {
         category: it?.category || "discovery",
         region: regionUpper,
         currency: "TRY",
-        // discovery: do not allow affiliate injection here
         discovery: true,
       });
       if (n) normalized.push(n);
