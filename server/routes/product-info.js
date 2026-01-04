@@ -370,17 +370,19 @@ async function handleProduct(req, res) {
     } catch {}
 
     const body = pickBody(req);
+const force = String(req.query?.force || body?.force || "0") === "1";
 
-    const raw =
-      body?.qr ??
-      body?.code ??
-      body?.data ??
-      body?.text ??
-      req.query?.qr ??
-      req.query?.code;
+const raw =
+  body?.qr ??
+  body?.code ??
+  body?.data ??
+  body?.text ??
+  req.query?.qr ??
+  req.query?.code;
 
-    let qr = sanitizeQR(raw);
-    const localeShort = pickLocale(req, body);
+let qr = sanitizeQR(raw);
+const localeShort = pickLocale(req, body);
+
 
     if (!qr) return safeJson(res, { ok: false, error: "Geçersiz QR" }, 400);
 
@@ -401,19 +403,22 @@ async function handleProduct(req, res) {
       return safeJson(res, { ok: false, error: "QR bulunamadı", cached: true });
     }
 
-    // 1) Mongo cache
-    try {
-      const cached = await Product.findOne({ qrCode: qr }).lean();
-      if (cached) {
-        return safeJson(res, {
-          ok: true,
-          product: cached,
-          source: "mongo-cache",
-        });
-      }
-    } catch (e) {
-      console.warn("Mongo cache skip:", e?.message);
+   // 1) Mongo cache (force=1 ise atla)
+if (!force) {
+  try {
+    const cached = await Product.findOne({ qrCode: qr }).lean();
+    if (cached) {
+      return safeJson(res, {
+        ok: true,
+        product: cached,
+        source: "mongo-cache",
+      });
     }
+  } catch (e) {
+    console.warn("Mongo cache skip:", e?.message);
+  }
+}
+
 
     // 2) Barcode
     if (/^\d{8,18}$/.test(qr)) {
