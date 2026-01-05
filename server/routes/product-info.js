@@ -319,40 +319,72 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
 // OpenFoodFacts best effort
 // ======================================================================
 async function fetchOpenFoodFacts(barcode, diag) {
+  // Not just food: OpenFoodFacts + OpenBeautyFacts + OpenProductsFacts (free)
+  // Sources:
+  // - OFF v2 endpoint (food): https://world.openfoodfacts.net/api/v2/product/{barcode} / .org
+  // - OpenBeautyFacts v2 endpoint: https://world.openbeautyfacts.org/api/v2/product/{barcode}
+  // - OpenProductsFacts v2 endpoint: https://world.openproductsfacts.org/api/v2/product/{barcode}.json
   try {
-    diag?.tries?.push?.({ step: "openfoodfacts", barcode });
+    diag?.tries?.push?.({ step: "openfacts", barcode });
 
-    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`, {
-      // node-fetch bazı sürümlerde timeout ignore edebilir; best effort
-      timeout: 4000,
-    });
+    const endpoints = [
+      { key: "openfoodfacts_org", url: `https://world.openfoodfacts.org/api/v2/product/${barcode}.json` },
+      { key: "openfoodfacts_net", url: `https://world.openfoodfacts.net/api/v2/product/${barcode}` },
+      { key: "openbeautyfacts", url: `https://world.openbeautyfacts.org/api/v2/product/${barcode}` },
+      { key: "openproductsfacts", url: `https://world.openproductsfacts.org/api/v2/product/${barcode}.json` },
+    ];
 
-    if (!r.ok) return null;
+    for (const ep of endpoints) {
+      try {
+        diag?.tries?.push?.({ step: ep.key, url: ep.url });
 
-    const txt = await r.text();
-    let j;
-    try {
-      j = JSON.parse(txt);
-    } catch {
-      return null;
+        const r = await fetch(ep.url, {
+          timeout: 4500, // best-effort (node-fetch)
+          headers: {
+            "User-Agent": "FindAllEasy/1.0 (+https://findalleasy.com)",
+            "Accept": "application/json",
+          },
+        });
+
+        if (!r.ok) continue;
+
+        const txt = await r.text();
+        let j;
+        try {
+          j = JSON.parse(txt);
+        } catch {
+          continue;
+        }
+
+        const p = j?.product;
+        const name =
+          (p?.product_name && String(p.product_name).trim()) ||
+          (p?.product_name_en && String(p.product_name_en).trim()) ||
+          (p?.generic_name && String(p.generic_name).trim()) ||
+          (p?.generic_name_en && String(p.generic_name_en).trim()) ||
+          "";
+
+        if (!name) continue;
+
+        return {
+          name,
+          title: name,
+          brand: safeStr(p?.brands || "", 120),
+          category: safeStr(p?.categories || "", 200),
+          image: safeStr(p?.image_url || p?.image_front_url || "", 500),
+          qrCode: barcode,
+          provider: "barcode",
+          source: ep.key,
+          raw: diag ? { openfacts: { endpoint: ep.key } } : undefined,
+        };
+      } catch (errOne) {
+        diag?.tries?.push?.({ step: `${ep.key}_error`, error: String(errOne?.message || errOne) });
+      }
     }
-
-    const p = j?.product;
-    if (!p?.product_name) return null;
-
-    return {
-      name: p.product_name,
-      title: p.product_name,
-      brand: p.brands || "",
-      category: p.categories || "",
-      image: p.image_url || "",
-      qrCode: barcode,
-      provider: "barcode",
-      source: "openfoodfacts",
-    };
   } catch (err) {
-    diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(err?.message || err) });
+    diag?.tries?.push?.({ step: "openfacts_error", error: String(err?.message || err) });
   }
+
   return null;
 }
 

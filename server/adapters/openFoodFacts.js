@@ -21,8 +21,18 @@ const DISCOVERY_SOURCE = true;
 // ======================================================
 // S15 SAFE FETCH (ESKİ KOD — SİLİNMİYOR)
 // ======================================================
-async function safeFetch(url, tries = 4) {
+async function safeFetch(url, triesOrOptions = 4) {
   let last = null;
+
+  let tries = 4;
+  let signal;
+
+  if (typeof triesOrOptions === "number") {
+    tries = Math.max(1, triesOrOptions);
+  } else if (triesOrOptions && typeof triesOrOptions === "object") {
+    tries = Math.max(1, Number(triesOrOptions.tries || 4));
+    signal = triesOrOptions.signal;
+  }
 
   for (let i = 0; i < tries; i++) {
     try {
@@ -32,6 +42,7 @@ async function safeFetch(url, tries = 4) {
           Accept: "application/json",
         },
         timeout: 9000,
+        signal,
       });
 
       if (res.status === 429) {
@@ -200,14 +211,23 @@ function normalizeOpenFoodItem(p, region = "TR") {
 // ======================================================================
 // 1) ESKİ SEARCH — SİLİNMİYOR
 // ======================================================================
-export async function searchOpenFoodFacts(query, region = "TR") {
+export async function searchOpenFoodFacts(query, regionOrOptions = "TR") {
+  let region = "TR";
+  let signal;
+
+  if (typeof regionOrOptions === "string") {
+    region = regionOrOptions;
+  } else if (regionOrOptions && typeof regionOrOptions === "object") {
+    region = regionOrOptions.region || "TR";
+    signal = regionOrOptions.signal;
+  }
   try {
     const q = encodeURIComponent(query);
     const url =
       `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${q}` +
       `&search_simple=1&action=process&json=1`;
 
-    const json = await safeFetch(url);
+    const json = await safeFetch(url, { signal });
     if (!json) return [];
 
     const items = Array.isArray(json.products)

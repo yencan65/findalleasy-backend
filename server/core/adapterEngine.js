@@ -3300,6 +3300,104 @@ function shouldApplyPriceOutlierFilter(category = "") {
   const c = String(category || "product").toLowerCase();
   return OUTLIER_SAFE_MAIN_CATEGORIES.has(c);
 }
+
+// ============================================================
+// S200 BARCODE TWO-STAGE — resolved name extraction
+// - Stage-1: barcode adapter (openfacts/local/serp)
+// - Stage-2: resolved product title -> full product search
+// ============================================================
+function s200_pickResolvedQueryFromBarcode(items = [], barcode = "") {
+  try {
+    const code = String(barcode || "").trim();
+    const arr = Array.isArray(items) ? items.filter(Boolean) : [];
+
+    const clean = (s) =>
+      String(s || "")
+        .replace(/\u00A0/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const cleanForSearch = (title) => {
+      let t = clean(title);
+      if (!t) return "";
+
+      // Drop obvious placeholders
+      if (/^\s*(barkod|barcode)\b/i.test(t)) {
+        // "Barkod 123..." gibi
+        t = t.replace(/^\s*(barkod|barcode)\b\s*/i, "").trim();
+      }
+
+      // Remove raw GTIN digits if present
+      if (code && code.length >= 8) {
+        t = t.replace(new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), " ");
+      }
+
+      // Trim noise brackets
+      t = t.replace(/\((ean|upc|gtin)[^)]*\)/gi, " ");
+      t = t.replace(/\[[^\]]*\]/g, " ");
+      t = clean(t);
+
+      // Clamp
+      if (t.length > 120) t = t.slice(0, 120).trim();
+      return t;
+    };
+
+    let bestTitle = "";
+    let bestScore = -1e9;
+
+    for (const it of arr) {
+      const title0 = clean(it?.title);
+      if (!title0) continue;
+
+      const tl = title0.toLocaleLowerCase("tr");
+      if (code && tl.includes(code) && (tl.startsWith("barkod") || tl.startsWith("barcode"))) continue;
+      if (/^\s*(barkod|barcode)\b/i.test(title0) && (!code || tl.includes(code))) continue;
+
+      const title = cleanForSearch(title0);
+      if (!title) continue;
+      if (title.length < 4) continue;
+
+      // Trust-ish priors
+      const provider = String(it?.provider || "").toLowerCase();
+      const trust =
+        (typeof it?.providerTrust === "number" && Number.isFinite(it.providerTrust) && it.providerTrust > 0)
+          ? it.providerTrust
+          : (typeof it?.trustScore === "number" && Number.isFinite(it.trustScore) && it.trustScore > 0)
+          ? it.trustScore
+          : 0.75;
+
+      let s = trust * 10;
+
+      if (/open(food|beauty|products)facts/.test(provider)) s += 2.5;
+      if (/serpapi/.test(provider)) s += 1.0;
+
+      if (code && title0.includes(code)) s -= 4.0;
+      if (/\b(barkod|barcode)\b/i.test(title0)) s -= 2.0;
+
+      const L = title.length;
+      if (8 <= L <= 90) s += 2.0;
+      if (L > 140) s -= 2.0;
+
+      // Bonus if brand exists
+      if (it?.productInfo?.brand || it?.brand) s += 0.6;
+
+      if (s > bestScore) {
+        bestScore = s;
+        bestTitle = title;
+      }
+    }
+
+    // Minimum sanity
+    if (!bestTitle) return "";
+    if (/^\d{8,14}$/.test(bestTitle)) return "";
+    if (bestTitle.length < 4) return "";
+
+    return bestTitle;
+  } catch {
+    return "";
+  }
+}
+
 export async function runAdapters(query, region = "TR", opts = {}) {
   const {
     source = "text",
@@ -3583,11 +3681,17 @@ if (!opts.forceCategory && !preS40Locked && carRentalHit) {
     mainCategory && mainCategory !== "product" && mainCategory !== "genel";
 
   // ============================================================
-  // 🔥 S200 BARKOD SHORT PATH
+  // 🔥 S200 BARKOD SHORT PATH (TWO-STAGE)
+  //  - Stage-1: barcode adapter (openfacts/local/serp)
+  //  - Stage-2: resolved product title -> full product search
+  //  - Final: merged + reranked best list
   // ============================================================
   if (looksLikeBarcode) {
     const rlCtxBarcode = { tried: 0, denied: 0 };
 
+    // --------------------
+    // Stage-1: barcode adapter
+    // --------------------
     const barcodeItems = await safeRunAdapter(
       searchBarcode,
       q,
@@ -3598,28 +3702,26 @@ if (!opts.forceCategory && !preS40Locked && carRentalHit) {
       { shadow, diagCollector: adapterDiag }
     );
 
-    let flat = Array.isArray(barcodeItems) ? barcodeItems.filter(Boolean) : [];
+    let flat1 = Array.isArray(barcodeItems) ? barcodeItems.filter(Boolean) : [];
 
-    flat = cleanResults(flat);
-    flat = antiCorruptionFilter(flat);
+    flat1 = cleanResults(flat1);
+    flat1 = antiCorruptionFilter(flat1);
     // S200 NO-FAKE: drop stub/navigation items in STRICT mode
-    flat = flat = filterStubItemsS200(flat, { query: q });
-  const OUTLIER_SAFE = new Set(["product","market","fashion","office","food"]);
-if (OUTLIER_SAFE.has(String(mainCategory || "product").toLowerCase())) {
-  if (shouldApplyPriceOutlierFilter(mainCategory)) {
-    flat = dropPriceOutliers(flat);
-  }
-}
+    flat1 = filterStubItemsS200(flat1, { query: q });
 
+    const OUTLIER_SAFE = new Set(["product", "market", "fashion", "office", "food"]);
+    if (OUTLIER_SAFE.has(String(mainCategory || "product").toLowerCase())) {
+      if (shouldApplyPriceOutlierFilter(mainCategory)) {
+        flat1 = dropPriceOutliers(flat1);
+      }
+    }
 
-
-
-    flat = clampArray(flat, 500);
-    flat = mergeDuplicates(flat);
-    flat = ultraMergeByProviderAndProduct(flat);
+    flat1 = clampArray(flat1, 500);
+    flat1 = mergeDuplicates(flat1);
+    flat1 = ultraMergeByProviderAndProduct(flat1);
 
     try {
-      flat = flat.map((it) => {
+      flat1 = flat1.map((it) => {
         const ctx = {
           provider: it?.provider || "unknown",
           category: "product",
@@ -3628,13 +3730,13 @@ if (OUTLIER_SAFE.has(String(mainCategory || "product").toLowerCase())) {
         };
         let fixed = optimizePrice(it, ctx);
         fixed = autoInjectPrice(fixed, ctx);
-return s35_enforcePriceContract(fixed);
+        return s35_enforcePriceContract(fixed);
       });
     } catch (e) {
       console.warn("S35 optimizePrice (barcode) hata:", e?.message || e);
     }
 
-    let ranked = rankItemsByCommissionAndProviderS10(flat, {
+    let rankedStage1 = rankItemsByCommissionAndProviderS10(flat1, {
       mainCategory: "product",
       region,
       query: q,
@@ -3642,11 +3744,108 @@ return s35_enforcePriceContract(fixed);
 
     if (variant === "S40") {
       try {
-        ranked = ranked.map((it, i) => scoreItem(it, i)).sort(compareItemsS9);
-        ranked = applyRevenueClusterBoostS93(ranked, "product");
-        ranked = rebalanceByProviderS92(ranked, 5, 20);
-        ranked = ranked.sort(compareItemsS9);
+        rankedStage1 = rankedStage1.map((it, i) => scoreItem(it, i)).sort(compareItemsS9);
+        rankedStage1 = applyRevenueClusterBoostS93(rankedStage1, "product");
+        rankedStage1 = rebalanceByProviderS92(rankedStage1, 5, 20);
+        rankedStage1 = rankedStage1.sort(compareItemsS9);
       } catch {}
+    }
+
+    // -------------------------------------------------------------
+    // Stage-2: resolved name search (optional)
+    // -------------------------------------------------------------
+    const envTwoStage = String(process.env.S200_BARCODE_TWO_STAGE ?? "1") === "1";
+    const optTwoStage = opts?.barcodeTwoStage !== false;
+    const nested = Boolean(opts?.__barcodeTwoStageNested);
+
+    const resolvedFromClient = String(
+      opts?.barcodeResolvedQuery || opts?.resolvedQuery || opts?.__barcodeResolvedQueryFromClient || ""
+    ).trim();
+
+    const resolvedQuery =
+      resolvedFromClient && !/^\d{8,14}$/.test(resolvedFromClient)
+        ? resolvedFromClient
+        : s200_pickResolvedQueryFromBarcode(rankedStage1, q);
+
+    let stage2 = null;
+    let rankedFinal = rankedStage1;
+
+    if (envTwoStage && optTwoStage && !nested && resolvedQuery && !/^\d{8,14}$/.test(resolvedQuery)) {
+      try {
+        stage2 = await runAdapters(resolvedQuery, region, {
+          ...opts,
+          source: "barcode_resolved",
+          forceCategory: "product",
+          categoryHint: "product",
+          __barcodeTwoStageNested: true,
+          __barcodeOriginal: q,
+          __barcodeResolvedQuery: resolvedQuery,
+        });
+      } catch (e) {
+        stage2 = null;
+      }
+
+      const stage2Items = Array.isArray(stage2?.items) ? stage2.items.filter(Boolean) : [];
+
+      if (stage2Items.length > 0) {
+        // Merge stage1 + stage2 and rerank
+        let merged = [...rankedStage1, ...stage2Items];
+
+        merged = cleanResults(merged);
+        merged = antiCorruptionFilter(merged);
+        merged = filterStubItemsS200(merged, { query: resolvedQuery || q });
+
+        if (shouldApplyPriceOutlierFilter("product")) {
+          merged = dropPriceOutliers(merged);
+        }
+
+        merged = clampArray(merged, 700);
+        merged = mergeDuplicates(merged);
+        merged = ultraMergeByProviderAndProduct(merged);
+
+        try {
+          merged = merged.map((it) => {
+            const ctx = {
+              provider: it?.provider || "unknown",
+              category: "product",
+              region,
+              stage: "barcode_two_stage",
+            };
+            let fixed = optimizePrice(it, ctx);
+            fixed = autoInjectPrice(fixed, ctx);
+            return s35_enforcePriceContract(fixed);
+          });
+        } catch {}
+
+        rankedFinal = rankItemsByCommissionAndProviderS10(merged, {
+          mainCategory: "product",
+          region,
+          query: resolvedQuery || q,
+        });
+
+        if (variant === "S40") {
+          try {
+            rankedFinal = rankedFinal.map((it, i) => scoreItem(it, i)).sort(compareItemsS9);
+            rankedFinal = applyRevenueClusterBoostS93(rankedFinal, "product");
+            rankedFinal = rebalanceByProviderS92(rankedFinal, 5, 20);
+            rankedFinal = rankedFinal.sort(compareItemsS9);
+          } catch {}
+        }
+
+        // Prefer deterministic BEST ranking at engine level (barcode use-case)
+        try {
+          const providerTrustMap = opts?.providerTrustMap || providerPriority || {};
+          const reranked = rankItemsS200(rankedFinal, {
+            query: resolvedQuery || q,
+            group: "product",
+            region,
+            providerTrustMap,
+          });
+          if (Array.isArray(reranked) && reranked.length) rankedFinal = reranked;
+        } catch (e) {
+          console.warn("⚠️ rankItemsS200 (barcode-two-stage) hata:", e?.message || e);
+        }
+      }
     }
 
     // -------------------------------------------------------------
@@ -3657,34 +3856,44 @@ return s35_enforcePriceContract(fixed);
       const mode = String(opts?.rank || opts?.sort || "").toLowerCase();
       if (mode === "best" || mode === "s200_best") {
         const providerTrustMap = opts?.providerTrustMap || providerPriority || {};
-        const reranked = rankItemsS200(ranked, {
-          query: q || query,
-          group: mainCategory || "product",
+        const reranked = rankItemsS200(rankedFinal, {
+          query: (resolvedQuery || q) || query,
+          group: "product",
           region,
           providerTrustMap,
         });
-        if (Array.isArray(reranked) && reranked.length) ranked = reranked;
+        if (Array.isArray(reranked) && reranked.length) rankedFinal = reranked;
       }
     } catch (e) {
       console.warn("⚠️ rankItemsS200 hata:", e?.message || e);
     }
 
-    const safeBest = ranked[0] || null;
+    const safeBest = rankedFinal[0] || null;
+
+    const stage2Used = Boolean(stage2 && Array.isArray(stage2?.items) && stage2.items.length);
+    const stage2AdapterCount = Number(stage2?._meta?.totalRawAdapters || 0) || 0;
 
     return {
       ok: true,
       category: "product",
-      items: ranked,
+      items: rankedFinal,
       best: safeBest,
       smart: [],
       others: [],
       _meta: {
         engineVariant: variant,
-        totalRawAdapters: 1,
-        totalItemsAfterMerge: ranked.length,
         query: q,
         region,
-        mode: "barcode-only",
+        mode: stage2Used ? "barcode-two-stage" : "barcode-only",
+        resolvedQuery: resolvedQuery || null,
+        stage2: {
+          enabled: envTwoStage && optTwoStage,
+          used: stage2Used,
+          query: resolvedQuery || null,
+          items: stage2Used ? (stage2?.items?.length || 0) : 0,
+        },
+        totalRawAdapters: 1 + stage2AdapterCount,
+        totalItemsAfterMerge: rankedFinal.length,
         rateLimit: {
           ...rlCtxBarcode,
           bypassed:

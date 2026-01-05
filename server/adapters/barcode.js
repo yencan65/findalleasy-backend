@@ -7,6 +7,7 @@
 
 import {
 searchWithSerpApi } from "./serpApi.js";
+import fetch from "node-fetch";
 import { searchOpenFoodFacts } from "./openFoodFacts.js";
 import { buildImageVariants } from "../utils/imageFixer.js";
 import { optimizePrice } from "../utils/priceFixer.js";
@@ -145,6 +146,89 @@ function nutriToRating(letter) {
 }
 
 // ======================================================================
+// OPEN FACTS (FREE) — Direct barcode resolve (food + beauty + general)
+// ======================================================================
+async function lookupOpenFactsByBarcode(code, { signal } = {}) {
+  const barcode = String(code || "").trim();
+  if (!/^\d{8,14}$/.test(barcode)) return null;
+
+  const endpoints = [
+    {
+      key: "openfoodfacts",
+      api: `https://world.openfoodfacts.org/api/v2/product/${barcode}.json`,
+      page: `https://world.openfoodfacts.org/product/${barcode}`,
+    },
+    {
+      key: "openbeautyfacts",
+      api: `https://world.openbeautyfacts.org/api/v2/product/${barcode}`,
+      page: `https://world.openbeautyfacts.org/product/${barcode}`,
+    },
+    {
+      key: "openproductsfacts",
+      api: `https://world.openproductsfacts.org/api/v2/product/${barcode}.json`,
+      page: `https://world.openproductsfacts.org/product/${barcode}`,
+    },
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      const r = await withTimeout(
+        fetch(ep.api, {
+          method: "GET",
+          headers: {
+            "User-Agent": "FindAllEasy/1.0 (+https://findalleasy.com)",
+            "Accept": "application/json",
+          },
+          signal,
+        }),
+        4500,
+        `openfacts:${ep.key}`
+      );
+
+      if (!r || !r.ok) continue;
+
+      const txt = await r.text();
+      let j;
+      try {
+        j = JSON.parse(txt);
+      } catch {
+        continue;
+      }
+
+      const p = j?.product;
+      const title =
+        safe(p?.product_name) ||
+        safe(p?.product_name_en) ||
+        safe(p?.generic_name) ||
+        safe(p?.generic_name_en) ||
+        safe(p?.abbreviated_product_name) ||
+        "";
+
+      if (!title) continue;
+
+      const imageRaw =
+        safe(p?.image_url) ||
+        safe(p?.image_front_url) ||
+        safe(p?.image_small_url) ||
+        "";
+
+      return {
+        provider: ep.key,
+        title,
+        url: ep.page,
+        image: imageRaw,
+        brand: safe(p?.brands),
+        raw: p,
+      };
+    } catch {
+      // ignore and try next endpoint
+    }
+  }
+
+  return null;
+}
+
+// ======================================================================
 // NORMALIZE BARCODE ITEM (Ana motor normalizeItem ile uyumlu)
 // ======================================================================
 
@@ -183,7 +267,7 @@ function normalizeBarcodeItem(rawItem, mainCategory = "product", adapterName = "
   
   const item = {
     // ZORUNLU ALANLAR (ana motor için)
-    id: rawItem.id || stableIdS200('barcode', String(rawItem?.title || ''), String(rawItem?.originUrl || rawItem?.url || ''), String(barcode || '')),
+    id: rawItem.id || stableIdS200('barcode', String(rawItem?.originUrl || rawItem?.url || url || rawItem?.barcode || rawItem?.qrCode || ''), String(rawItem?.title || rawItem?.barcode || rawItem?.qrCode || 'barcode')),
     title: safe(rawItem.title),
     url: url,
     price: price,
@@ -390,6 +474,29 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
 
     // 1) OPENFOODFACTS
     try {
+      // (FREE) Barkoddan isim/ görsel çöz (food + beauty + general)
+      const offDirect = await lookupOpenFactsByBarcode(code, { signal });
+      if (offDirect && offDirect.title) {
+        const directUrl = sanitizeUrl(offDirect.url || "") || sanitizeUrl(`https://world.openfoodfacts.org/product/${code}`);
+        if (directUrl) {
+          finalList.push({
+            id: stableIdS200(offDirect.provider || "openfacts", directUrl, offDirect.title),
+            title: safe(offDirect.title),
+            price: null,
+            rating: null,
+            url: directUrl,
+            imageRaw: offDirect.image || null,
+            provider: offDirect.provider || "openfacts",
+            region,
+            currency: "TRY",
+            category: "product",
+            barcode: code,
+            brand: offDirect.brand || null,
+            raw: offDirect.raw || offDirect
+          });
+        }
+      }
+
       const offRaw = await searchOpenFoodFacts(code, { region, signal });
 
       if (Array.isArray(offRaw) && offRaw.length > 0) {

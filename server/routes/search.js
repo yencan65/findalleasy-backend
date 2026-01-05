@@ -215,6 +215,11 @@ function escapeRegExp(s) {
   return safeStr(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function looksLikeBarcodeQ(q) {
+  const s = safeStr(q).replace(/\s+/g, "");
+  return /^\d{8,14}$/.test(s);
+}
+
 function ensureDiagKeys(meta, { engineVariant } = {}) {
   const m = meta && typeof meta === "object" ? meta : {};
   if (engineVariant && !m.engineVariant) m.engineVariant = engineVariant;
@@ -744,6 +749,14 @@ async function handle(req, res) {
   const typo = fixQueryTyposTR(qRaw);
   const q = (typo?.query || qRaw) || "";
 
+  const resolvedQueryIn = safeStr(
+    req.method === "POST"
+      ? (req.body?.resolvedQuery ?? req.body?.resolvedName ?? req.body?.barcodeResolvedName)
+      : (req.query?.resolvedQuery ?? req.query?.resolvedName ?? req.query?.barcodeResolvedName)
+  );
+
+  const isBarcodeQ = looksLikeBarcodeQ(q);
+
   // ✅ Accept both group and category (POST + GET)
   const groupIn = safeStr(
     req.method === "POST"
@@ -867,7 +880,7 @@ async function handle(req, res) {
   const isProductRequest = bodyOrQueryGroup === "product" || resolvedGroup === "product";
   const productMode = String(process.env.SEARCH_PRODUCT_MODE || "catalog_only").toLowerCase();
 
-  if (isProductRequest && productMode === "catalog_only") {
+  if (isProductRequest && productMode === "catalog_only" && !isBarcodeQ) {
     try {
       const ts = nowIso();
 
@@ -1070,6 +1083,7 @@ async function handle(req, res) {
       region,
       reqLimit,
       reqOffset,
+      ...(resolvedQueryIn ? { barcodeResolvedQuery: resolvedQueryIn } : {}),
     });
     upstreamOk = upstream?.ok !== false;
     upstreamMeta = upstream?._meta || null;
@@ -1089,6 +1103,10 @@ async function handle(req, res) {
   let rawItems = rawItems0;
   let catalogMeta = null;
 
+  const upstreamResolvedQuery = safeStr(
+    pick(upstreamMeta, ["resolvedQuery"]) || upstreamMeta?.stage2?.query || ""
+  );
+
   const includeCatalog =
     resolvedGroup === "product" &&
     String(process.env.SEARCH_INCLUDE_CATALOG ?? "1") !== "0";
@@ -1098,8 +1116,10 @@ async function handle(req, res) {
     const catProviderKey = safeStr(process.env.CATALOG_PROVIDER_KEY || process.env.FEED_PROVIDER_KEY || "");
     const catCampaignId = safeInt(process.env.CATALOG_CAMPAIGN_ID, 0);
 
+    const catalogQ = (isBarcodeQ && upstreamResolvedQuery) ? upstreamResolvedQuery : q;
+
     const cat = await fetchCatalogFallback({
-      q,
+      q: catalogQ,
       limit: reqLimit,
       offset: 0,
       engineLimit,
@@ -1235,6 +1255,7 @@ async function handle(req, res) {
     group: resolvedGroup,
     region,
     locale,
+    resolvedQuery: upstreamResolvedQuery || null,
     results: items,
     items,
     count,
@@ -1263,6 +1284,7 @@ async function handle(req, res) {
         ...(providerAllow ? { providerAllow } : {}),
         upstreamOk,
         upstreamMeta,
+        resolvedQuery: upstreamResolvedQuery || null,
         engineVariant: upstreamVariant,
         deadlineHit: !!pick(upstreamMeta, ["deadlineHit"]),
         rateLimit: pick(upstreamMeta, ["rateLimit"]) || null,
