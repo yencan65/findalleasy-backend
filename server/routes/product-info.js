@@ -385,8 +385,38 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
         return product;
       }
 
-      // Skor düşükse: yanlış ürün riskine girmiyoruz.
-      diag?.tries?.push?.({ step: "serpapi_low_confidence", q: tr.q, bestScore: scored[0]?.score ?? null });
+      // Skor düşükse: probe ile doğrulayamadık. Yine de "en iyi tahmin" dönelim,
+      // ama bunu açıkça işaretleyelim (confidence: low, verifiedBarcode: false).
+      const best = scored[0];
+      const bestScore = best?.score ?? 0;
+      diag?.tries?.push?.({ step: "serpapi_low_confidence", q: tr.q, bestScore });
+
+      if (best && bestScore >= 2) {
+        const raw = best.it?.raw || {};
+        const desc = safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 260) || "";
+        const img = safeStr(best.it?.image || raw?.thumbnail || raw?.image || "", 2000) || "";
+
+        const product = {
+          name: best.title,
+          title: best.title,
+          description: desc,
+          image: img,
+          brand: safeStr(raw?.brand || raw?.brands || "", 120),
+          category: "product",
+          region,
+          qrCode: code,
+          provider: "barcode",
+          source: "serpapi",
+          confidence: "low",
+          confidenceScore: bestScore,
+          verifiedBarcode: false,
+          raw: best.it,
+        };
+
+        cacheSetBarcode(cacheKey, product);
+        diag?.tries?.push?.({ step: "serpapi_pick_loose", q: tr.q, score: bestScore, url: best.url || null });
+        return product;
+      }
     } catch (e) {
       diag?.tries?.push?.({ step: "serpapi_error", q: tr.q, mode: tr.mode, error: String(e?.message || e) });
     }
