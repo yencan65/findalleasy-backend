@@ -12,7 +12,7 @@
 //  - Ama boş dönmesi, yanlış ürün döndürmekten iyidir.
 // ============================================================================
 
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import { getHtml } from "./NetClient.js";
 
 // ---------------------------------------------------------------------------
