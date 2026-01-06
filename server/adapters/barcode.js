@@ -558,20 +558,64 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
     } catch (localError) {
       console.warn(`Local providers error: ${localError.message}`);
     }
-
     // 3) SERPAPI
     try {
-      const serpRaw = await searchWithSerpApi(code, { region, signal });
+      // NOTE: searchWithSerpApi() returns an object { ok, items, ... } (array-like but not Array.isArray).
+      // Old code never consumed Serp items => barcode resolution often degraded into random/irrelevant matches elsewhere.
+      const serpRes1 = await searchWithSerpApi(`ean ${code}`, {
+        region,
+        signal,
+        barcode: true,
+        mode: "shopping",
+        num: 12,
+        intent: { type: "barcode" },
+      });
 
-      if (Array.isArray(serpRaw) && serpRaw.length > 0) {
-        serpRaw.forEach((x, i) => {
-          const safeUrl = sanitizeUrl(x.url);
+      let serpItems = Array.isArray(serpRes1?.items)
+        ? serpRes1.items
+        : Array.isArray(serpRes1)
+        ? serpRes1
+        : [];
+
+      // 2nd try: Turkish marketplaces (best-effort)
+      // Not: Local resolver (site içi arama + barcode doğrulama) zaten yukarıda.
+      // Buradaki amaç: Serp tarafında da TR marketlerden ek aday yakalamak.
+      if (!serpItems.length) {
+        const siteTries = [
+          `site:trendyol.com ${code}`,
+          `site:hepsiburada.com ${code}`,
+          `site:n11.com ${code}`,
+        ];
+        for (const q of siteTries) {
+          const serpRes2 = await searchWithSerpApi(q, {
+            region,
+            signal,
+            barcode: true,
+            num: 10,
+            intent: { type: "barcode" },
+          });
+
+          const maybe = Array.isArray(serpRes2?.items)
+            ? serpRes2.items
+            : Array.isArray(serpRes2)
+            ? serpRes2
+            : [];
+          if (maybe.length) {
+            serpItems = maybe;
+            break;
+          }
+        }
+      }
+
+      if (Array.isArray(serpItems) && serpItems.length > 0) {
+        serpItems.forEach((x, i) => {
+          const safeUrl = sanitizeUrl(x.url || x.finalUrl || x.originUrl || x.link);
           if (!safeUrl) return;
 
           finalList.push({
             id: x.id || x.url || `${code}-serp-${i}`,
             title: safe(x.title),
-            price: x.price ?? null,
+            price: null, // DISCOVERY SOURCE RULE (NO-FAKE)
             rating: x.rating ?? null,
             url: safeUrl,
             imageRaw: x.image || null,
@@ -580,7 +624,7 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
             currency: x.currency || "TRY",
             category: "product",
             barcode: code,
-            raw: x
+            raw: x,
           });
         });
       }
@@ -669,7 +713,7 @@ async function barcodeFallback(code, region = "TR", startTime = Date.now(), requ
     const raw = {
       title: `Barkod ${code}`,
       price: null,
-      url: null,
+      url: `https://world.openfoodfacts.org/product/${code}`,
       imageRaw: null,
       provider: "barcode_fallback",
       region: region,

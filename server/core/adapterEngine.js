@@ -3375,7 +3375,7 @@ function s200_pickResolvedQueryFromBarcode(items = [], barcode = "") {
       if (/\b(barkod|barcode)\b/i.test(title0)) s -= 2.0;
 
       const L = title.length;
-      if (8 <= L <= 90) s += 2.0;
+      if (L >= 8 && L <= 90) s += 2.0;
       if (L > 140) s -= 2.0;
 
       // Bonus if brand exists

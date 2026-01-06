@@ -1,6 +1,6 @@
 // server/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S21 GOD-KERNEL FINAL FORM (HARDENED)
+//  PRODUCT INFO ENGINE — S22 GOD-KERNEL FINAL FORM (HARDENED)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam input kabulü
 //
 //  Fix:
@@ -18,6 +18,7 @@ import fetch from "node-fetch";
 import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
+import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
 
 const router = express.Router();
 
@@ -240,6 +241,7 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
     { q: `${code} barkod`, mode: "google" },
     { q: `site:trendyol.com ${code}`, mode: "google" },
     { q: `site:hepsiburada.com ${code}`, mode: "google" },
+    { q: `site:n11.com ${code}`, mode: "google" },
     { q: `${code}`, mode: "google" },
   ];
 
@@ -313,6 +315,74 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
   }
 
   return null;
+}
+
+// ======================================================================
+// LOCAL MARKETPLACE RESOLVER (TR)
+//  - Trendyol / Hepsiburada / N11 site içi arama
+//  - ✅ Barcode string'i ürün sayfasında gerçekten geçiyorsa kabul
+// ======================================================================
+async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
+  const code = String(barcode || "").trim();
+  if (!/^\d{8,18}$/.test(code)) return null;
+
+  const cacheKey = `${localeShort}:local:${code}`;
+  const cached = cacheGetBarcode(cacheKey);
+  if (cached) return cached;
+
+  diag?.tries?.push?.({ step: "local_marketplaces_start", barcode: code });
+
+  let hits = [];
+  try {
+    hits = await searchLocalBarcodeEngine(code, {
+      region: "TR",
+      // search -> candidate -> product page; keep it snappy
+      maxCandidates: 6,
+      maxMatches: 1,
+    });
+  } catch (e) {
+    diag?.tries?.push?.({ step: "local_marketplaces_error", error: String(e?.message || e) });
+    hits = [];
+  }
+
+  if (!Array.isArray(hits) || hits.length === 0) {
+    diag?.tries?.push?.({ step: "local_marketplaces_empty" });
+    return null;
+  }
+
+  // Prefer a deterministic order
+  const prefer = (p) => (p === "trendyol" ? 0 : p === "hepsiburada" ? 1 : p === "n11" ? 2 : 9);
+  hits.sort((a, b) => prefer(String(a?.provider || "")) - prefer(String(b?.provider || "")));
+
+  const best = hits[0];
+  const name = cleanTitle(best?.title || "");
+  if (!name) return null;
+
+  const { hl, gl, region } = localePack(localeShort);
+
+  const product = {
+    name,
+    title: name,
+    description: "",
+    image: safeStr(best?.image || "", 2000) || "",
+    brand: "",
+    category: "product",
+    region,
+    qrCode: code,
+    provider: "barcode",
+    source: `local-marketplace:${String(best?.provider || "unknown")}`,
+    raw: {
+      matchUrl: safeStr(best?.url || "", 2000),
+      provider: safeStr(best?.provider || "", 50),
+      verifiedBarcode: true,
+      hl,
+      gl,
+    },
+  };
+
+  cacheSetBarcode(cacheKey, product);
+  diag?.tries?.push?.({ step: "local_marketplaces_hit", provider: best?.provider, url: best?.url, title: name });
+  return product;
 }
 
 // ======================================================================
@@ -431,7 +501,7 @@ async function handleProduct(req, res) {
       : null;
 
     try {
-      res.setHeader("x-product-info-ver", "S21");
+      res.setHeader("x-product-info-ver", "S22");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -476,6 +546,18 @@ async function handleProduct(req, res) {
           await Product.create(off);
         } catch {}
         const out = { ok: true, product: off, source: "openfoodfacts" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
+      // 2.5) TR marketplace resolver (site içi arama + barcode doğrulama)
+      // ✅ Yanlış ürün döndürmektense boş dönmesi daha iyi.
+      const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
+      if (local?.name) {
+        try {
+          await Product.create(local);
+        } catch {}
+        const out = { ok: true, product: local, source: "local-marketplace-barcode" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
