@@ -263,6 +263,76 @@ async function probeUrlForBarcode(url, code, diag) {
 }
 
 // ======================================================================
+// OpenFoodFacts (barcode -> product)
+// ======================================================================
+async function fetchOpenFoodFacts(barcode, diag) {
+  const code = String(barcode || "").trim();
+  if (!/^\d{8,18}$/.test(code)) return null;
+
+  // OFF çok sık rate-limit olmasa da, hızlı ve güvenli timeout şart
+  const url = `https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`;
+
+  try {
+    diag?.tries?.push?.({ step: "openfoodfacts_fetch", url });
+
+    const r = await fetch(url, {
+      method: "GET",
+      headers: {
+        "user-agent": "findalleasy/1.0 (barcode resolver)",
+        accept: "application/json",
+      },
+      // node-fetch v3 supports AbortSignal.timeout in newer node, ama her ortamda garanti değil:
+      // timeout'u burada basit tutuyoruz, NetClient üzerinden de yazılabilirdi.
+    });
+
+    if (!r.ok) {
+      diag?.tries?.push?.({ step: "openfoodfacts_non_2xx", status: r.status });
+      return null;
+    }
+
+    const j = await r.json().catch(() => null);
+    if (!j || j.status !== 1 || !j.product) {
+      diag?.tries?.push?.({ step: "openfoodfacts_no_product", status: j?.status ?? null });
+      return null;
+    }
+
+    const p = j.product || {};
+    const name =
+      cleanTitle(p.product_name || p.product_name_tr || p.generic_name || p.generic_name_tr || "") ||
+      "";
+
+    if (!name) {
+      diag?.tries?.push?.({ step: "openfoodfacts_empty_name" });
+      return null;
+    }
+
+    const img = safeStr(p.image_url || p.image_front_url || p.image_small_url || "", 2000) || "";
+    const brand = safeStr(p.brands || "", 120) || "";
+    const categories = safeStr(p.categories || p.categories_tags?.[0] || "", 180) || "";
+
+    const product = {
+      name,
+      title: name,
+      description: safeStr(p.ingredients_text || p.ingredients_text_tr || "", 500) || "",
+      image: img,
+      brand,
+      category: categories || "product",
+      region: "TR",
+      qrCode: code,
+      provider: "barcode",
+      source: "openfoodfacts",
+      raw: p,
+    };
+
+    diag?.tries?.push?.({ step: "openfoodfacts_ok", name });
+    return product;
+  } catch (e) {
+    diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(e?.message || e) });
+    return null;
+  }
+}
+
+// ======================================================================
 // SerpAPI fallback (barcode -> product title)
 //  - NOT: Bunun tam çalışması için serpApi adapter patch’i şart.
 // ======================================================================
@@ -393,7 +463,8 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
 
       if (best && bestScore >= 2) {
         const raw = best.it?.raw || {};
-        const desc = safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 260) || "";
+        const desc =
+          safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 260) || "";
         const img = safeStr(best.it?.image || raw?.thumbnail || raw?.image || "", 2000) || "";
 
         const product = {
@@ -453,76 +524,115 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
     hits = [];
   }
 
+  // ✅ FIX: Bu if bloğu eksik kapanıyordu. Router bu yüzden yüklenmiyor → 404.
   if (!Array.isArray(hits) || hits.length === 0) {
-  diag?.tries?.push?.({ step: "local_marketplaces_empty" });
+    diag?.tries?.push?.({ step: "local_marketplaces_empty" });
 
-  // ✅ Ek güvenli katman: SerpAPI ile domain kısıtlı aday URL bul, sonra URL içeriğinde barkod kanıtı ara.
-  // (Pazar yerlerinin site-içi araması botlara 403 verebiliyor; bunu bypass eder.)
-  const domainQueries = [
-    { provider: "trendyol", q: `site:trendyol.com "${code}"` },
-    { provider: "hepsiburada", q: `site:hepsiburada.com "${code}"` },
-    { provider: "n11", q: `site:n11.com "${code}"` },
-  ];
+    // ✅ Ek güvenli katman: SerpAPI ile domain kısıtlı aday URL bul, sonra URL içeriğinde barkod kanıtı ara.
+    // (Pazar yerlerinin site-içi araması botlara 403 verebiliyor; bunu bypass eder.)
+    const domainQueries = [
+      { provider: "trendyol", q: `site:trendyol.com "${code}"` },
+      { provider: "hepsiburada", q: `site:hepsiburada.com "${code}"` },
+      { provider: "n11", q: `site:n11.com "${code}"` },
+    ];
 
-  for (const dq of domainQueries) {
-    try {
-      diag?.tries?.push?.({ step: "local_serp_domain", provider: dq.provider, q: dq.q });
+    for (const dq of domainQueries) {
+      try {
+        diag?.tries?.push?.({ step: "local_serp_domain", provider: dq.provider, q: dq.q });
 
-      const r = await searchWithSerpApi(dq.q, {
-        mode: "google",
-        region: "TR",
-        hl: "tr",
-        gl: "tr",
-        num: 8,
-        timeoutMs: 12000,
-        includeRaw: true,
-        barcode: true,
-        intent: { type: "barcode" },
-      });
-
-      const items = Array.isArray(r?.items) ? r.items : [];
-      if (!items.length) continue;
-
-      for (const it of items.slice(0, 6)) {
-        const raw = it?.raw || {};
-        const url = safeStr(it?.url || it?.deeplink || raw?.link || raw?.product_link || "", 2000);
-        if (!url) continue;
-
-        const u = url.toLowerCase();
-        if (dq.provider === "trendyol" && !u.includes("trendyol.com")) continue;
-        if (dq.provider === "hepsiburada" && !u.includes("hepsiburada.com")) continue;
-        if (dq.provider === "n11" && !u.includes("n11.com")) continue;
-
-        const ok = await probeUrlForBarcode(url, code, diag);
-        if (!ok) continue;
-
-        const name = cleanTitle(it?.title || "");
-        if (!name) continue;
-
-        const product = {
-          name,
-          title: name,
-          description: "",
-          image: safeStr(it?.image || raw?.thumbnail || "", 2000) || "",
-          brand: "",
-          category: "product",
+        const r = await searchWithSerpApi(dq.q, {
+          mode: "google",
           region: "TR",
-          qrCode: code,
-          provider: "barcode",
-          source: `local-domain-serp:${dq.provider}`,
-          raw: { matchUrl: url, provider: dq.provider, verifiedBarcode: true },
-        };
+          hl: "tr",
+          gl: "tr",
+          num: 8,
+          timeoutMs: 12000,
+          includeRaw: true,
+          barcode: true,
+          intent: { type: "barcode" },
+        });
 
-        cacheSetBarcode(cacheKey, product);
-        diag?.tries?.push?.({ step: "local_domain_serp_hit", provider: dq.provider, url, title: name });
-        return product;
+        const items = Array.isArray(r?.items) ? r.items : [];
+        if (!items.length) continue;
+
+        for (const it of items.slice(0, 6)) {
+          const raw = it?.raw || {};
+          const url = safeStr(it?.url || it?.deeplink || raw?.link || raw?.product_link || "", 2000);
+          if (!url) continue;
+
+          const u = url.toLowerCase();
+          if (dq.provider === "trendyol" && !u.includes("trendyol.com")) continue;
+          if (dq.provider === "hepsiburada" && !u.includes("hepsiburada.com")) continue;
+          if (dq.provider === "n11" && !u.includes("n11.com")) continue;
+
+          const ok = await probeUrlForBarcode(url, code, diag);
+          if (!ok) continue;
+
+          const name = cleanTitle(it?.title || "");
+          if (!name) continue;
+
+          const product = {
+            name,
+            title: name,
+            description: "",
+            image: safeStr(it?.image || raw?.thumbnail || "", 2000) || "",
+            brand: "",
+            category: "product",
+            region: "TR",
+            qrCode: code,
+            provider: "barcode",
+            source: `local-domain-serp:${dq.provider}`,
+            raw: { matchUrl: url, provider: dq.provider, verifiedBarcode: true },
+          };
+
+          cacheSetBarcode(cacheKey, product);
+          diag?.tries?.push?.({ step: "local_domain_serp_hit", provider: dq.provider, url, title: name });
+          return product;
+        }
+      } catch (e) {
+        diag?.tries?.push?.({
+          step: "local_serp_domain_error",
+          provider: dq.provider,
+          error: String(e?.message || e),
+        });
       }
-    } catch (e) {
-      diag?.tries?.push?.({ step: "local_serp_domain_error", provider: dq.provider, error: String(e?.message || e) });
     }
+
+    return null;
   }
 
-  return null;
+  // hits var: localBarcodeEngine zaten barkodu sayfada doğruladı → direkt kabul.
+  const best = hits[0] || null;
+  const name = cleanTitle(best?.title || "");
+  if (!best?.url || !name) return null;
+
+  const product = {
+    name,
+    title: name,
+    description: "",
+    image: safeStr(best?.image || "", 2000) || "",
+    brand: "",
+    category: "product",
+    region: "TR",
+    qrCode: code,
+    provider: "barcode",
+    source: `local-marketplace-engine:${best?.provider || "unknown"}`,
+    raw: {
+      matchUrl: best.url,
+      provider: best?.provider || null,
+      verifiedBarcode: !!best?.verifiedBarcode,
+      price: best?.price ?? null,
+    },
+  };
+
+  cacheSetBarcode(cacheKey, product);
+  diag?.tries?.push?.({
+    step: "local_marketplaces_hit",
+    provider: best?.provider || null,
+    url: best.url,
+    title: name,
+  });
+  return product;
 }
 
 // ======================================================================
@@ -657,7 +767,13 @@ async function handleProduct(req, res) {
       const provider = detectProviderFromUrl(qr);
       const title = extractTitleFromUrl(qr) || `${provider} ${providerProductWord(localeShort)}`;
 
-      const product = { name: safeStr(title, 200), title: safeStr(title, 200), provider, qrCode: qr, source: "url" };
+      const product = {
+        name: safeStr(title, 200),
+        title: safeStr(title, 200),
+        provider,
+        qrCode: qr,
+        source: "url",
+      };
 
       try {
         await Product.create(product);
