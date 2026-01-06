@@ -3,22 +3,16 @@
 //  PRODUCT INFO ENGINE — S22 GOD-KERNEL FINAL FORM (HARDENED)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam input kabulü
 //
-//  Fix:
-//   - Body'den qr/code/data/text kabul et
-//   - JSON parse fail olursa req.__rawBody üstünden tekrar parse et
-//   - curl.exe + PowerShell kaçış hatalarında gelen {\"qr\":...} gibi body'leri kurtar
-//   - Barcode regex 8-18 (GTIN/EAN/UPC/SSCC)
-//   - sanitizeQR: javascript:/data:/vbscript:/file: gibi şüpheli şemaları kes
-//   - force=1 => mongo-cache'i bypass et (fresh resolve)
-//   - diag=1 => _diag ile adım adım debug dön
+//  Fix (S22.1):
+//   - localBarcodeEngine import'u LAZY (import patlasa bile route AYAKTA)
+//   - fetch globalThis.fetch kullan, yoksa node-fetch'i LAZY import et
+//   - timeout node-fetch v2/v3/global fetch ile AbortController üzerinden
 // ======================================================================
 
 import express from "express";
-import fetch from "node-fetch";
 import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
-import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
 
 const router = express.Router();
 
@@ -197,6 +191,33 @@ function providerProductWord(localeShort) {
 }
 
 // ======================================================================
+// Fetch (HARDENED): global fetch varsa onu kullan, yoksa node-fetch'i lazy import et
+// ======================================================================
+async function getFetch(diag) {
+  if (typeof globalThis.fetch === "function") return globalThis.fetch.bind(globalThis);
+
+  try {
+    const mod = await import("node-fetch");
+    const fn = mod?.default || mod?.fetch;
+    if (typeof fn === "function") return fn;
+  } catch (e) {
+    diag?.tries?.push?.({ step: "fetch_import_fail", error: String(e?.message || e) });
+  }
+
+  throw new Error("FETCH_UNAVAILABLE");
+}
+
+async function fetchWithTimeout(fetchFn, url, opts = {}, timeoutMs = 4500) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), Math.max(250, Number(timeoutMs) || 4500));
+  try {
+    return await fetchFn(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ======================================================================
 // Barcode cache + helpers
 // ======================================================================
 const barcodeCache = new Map(); // key -> {ts, product}
@@ -224,7 +245,6 @@ function cleanTitle(t) {
 
 // ======================================================================
 // SerpAPI fallback (barcode -> product title)
-//  - NOT: Bunun tam çalışması için serpApi adapter patch’i şart.
 // ======================================================================
 async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
@@ -249,7 +269,6 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
     try {
       diag?.tries?.push?.({ step: "serpapi", q: tr.q, mode: tr.mode });
 
-      // barcode:true => serpApi adapter patch’inden sonra relevance filtresi ezilir
       const r = await searchWithSerpApi(tr.q, {
         mode: tr.mode,
         region,
@@ -268,7 +287,6 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
         continue;
       }
 
-      // En iyi başlığı seç
       let best = null;
       for (const it of items) {
         const title = cleanTitle(it?.title || "");
@@ -310,7 +328,6 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
       return product;
     } catch (e) {
       diag?.tries?.push?.({ step: "serpapi_error", q: tr.q, mode: tr.mode, error: String(e?.message || e) });
-      // next try
     }
   }
 
@@ -318,10 +335,23 @@ async function resolveBarcodeViaSerp(barcode, localeShort = "tr", diag) {
 }
 
 // ======================================================================
-// LOCAL MARKETPLACE RESOLVER (TR)
-//  - Trendyol / Hepsiburada / N11 site içi arama
-//  - ✅ Barcode string'i ürün sayfasında gerçekten geçiyorsa kabul
+// LOCAL MARKETPLACE RESOLVER (TR) — LAZY IMPORT (route'u öldürmesin)
 // ======================================================================
+async function safeSearchLocalBarcodeEngine(code, opts, diag) {
+  try {
+    const mod = await import("../core/localBarcodeEngine.js");
+    const fn = mod?.searchLocalBarcodeEngine;
+    if (typeof fn !== "function") {
+      diag?.tries?.push?.({ step: "local_engine_missing" });
+      return [];
+    }
+    return await fn(code, opts);
+  } catch (e) {
+    diag?.tries?.push?.({ step: "local_engine_import_fail", error: String(e?.message || e) });
+    return [];
+  }
+}
+
 async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
   if (!/^\d{8,18}$/.test(code)) return null;
@@ -334,12 +364,15 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
 
   let hits = [];
   try {
-    hits = await searchLocalBarcodeEngine(code, {
-      region: "TR",
-      // search -> candidate -> product page; keep it snappy
-      maxCandidates: 6,
-      maxMatches: 1,
-    });
+    hits = await safeSearchLocalBarcodeEngine(
+      code,
+      {
+        region: "TR",
+        maxCandidates: 6,
+        maxMatches: 1,
+      },
+      diag
+    );
   } catch (e) {
     diag?.tries?.push?.({ step: "local_marketplaces_error", error: String(e?.message || e) });
     hits = [];
@@ -350,7 +383,6 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
     return null;
   }
 
-  // Prefer a deterministic order
   const prefer = (p) => (p === "trendyol" ? 0 : p === "hepsiburada" ? 1 : p === "n11" ? 2 : 9);
   hits.sort((a, b) => prefer(String(a?.provider || "")) - prefer(String(b?.provider || "")));
 
@@ -386,14 +418,9 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
 }
 
 // ======================================================================
-// OpenFoodFacts best effort
+// OpenFoodFacts best effort (HARDENED fetch)
 // ======================================================================
 async function fetchOpenFoodFacts(barcode, diag) {
-  // Not just food: OpenFoodFacts + OpenBeautyFacts + OpenProductsFacts (free)
-  // Sources:
-  // - OFF v2 endpoint (food): https://world.openfoodfacts.net/api/v2/product/{barcode} / .org
-  // - OpenBeautyFacts v2 endpoint: https://world.openbeautyfacts.org/api/v2/product/{barcode}
-  // - OpenProductsFacts v2 endpoint: https://world.openproductsfacts.org/api/v2/product/{barcode}.json
   try {
     diag?.tries?.push?.({ step: "openfacts", barcode });
 
@@ -404,19 +431,25 @@ async function fetchOpenFoodFacts(barcode, diag) {
       { key: "openproductsfacts", url: `https://world.openproductsfacts.org/api/v2/product/${barcode}.json` },
     ];
 
+    const fetchFn = await getFetch(diag);
+
     for (const ep of endpoints) {
       try {
         diag?.tries?.push?.({ step: ep.key, url: ep.url });
 
-        const r = await fetch(ep.url, {
-          timeout: 4500, // best-effort (node-fetch)
-          headers: {
-            "User-Agent": "FindAllEasy/1.0 (+https://findalleasy.com)",
-            "Accept": "application/json",
+        const r = await fetchWithTimeout(
+          fetchFn,
+          ep.url,
+          {
+            headers: {
+              "User-Agent": "FindAllEasy/1.0 (+https://findalleasy.com)",
+              Accept: "application/json",
+            },
           },
-        });
+          4500
+        );
 
-        if (!r.ok) continue;
+        if (!r || !r.ok) continue;
 
         const txt = await r.text();
         let j;
@@ -501,7 +534,7 @@ async function handleProduct(req, res) {
       : null;
 
     try {
-      res.setHeader("x-product-info-ver", "S22");
+      res.setHeader("x-product-info-ver", "S22.1");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -550,8 +583,7 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // 2.5) TR marketplace resolver (site içi arama + barcode doğrulama)
-      // ✅ Yanlış ürün döndürmektense boş dönmesi daha iyi.
+      // 2.5) TR marketplace resolver (kanıtlı eşleşme)
       const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
       if (local?.name) {
         try {
@@ -572,7 +604,7 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // Barcode çözülemedi: gene de fallback dön (eski davranış: en azından qr kaybolmasın)
+      // Barcode çözülemedi: fallback
       const product = {
         name: qr,
         title: qr,
