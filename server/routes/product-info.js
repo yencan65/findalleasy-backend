@@ -479,39 +479,26 @@ function escapeRegExp(s) {
   return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function findProvider(domain, merchantName) {
+function findProviderByDomain(domain) {
   const d = canonicalHost(domain);
-  const m = normalizeMerchant(merchantName || "");
-  if (d) {
-    for (const p of PROVIDER_TRUST) {
-      if (domainMatches(d, p.domain)) return p;
-    }
-  }
-  if (m) {
-    for (const p of PROVIDER_TRUST) {
-      for (const n of p.names || []) {
-        const nn = normalizeMerchant(n);
-        if (!nn) continue;
-        if (m === nn) return p;
-        const re = new RegExp(`(^|\\s)${escapeRegExp(nn)}(\\s|$)`, "i");
-        if (re.test(m)) return p;
-      }
-    }
+  if (!d) return null;
+  for (const p of PROVIDER_TRUST) {
+    if (domainMatches(d, p.domain)) return p;
   }
   return null;
 }
 
-// Yeni merchantRank imzası: (domain, merchantName)
-function merchantRank(domain, merchantName = "") {
-  const d = canonicalHost(domain);
-  const m = merchantName || "";
-  const p = findProvider(d, m);
-  if (p) return p.score;
+// Back-compat: signature korunur ama merchantName artık trust için kullanılmaz (spoof kapandı)
+function findProvider(domain, _merchantName = "") {
+  return findProviderByDomain(domain);
+}
 
-  // Unknown: çok düşük ama sıfır değil (listede görünsün)
-  // Blacklist: zaten drop edilmeli; yine de burada 0 verelim
+// Yeni merchantRank imzası: (domain, merchantName)
+function merchantRank(domain) {
+  const d = canonicalHost(domain);
   if (isBlacklistedDomain(d)) return 0;
-  return 10;
+  const p = findProviderByDomain(d);
+  return p ? p.score : 10;
 }
 
 // ======================================================================
@@ -834,7 +821,7 @@ function extractOffersFromImmersive(j) {
 
     if (!link || isGoogleHostedUrl(link)) continue;
 
-    const domain = pickDomain(link);
+    const domain = canonicalHost(pickDomain(link));
     if (!domain) continue;
     if (isBlacklistedDomain(domain)) continue;
 
@@ -842,13 +829,13 @@ function extractOffersFromImmersive(j) {
     if (STRICT_OFFER_ALLOWLIST && !provider) continue;
 
     out.push({
-      merchant,
-      merchantKey: normalizeMerchant(merchant) || pickDomain(link),
+      merchant: provider ? (provider.names?.[0] || domain) : (merchant || domain),
+      merchantKey: normalizeMerchant(merchant) || domain,
       url: link,
       price: price ?? null,
       delivery,
       domain,
-      rank: provider ? provider.score : merchantRank(domain, merchant),
+      rank: provider ? provider.score : merchantRank(domain),
     });
   }
 
@@ -961,7 +948,7 @@ function extractOffersFromGoogleProduct(gp) {
 
     if (!link || isGoogleHostedUrl(link)) continue;
 
-    const domain = pickDomain(link);
+    const domain = canonicalHost(pickDomain(link));
     if (!domain) continue;
     if (isBlacklistedDomain(domain)) continue;
 
@@ -969,13 +956,13 @@ function extractOffersFromGoogleProduct(gp) {
     if (STRICT_OFFER_ALLOWLIST && !provider) continue;
 
     out.push({
-      merchant,
-      merchantKey: normalizeMerchant(merchant) || pickDomain(link),
+      merchant: provider ? (provider.names?.[0] || domain) : (merchant || domain),
+      merchantKey: normalizeMerchant(merchant) || domain,
       url: link,
       price: price ?? null,
       delivery,
       domain,
-      rank: provider ? provider.score : merchantRank(domain, merchant),
+      rank: provider ? provider.score : merchantRank(domain),
     });
   }
 
@@ -1196,7 +1183,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
             price: null,
             delivery: "",
             domain: domain0,
-            rank: merchantRank(domain0, domain0 || "local"),
+            rank: merchantRank(domain0),
           },
         ]
       : [];
@@ -1378,6 +1365,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
         let offersAll = [];
         let bestOffer = null;
         let merchantUrl = "";
+        let verifiedUrl = "";
         let verifiedBarcode = false;
         let verifiedBy = "";
         let confidence = "medium";
@@ -1416,7 +1404,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           }
 
           bestOffer = pickBestOffer(offersTrusted);
-          merchantUrl = bestOffer?.url || merchantUrl || "";
+          merchantUrl = bestOffer?.url || "";
 
           if (!verifiedBarcode && gp?.verifiedBarcode) {
             verifiedBarcode = true;
@@ -1425,20 +1413,14 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           }
         }
 
-        // 3) MerchantUrl fallback: cand.url (ama google ise unwrap dene)
-        if (!merchantUrl) {
-          const u = normalizeOutboundUrl(cand.url || "");
-          if (u && !isGoogleHostedUrl(u)) merchantUrl = u;
-        }
-
-        // 4) STRICT catalog snippet verify fallback (HTML probe ile)
+        // 3) STRICT catalog snippet verify fallback (HTML probe ile)
         if (!verifiedBarcode) {
           const v = await verifyViaCatalogSnippet(code, diag, picked?.title || raw?.title || "");
           if (v) {
             verifiedBarcode = true;
             verifiedBy = v.verifiedBy || "catalog";
             confidence = "high";
-            if (!merchantUrl && v.url) merchantUrl = v.url;
+            verifiedUrl = v.url || "";
           }
         }
 
@@ -1488,6 +1470,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           merchantUrl: merchantUrl || "",
           verifiedBarcode: Boolean(verifiedBarcode),
           verifiedBy: verifiedBy || "",
+          verifiedUrl: verifiedUrl || "",
           confidence: confidence || "medium",
           raw: picked,
         };
@@ -1499,6 +1482,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           q,
           verifiedBarcode: Boolean(verifiedBarcode),
           verifiedBy: verifiedBy || "",
+          verifiedUrl: verifiedUrl || "",
           offersTrusted: product.offersTrusted?.length || 0,
           offersOther: product.offersOther?.length || 0,
           merchantUrl: product.merchantUrl ? safeStr(product.merchantUrl, 120) : null,
