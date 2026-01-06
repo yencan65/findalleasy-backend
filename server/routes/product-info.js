@@ -1,15 +1,18 @@
 // server/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S22.6 HARDENED (MERCHANT-HUNT + CATALOG-VERIFY)
+//  PRODUCT INFO ENGINE — S22.7 HARDENED (GOOGLE_PRODUCT_OFFERS + GTIN/SPEC EVIDENCE + CATALOG-SNIPPET VERIFY)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam/akıllı hale gelir
 //
 //  Amaç:
 //   - POST body (qr/code/data/text) + rawBody kurtarma (PowerShell/curl kaçışları)
 //   - Barcode (8-18) için:
-//        1) OpenFoodFacts (food)
-//        2) Katalog siteleri (epey/cimri/akakce vb.) üzerinden GTIN doğrulama
-//        3) SerpAPI Google Shopping -> ürün kimliği + (varsa) SerpAPI immersive üzerinden merchant offer linkleri
-//     ✅ verifiedBarcode: sadece "Google sayfası" değil, mümkünse katalog/db kanıtı ile true olur
+//        1) OpenFoodFacts (food) => verified=true
+//        2) Katalog siteleri (epey/cimri/akakce vb.) => HTML evidence ile verified=true
+//        3) SerpAPI Google Shopping => ürün kimliği
+//            3a) ✅ SerpAPI engine=google_product => offers + GTIN/spec evidence (strong paths) => verified=true
+//            3b) (varsa) SerpAPI immersive offers => vitrin için ek offer linkleri
+//            3c) ✅ catalog snippet verify fallback => verified=true (sıkı regex + katalog domain şartı)
+//     ✅ verifiedBarcode artık "Google sayfası"na değil; mümkünse GTIN/spec alanlarına veya katalog kanıtına dayanır.
 //   - force=1 => mongo-cache bypass
 //   - diag=1  => _diag adım adım debug
 // ======================================================================
@@ -82,6 +85,12 @@ function getClientIp(req) {
     req.connection?.remoteAddress ||
     "unknown"
   );
+}
+
+function diagPush(diag, obj) {
+  try {
+    diag?.tries?.push?.(obj);
+  } catch {}
 }
 
 // ======================================================================
@@ -253,6 +262,21 @@ function pickDomain(url) {
   }
 }
 
+function unwrapGoogleRedirect(u) {
+  try {
+    const url = new URL(String(u || ""));
+    const host = (url.hostname || "").toLowerCase();
+    if (!host.includes("google.")) return String(u || "");
+    const q = url.searchParams.get("url") || url.searchParams.get("q") || "";
+    if (!q) return String(u || "");
+    const decoded = decodeURIComponent(q);
+    if (/^https?:\/\//i.test(decoded) && !isGoogleHostedUrl(decoded)) return decoded;
+    return String(u || "");
+  } catch {
+    return String(u || "");
+  }
+}
+
 // ======================================================================
 // Barcode evidence helpers (anti-wrong-product)
 //  - Amaç: "alakasız ürün" döndürmemek. Emin değilsek NULL.
@@ -275,31 +299,43 @@ function hasBarcodeEvidenceInText(text, code) {
 }
 
 async function probeUrlForBarcode(url, code, diag) {
-  const u = safeStr(url, 2000);
-  if (!u || !/^https?:\/\//i.test(u)) return false;
+  const u0 = safeStr(url, 2000);
+  if (!u0 || !/^https?:\/\//i.test(u0)) return false;
 
   // Google hosted sayfalarda "evidence" üretmek çoğu zaman sahte güven.
-  if (isGoogleHostedUrl(u)) return false;
+  if (isGoogleHostedUrl(u0)) return false;
+
+  const u = unwrapGoogleRedirect(u0);
 
   try {
-    diag?.tries?.push?.({ step: "probe_url", url: u });
+    diagPush(diag, { step: "probe_url", url: u });
     const r = await getHtml(u, { timeoutMs: 9000, maxBytes: 1_500_000, allow3xx: true });
     if (!r?.ok || !r?.html) {
-      diag?.tries?.push?.({ step: "probe_url_fail", url: u, status: r?.status || null });
+      diagPush(diag, { step: "probe_url_fail", url: u, status: r?.status || null });
       return false;
     }
     const ok = hasBarcodeEvidenceInText(r.html, code);
-    diag?.tries?.push?.({ step: ok ? "probe_url_ok" : "probe_url_no_evidence", url: u });
+    diagPush(diag, { step: ok ? "probe_url_ok" : "probe_url_no_evidence", url: u });
     return ok;
   } catch (e) {
-    diag?.tries?.push?.({ step: "probe_url_error", url: u, error: String(e?.message || e) });
+    diagPush(diag, { step: "probe_url_error", url: u, error: String(e?.message || e) });
     return false;
   }
 }
 
 // ======================================================================
-// SerpAPI immersive product (merchant offers) — Google URL'lerinden kaçış yolu
+// SerpAPI low-level JSON fetch (engine=google_product, etc.)
 // ======================================================================
+function getSerpApiKey() {
+  return (
+    process.env.SERPAPI_KEY ||
+    process.env.SERP_API_KEY ||
+    process.env.SERPAPI ||
+    process.env.SERPAPIKEY ||
+    ""
+  ).trim();
+}
+
 function withTimeout(promise, timeoutMs, label = "timeout") {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(label), Math.max(100, timeoutMs || 10_000));
@@ -315,6 +351,53 @@ function withTimeout(promise, timeoutMs, label = "timeout") {
   };
 }
 
+async function fetchSerpApiJson(params, diag, stepName = "serpapi_json") {
+  const key = getSerpApiKey();
+  if (!key) {
+    diagPush(diag, { step: `${stepName}_no_key` });
+    return null;
+  }
+
+  try {
+    const url = new URL("https://serpapi.com/search.json");
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v == null || v === "") continue;
+      url.searchParams.set(k, String(v));
+    }
+    url.searchParams.set("api_key", key);
+
+    // log safe: key’i yazma
+    diagPush(diag, {
+      step: `${stepName}_fetch`,
+      engine: safeStr(params?.engine || "", 40),
+      hasProductId: Boolean(params?.product_id),
+    });
+
+    const { run } = withTimeout(
+      async (sig) => {
+        const r = await fetch(url.toString(), { method: "GET", signal: sig });
+        const txt = await r.text();
+        if (!r.ok) throw new Error(`SERPAPI_HTTP_${r.status}`);
+        try {
+          return JSON.parse(txt);
+        } catch {
+          throw new Error("SERPAPI_JSON_FAIL");
+        }
+      },
+      12_000,
+      "SERPAPI_TIMEOUT"
+    );
+
+    return await run;
+  } catch (e) {
+    diagPush(diag, { step: `${stepName}_error`, error: String(e?.message || e) });
+    return null;
+  }
+}
+
+// ======================================================================
+// Offer parsing helpers (google_product & immersive unify)
+// ======================================================================
 function appendQuery(u, params) {
   try {
     const url = new URL(String(u));
@@ -364,6 +447,15 @@ function merchantRank(domainOrName) {
   return 10;
 }
 
+function normalizeOfferLink(link) {
+  const u0 = safeStr(link, 2000) || "";
+  if (!u0) return "";
+  const u1 = unwrapGoogleRedirect(u0);
+  if (!/^https?:\/\//i.test(u1)) return "";
+  if (isGoogleHostedUrl(u1)) return "";
+  return u1;
+}
+
 function extractOffersFromImmersive(j) {
   const candidates =
     j?.sellers_results ||
@@ -378,7 +470,8 @@ function extractOffersFromImmersive(j) {
 
   for (const x of arr) {
     const merchant = safeStr(x?.name || x?.seller || x?.source || x?.merchant || "", 120) || "";
-    const link = safeStr(x?.link || x?.url || x?.merchant_link || x?.product_link || "", 2000) || "";
+    const linkRaw = safeStr(x?.link || x?.url || x?.merchant_link || x?.product_link || "", 2000) || "";
+    const link = normalizeOfferLink(linkRaw);
     const price =
       parsePriceAny(x?.extracted_price) ??
       parsePriceAny(x?.price) ??
@@ -386,7 +479,7 @@ function extractOffersFromImmersive(j) {
       parsePriceAny(x?.value);
     const delivery = safeStr(x?.delivery || x?.shipping || x?.shipping_cost || "", 120) || "";
 
-    if (!link || isGoogleHostedUrl(link)) continue;
+    if (!link) continue;
 
     out.push({
       merchant,
@@ -409,6 +502,90 @@ function extractOffersFromImmersive(j) {
   return out;
 }
 
+function extractOffersFromGoogleProduct(gp) {
+  // SerpAPI google_product çoğu zaman sellers_results/online_sellers içinde offer döner
+  return extractOffersFromImmersive(gp);
+}
+
+function pickBestOffer(offers) {
+  const arr = Array.isArray(offers) ? offers : [];
+  if (!arr.length) return null;
+  // zaten sort’lu bekliyoruz ama garanti olsun
+  const sorted = [...arr].sort((a, b) => {
+    const ap = a.price != null ? a.price : Number.POSITIVE_INFINITY;
+    const bp = b.price != null ? b.price : Number.POSITIVE_INFINITY;
+    if (ap !== bp) return ap - bp;
+    return (b.rank || 0) - (a.rank || 0);
+  });
+  return sorted[0] || null;
+}
+
+// ======================================================================
+// Evidence collection for GTIN/EAN/Barcode from google_product JSON
+// ======================================================================
+function collectEvidenceCodes(obj) {
+  const out = [];
+  const seen = new Set();
+
+  function walk(node, path, depth) {
+    if (!node || depth > 10) return;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) walk(node[i], `${path}[${i}]`, depth + 1);
+      return;
+    }
+    if (typeof node !== "object") return;
+
+    for (const [k, v] of Object.entries(node)) {
+      const key = String(k).toLowerCase();
+      const p2 = path ? `${path}.${key}` : key;
+
+      // sadece GTIN/EAN/UPC/Barcode gibi alanlardan topla (random sayı toplama yok)
+      const isGtinKey =
+        key === "gtin" ||
+        key === "gtin13" ||
+        key === "gtin14" ||
+        key === "ean" ||
+        key === "ean13" ||
+        key === "upc" ||
+        key === "barcode" ||
+        key === "barkod";
+
+      if (isGtinKey) {
+        const s = String(v || "").replace(/[^\d]/g, "");
+        if (s && /^\d{8,18}$/.test(s)) {
+          const sig = `${s}@@${p2}`;
+          if (!seen.has(sig)) {
+            seen.add(sig);
+            out.push({ code: s, path: p2 });
+          }
+        }
+      } else {
+        walk(v, p2, depth + 1);
+      }
+    }
+  }
+
+  walk(obj, "", 0);
+  return out;
+}
+
+function isStrongGtinPath(path) {
+  const p = String(path || "").toLowerCase();
+  // “strong” = GTIN/EAN/UPC gibi spec alanı + path içinde info/spec/attribute sinyali (google_product JSON yapısı değişken)
+  const hasCodeKey = p.includes(".gtin") || p.includes(".gtin13") || p.includes(".gtin14") || p.includes(".ean") || p.includes(".ean13") || p.includes(".upc") || p.includes(".barcode") || p.includes(".barkod");
+  if (!hasCodeKey) return false;
+
+  // ekstra güçlendirici segmentler
+  const strongSegments = ["product_information", "spec", "specification", "specifications", "attributes", "about", "details", "product_details", "product_info"];
+  if (strongSegments.some((s) => p.includes(s))) return true;
+
+  // segment yoksa da GTIN alanı yine de güçlü kabul (key zaten kontrollü)
+  return true;
+}
+
+// ======================================================================
+// SerpAPI immersive product (merchant offers) — Google URL'lerinden kaçış yolu
+// ======================================================================
 function findGtinsDeep(obj, out, depth = 0) {
   if (!obj || depth > 8) return;
   if (Array.isArray(obj)) {
@@ -432,22 +609,16 @@ async function fetchImmersiveOffers(raw, code, diag) {
   const apiUrl = raw?.serpapi_immersive_product_api || raw?.serpapi_product_api || "";
   if (!apiUrl) return { offers: [], gtinMatch: false };
 
-  const key =
-    process.env.SERPAPI_KEY ||
-    process.env.SERP_API_KEY ||
-    process.env.SERPAPI ||
-    process.env.SERPAPIKEY ||
-    "";
-
+  const key = getSerpApiKey();
   if (!key) {
-    diag?.tries?.push?.({ step: "immersive_no_key" });
+    diagPush(diag, { step: "immersive_no_key" });
     return { offers: [], gtinMatch: false };
   }
 
   const finalUrl = appendQuery(apiUrl, { api_key: key });
 
   try {
-    diag?.tries?.push?.({ step: "immersive_fetch", url: safeStr(finalUrl, 220) });
+    diagPush(diag, { step: "immersive_fetch", url: safeStr(finalUrl.replace(key, "****"), 240) });
 
     const { run } = withTimeout(
       async (sig) => {
@@ -471,7 +642,7 @@ async function fetchImmersiveOffers(raw, code, diag) {
     findGtinsDeep(j, found);
     const gtinMatch = found.has(String(code || "").trim());
 
-    diag?.tries?.push?.({
+    diagPush(diag, {
       step: "immersive_ok",
       offers: offers.length,
       gtinMatch,
@@ -480,7 +651,7 @@ async function fetchImmersiveOffers(raw, code, diag) {
 
     return { offers, gtinMatch };
   } catch (e) {
-    diag?.tries?.push?.({ step: "immersive_error", error: String(e?.message || e) });
+    diagPush(diag, { step: "immersive_error", error: String(e?.message || e) });
     return { offers: [], gtinMatch: false };
   }
 }
@@ -522,7 +693,7 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
 
   for (const q of queries) {
     try {
-      diag?.tries?.push?.({ step: "catalog_search", q });
+      diagPush(diag, { step: "catalog_search", q });
 
       const r = await searchWithSerpApi(q, {
         mode: "google",
@@ -538,7 +709,7 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
 
       const items = Array.isArray(r?.items) ? r.items : [];
       if (!items.length) {
-        diag?.tries?.push?.({ step: "catalog_empty", q });
+        diagPush(diag, { step: "catalog_empty", q });
         continue;
       }
 
@@ -570,16 +741,90 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
           source: `catalog:${host || "unknown"}`,
           verifiedBarcode: true,
           verifiedBy: host || "catalog",
-          verifiedUrl: url,
+          verifiedUrl: unwrapGoogleRedirect(url),
           raw: it,
         };
 
         cacheSetBarcode(cacheKey, product);
-        diag?.tries?.push?.({ step: "catalog_pick", q, host, url });
+        diagPush(diag, { step: "catalog_pick", q, host, url: unwrapGoogleRedirect(url) });
         return product;
       }
     } catch (e) {
-      diag?.tries?.push?.({ step: "catalog_error", q, error: String(e?.message || e) });
+      diagPush(diag, { step: "catalog_error", q, error: String(e?.message || e) });
+    }
+  }
+
+  return null;
+}
+
+// ======================================================================
+// NEW: catalog snippet verify fallback (no HTML fetch)
+//  - verified = sadece katalog domain + güçlü regex evidences ile TRUE
+// ======================================================================
+async function verifyViaCatalogSnippet(barcode, diag, searchFn, titleHint = "") {
+  const code = String(barcode || "").trim();
+  if (!/^\d{8,18}$/.test(code)) return null;
+
+  const hint = cleanTitle(titleHint || "");
+  const queries = [
+    `site:epey.com "${code}"`,
+    `site:cimri.com "${code}"`,
+    `site:akakce.com "${code}"`,
+    hint ? `site:epey.com "${code}" "${hint}"` : "",
+    hint ? `site:cimri.com "${code}" "${hint}"` : "",
+    hint ? `site:akakce.com "${code}" "${hint}"` : "",
+  ].filter(Boolean);
+
+  for (const q of queries) {
+    try {
+      diagPush(diag, { step: "catalog_snippet_search", q });
+
+      const r = await searchFn(q, {
+        mode: "google",
+        region: "TR",
+        hl: "tr",
+        gl: "tr",
+        num: 8,
+        timeoutMs: 12000,
+        includeRaw: true,
+        barcode: true,
+        intent: { type: "barcode" },
+      });
+
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (!items.length) {
+        diagPush(diag, { step: "catalog_snippet_empty", q });
+        continue;
+      }
+
+      for (const it of items.slice(0, 6)) {
+        const url0 = safeStr(it?.url || it?.deeplink || it?.originUrl || it?.finalUrl || "", 2000);
+        if (!url0) continue;
+        const url = unwrapGoogleRedirect(url0);
+        const host = pickDomain(url);
+        if (!isCatalogDomain(host)) continue;
+
+        const raw = it?.raw || {};
+        const t = safeStr(it?.title || "", 300);
+        const sn = safeStr(raw?.snippet || raw?.description || raw?.summary || "", 900);
+
+        // Çok sıkı: ya URL içinde barkod geçecek ya da title/snippet regex ile yakalayacak
+        const urlHas = url.includes(code);
+        const textHas = hasBarcodeEvidenceInText(t, code) || hasBarcodeEvidenceInText(sn, code);
+        if (!urlHas && !textHas) continue;
+
+        diagPush(diag, {
+          step: "catalog_snippet_verified",
+          host,
+          url: safeStr(url, 220),
+          urlHas,
+          textHas,
+        });
+
+        return { url, verifiedBy: `catalog-snippet:${host}` };
+      }
+    } catch (e) {
+      diagPush(diag, { step: "catalog_snippet_error", q, error: String(e?.message || e) });
     }
   }
 
@@ -597,7 +842,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
   const cached = cacheGetBarcode(cacheKey);
   if (cached) return cached;
 
-  diag?.tries?.push?.({ step: "local_marketplaces_start", barcode: code });
+  diagPush(diag, { step: "local_marketplaces_start", barcode: code });
 
   let hits = [];
   try {
@@ -607,7 +852,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       maxMatches: 1,
     });
   } catch (e) {
-    diag?.tries?.push?.({ step: "local_marketplaces_error", error: String(e?.message || e) });
+    diagPush(diag, { step: "local_marketplaces_error", error: String(e?.message || e) });
     hits = [];
   }
 
@@ -628,21 +873,23 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       source: "local-marketplace-engine",
       verifiedBarcode: true,
       verifiedBy: pickDomain(url) || "local",
-      verifiedUrl: url || "",
+      verifiedUrl: unwrapGoogleRedirect(url) || "",
       raw: h,
     };
 
     cacheSetBarcode(cacheKey, product);
-    diag?.tries?.push?.({ step: "local_marketplaces_pick", url: url || null });
+    diagPush(diag, { step: "local_marketplaces_pick", url: url || null });
     return product;
   }
 
-  diag?.tries?.push?.({ step: "local_marketplaces_empty" });
+  diagPush(diag, { step: "local_marketplaces_empty" });
   return null;
 }
 
 // ======================================================================
 // SerpAPI Shopping resolver (barcode -> product identity + offers)
+//  - NEW: google_product offers + GTIN/spec evidence
+//  - NEW: catalog snippet verify fallback
 // ======================================================================
 async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
@@ -658,7 +905,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
 
   for (const q of queries) {
     try {
-      diag?.tries?.push?.({ step: "shopping_serpapi", q });
+      diagPush(diag, { step: "shopping_serpapi", q });
 
       const r = await searchWithSerpApi(q, {
         mode: "google_shopping",
@@ -674,7 +921,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
 
       const items = Array.isArray(r?.items) ? r.items : [];
       if (!items.length) {
-        diag?.tries?.push?.({ step: "shopping_empty", q });
+        diagPush(diag, { step: "shopping_empty", q });
         continue;
       }
 
@@ -703,9 +950,98 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
       scored.sort((a, b) => b.score - a.score);
 
       for (const cand of scored.slice(0, 2)) {
-        const raw = cand.it?.raw || {};
-        const { offers, gtinMatch } = await fetchImmersiveOffers(raw, code, diag);
+        const picked = cand.it || {};
+        const raw = picked?.raw || {};
 
+        // ------------------------------------------------------------
+        // 1) Immersive offers (vitrin linkleri) — verified için şart değil
+        // ------------------------------------------------------------
+        let offersImm = [];
+        let gtinMatchImm = false;
+        try {
+          const imm = await fetchImmersiveOffers(raw, code, diag);
+          offersImm = imm?.offers || [];
+          gtinMatchImm = imm?.gtinMatch ? true : false;
+        } catch {}
+
+        // ------------------------------------------------------------
+        // 2) NEW: google_product offers + gtin/spec evidence
+        // ------------------------------------------------------------
+        let offers = [];
+        let bestOffer = null;
+        let merchantUrl = "";
+        let verifiedBarcode = false;
+        let verifiedBy = "";
+        let confidence = "medium";
+
+        try {
+          const productId = raw?.product_id || raw?.productId || "";
+          if (productId) {
+            const gp = await fetchSerpApiJson(
+              { engine: "google_product", product_id: productId, offers: "1", hl, gl },
+              diag,
+              "google_product_offers"
+            );
+
+            if (gp) {
+              offers = extractOffersFromGoogleProduct(gp);
+              bestOffer = pickBestOffer(offers);
+              merchantUrl = bestOffer?.url || "";
+
+              // GTIN/EAN kanıtı arıyoruz: sadece güçlü path'lerde kabul
+              const ev = collectEvidenceCodes(gp);
+              const strong = ev.filter((x) => isStrongGtinPath(x.path)).map((x) => x.code);
+              const strongSet = new Set(strong);
+
+              const gtinMatch = strongSet.has(String(code));
+              const gtinsFound = strongSet.size;
+
+              diagPush(diag, { step: "google_product_ok", offers: offers.length, gtinMatch, gtinsFound });
+
+              if (gtinMatch) {
+                verifiedBarcode = true;
+                verifiedBy = "serpapi:google_product";
+                confidence = "high";
+              }
+            } else {
+              diagPush(diag, { step: "google_product_null" });
+            }
+          } else {
+            diagPush(diag, { step: "google_product_skip_no_product_id" });
+          }
+        } catch (e) {
+          diagPush(diag, { step: "google_product_error", error: String(e?.message || e) });
+        }
+
+        // google_product offers yoksa immersive offers ile vitrin doldur
+        if ((!offers || !offers.length) && offersImm && offersImm.length) {
+          offers = offersImm;
+          bestOffer = pickBestOffer(offers);
+          merchantUrl = bestOffer?.url || "";
+          // immersive GTIN match varsa (structured) bunu da güçlü kabul edelim
+          if (!verifiedBarcode && gtinMatchImm) {
+            verifiedBarcode = true;
+            verifiedBy = "serpapi:immersive_product";
+            confidence = "high";
+          }
+        }
+
+        // ------------------------------------------------------------
+        // 3) NEW: catalog snippet verify fallback
+        // ------------------------------------------------------------
+        if (!verifiedBarcode) {
+          const v = await verifyViaCatalogSnippet(code, diag, searchWithSerpApi, cand.title || raw?.title || "");
+          if (v) {
+            verifiedBarcode = true;
+            verifiedBy = v.verifiedBy || "catalog";
+            confidence = "high";
+            if (!merchantUrl && v.url) merchantUrl = v.url;
+          }
+        }
+
+        // ------------------------------------------------------------
+        // 4) Acceptance logic (anti-wrong-product)
+        // ------------------------------------------------------------
         const hasIdSignal = Boolean(
           raw?.product_id ||
             raw?.productId ||
@@ -718,64 +1054,66 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
         );
         const hasMerchantSignal = Boolean(raw?.source || raw?.seller || raw?.merchant);
 
-        // Kabul: GTIN eşleşmesi varsa en iyisi.
-        // GTIN yoksa bile "Google Shopping ürün objesi" + merchant sinyali gelmişse vitrin için dönebiliriz (verified=false).
-        const accept = gtinMatch || (cand.url && cand.url.includes(code)) || (hasIdSignal && hasMerchantSignal);
+        // verifiedBarcode true ise kesin kabul.
+        // değilse: ürün kimliği + merchant sinyali varsa vitrin için dönebilir (verified=false).
+        const accept =
+          verifiedBarcode ||
+          (hasIdSignal && hasMerchantSignal) ||
+          (offers && offers.length > 0) ||
+          (cand.title && cand.title.length > 6);
 
         if (!accept) {
-          diag?.tries?.push?.({ step: "shopping_reject_no_gtin", q, title: cand.title, score: cand.score });
+          diagPush(diag, { step: "shopping_reject_no_signals", q, title: cand.title, score: cand.score });
           continue;
         }
 
-        const confidence = gtinMatch ? "high" : hasIdSignal && hasMerchantSignal ? "medium" : "low";
-
-        // Merchant link seçimi: offers içinden en iyi (fiyat + rank)
-        const bestOffer = offers && offers.length ? offers[0] : null;
-        const merchantUrl =
-          (bestOffer?.url && !isGoogleHostedUrl(bestOffer.url) ? bestOffer.url : "") ||
-          (cand.url && !isGoogleHostedUrl(cand.url) ? cand.url : "");
-
+        // ------------------------------------------------------------
+        // Product objesi (attach required fields)
+        // ------------------------------------------------------------
         const product = {
           name: cand.title,
           title: cand.title,
           description: safeStr(raw?.snippet || raw?.description || raw?.summary || "", 260) || "",
-          image: safeStr(cand.it?.image || raw?.thumbnail || raw?.image || "", 2000) || "",
+          image: safeStr(picked?.image || raw?.thumbnail || raw?.image || "", 2000) || "",
           brand: safeStr(raw?.brand || raw?.brands || "", 120),
           category: "product",
           region,
           qrCode: code,
           provider: "barcode",
           source: "serpapi-shopping",
-          verifiedBarcode: false,
-          verifiedBy: gtinMatch ? "google_product_data" : "",
-          confidence,
-          offers: offers?.slice?.(0, 12) || [],
-          bestOffer: bestOffer
-            ? {
-                merchant: bestOffer.merchant,
-                url: bestOffer.url,
-                price: bestOffer.price ?? null,
-                delivery: bestOffer.delivery || "",
-              }
-            : null,
-          merchantUrl: merchantUrl || "",
-          raw: cand.it,
+          raw: picked,
         };
 
+        // === attach offers/bestOffer fields to your product object ===
+        product.offers = Array.isArray(offers) ? offers.slice(0, 12) : [];
+        product.bestOffer = bestOffer
+          ? {
+              merchant: safeStr(bestOffer.merchant || "", 120),
+              url: safeStr(bestOffer.url || "", 2000),
+              price: bestOffer.price ?? null,
+              delivery: safeStr(bestOffer.delivery || "", 120),
+            }
+          : null;
+        product.merchantUrl = safeStr(merchantUrl || "", 2000);
+        product.verifiedBarcode = verifiedBarcode ? true : false;
+        product.verifiedBy = safeStr(verifiedBy || "", 120);
+        product.confidence = safeStr(confidence || "medium", 20);
+
         cacheSetBarcode(cacheKey, product);
-        diag?.tries?.push?.({
+        diagPush(diag, {
           step: "shopping_pick",
           q,
-          gtinMatch,
-          offers: offers.length,
-          merchantUrl: merchantUrl ? safeStr(merchantUrl, 120) : null,
-          confidence,
+          verifiedBarcode: product.verifiedBarcode,
+          verifiedBy: product.verifiedBy || "",
+          offers: product.offers.length,
+          merchantUrl: product.merchantUrl ? safeStr(product.merchantUrl, 120) : null,
+          confidence: product.confidence,
         });
 
         return product;
       }
     } catch (e) {
-      diag?.tries?.push?.({ step: "shopping_error", q, error: String(e?.message || e) });
+      diagPush(diag, { step: "shopping_error", q, error: String(e?.message || e) });
     }
   }
 
@@ -791,16 +1129,16 @@ async function fetchOpenFoodFacts(code, diag) {
 
   const url = `https://world.openfoodfacts.org/api/v0/product/${barcode}.json`;
   try {
-    diag?.tries?.push?.({ step: "openfoodfacts_fetch", url });
+    diagPush(diag, { step: "openfoodfacts_fetch", url });
 
     const r = await fetch(url, { method: "GET", headers: { "user-agent": "findalleasy/1.0" } });
     if (!r.ok) {
-      diag?.tries?.push?.({ step: "openfoodfacts_http_fail", status: r.status });
+      diagPush(diag, { step: "openfoodfacts_http_fail", status: r.status });
       return null;
     }
     const j = await r.json().catch(() => null);
     if (!j || j.status !== 1 || !j.product) {
-      diag?.tries?.push?.({ step: "openfoodfacts_no_product", status: j?.status ?? 0 });
+      diagPush(diag, { step: "openfoodfacts_no_product", status: j?.status ?? 0 });
       return null;
     }
 
@@ -825,7 +1163,7 @@ async function fetchOpenFoodFacts(code, diag) {
 
     return product;
   } catch (e) {
-    diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(e?.message || e) });
+    diagPush(diag, { step: "openfoodfacts_error", error: String(e?.message || e) });
     return null;
   }
 }
@@ -873,7 +1211,7 @@ async function handleProduct(req, res) {
       : null;
 
     try {
-      res.setHeader("x-product-info-ver", "S22.6");
+      res.setHeader("x-product-info-ver", "S22.7");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -897,7 +1235,7 @@ async function handleProduct(req, res) {
     // 1) Mongo cache (force=1 ise atla)
     if (!force) {
       try {
-        diag?.tries?.push?.({ step: "mongo_cache_lookup" });
+        diagPush(diag, { step: "mongo_cache_lookup" });
         const cached = await Product.findOne({ qrCode: qr }).lean();
         if (cached) {
           const out = { ok: true, product: cached, source: "mongo-cache" };
@@ -905,10 +1243,10 @@ async function handleProduct(req, res) {
           return safeJson(res, out);
         }
       } catch (e) {
-        diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
+        diagPush(diag, { step: "mongo_cache_error", error: String(e?.message || e) });
       }
     } else {
-      diag?.tries?.push?.({ step: "mongo_cache_skipped_force" });
+      diagPush(diag, { step: "mongo_cache_skipped_force" });
     }
 
     // 2) Barcode (8-18)
@@ -924,7 +1262,7 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // 2.2) Catalog verification (epey/cimri/akakce)
+      // 2.2) Catalog verification (epey/cimri/akakce) — HTML evidence
       const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
       if (catalog?.name) {
         try {
@@ -946,7 +1284,7 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // 2.4) Google Shopping + immersive offers
+      // 2.4) Google Shopping + google_product offers + (optional) immersive offers
       const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
       if (shopping?.name) {
         try {
