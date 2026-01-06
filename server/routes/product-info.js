@@ -1,6 +1,6 @@
 // server/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S22.8 HARDENED (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
+//  PRODUCT INFO ENGINE — S22.9 HARDENED (OFFER TRUST SPLIT + UNKNOWN OUTSIDE VITRINE) (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam/akıllı hale gelir
 //
 //  Amaç:
@@ -562,6 +562,126 @@ function pickBestOffer(offers) {
 }
 
 // ======================================================================
+// Offer split: trusted vs other (unknown domains) — vitrine safety gate
+//  - offersTrusted: ana vitrine girer (bilinen provider listesi + min trust)
+//  - offersOther: sadece "daha fazla göster" altında (debug'da görünür)
+// ======================================================================
+const OFFER_TRUST_MIN_RANK = (() => {
+  const n = Number(process.env.OFFER_TRUST_MIN_RANK ?? 60);
+  return Number.isFinite(n) ? n : 60;
+})();
+
+const OFFERS_TRUSTED_LIMIT = (() => {
+  const n = Number(process.env.OFFERS_TRUSTED_LIMIT ?? 12);
+  return Number.isFinite(n) ? Math.max(1, Math.min(50, n)) : 12;
+})();
+
+const OFFERS_OTHER_LIMIT = (() => {
+  const n = Number(process.env.OFFERS_OTHER_LIMIT ?? 12);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 12;
+})();
+
+function offerPriceNum(o) {
+  const p = o?.price;
+  const n = p == null ? Number.POSITIVE_INFINITY : Number(p);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function offerKey(o) {
+  const u = safeStr(o?.url || "", 2000);
+  if (u) return u;
+  const d = canonicalHost(o?.domain || "");
+  const m = normalizeMerchant(o?.merchant || "");
+  return d || m ? `${d}::${m}` : "";
+}
+
+function dedupeOffers(arr) {
+  const out = [];
+  const seen = new Set();
+  for (const o of Array.isArray(arr) ? arr : []) {
+    const k = offerKey(o);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(o);
+  }
+  return out;
+}
+
+function offerIsTrusted(o) {
+  const url = o?.url || "";
+  if (!url || isGoogleHostedUrl(url)) return false;
+
+  const domain = canonicalHost(o?.domain || pickDomain(url));
+  if (!domain || isBlacklistedDomain(domain)) return false;
+
+  const p = findProvider(domain, o?.merchant || "");
+  if (!p) return false;
+
+  return (p.score || 0) >= OFFER_TRUST_MIN_RANK;
+}
+
+function sortOffersTrusted(arr) {
+  arr.sort((a, b) => {
+    const ap = offerPriceNum(a);
+    const bp = offerPriceNum(b);
+    if (ap !== bp) return ap - bp;
+
+    const ar = a?.rank || 0;
+    const br = b?.rank || 0;
+    if (ar !== br) return br - ar;
+
+    return String(a?.merchantKey || "").localeCompare(String(b?.merchantKey || ""));
+  });
+}
+
+function sortOffersOther(arr) {
+  arr.sort((a, b) => {
+    const ar = a?.rank || 0;
+    const br = b?.rank || 0;
+    if (ar !== br) return br - ar;
+
+    const ap = offerPriceNum(a);
+    const bp = offerPriceNum(b);
+    if (ap !== bp) return ap - bp;
+
+    return String(a?.merchantKey || "").localeCompare(String(b?.merchantKey || ""));
+  });
+}
+
+function mergeOffersUnique(a, b) {
+  const out = [];
+  const seen = new Set();
+  for (const x of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
+    const k = offerKey(x);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(x);
+  }
+  return out;
+}
+
+function splitOffersForVitrine(offers) {
+  const arr = dedupeOffers(Array.isArray(offers) ? offers : []);
+  if (!arr.length) return { offersTrusted: [], offersOther: [] };
+
+  const offersTrusted = [];
+  const offersOther = [];
+
+  for (const o of arr) {
+    if (offerIsTrusted(o)) offersTrusted.push(o);
+    else offersOther.push(o);
+  }
+
+  sortOffersTrusted(offersTrusted);
+  sortOffersOther(offersOther);
+
+  return {
+    offersTrusted: offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT),
+    offersOther: offersOther.slice(0, OFFERS_OTHER_LIMIT),
+  };
+}
+
+// ======================================================================
 // Evidence collection (strong GTIN paths)
 // ======================================================================
 function collectEvidenceCodes(obj) {
@@ -880,7 +1000,7 @@ async function fetchGoogleProduct(barcode, picked, localeShort, diag) {
   const productId = picked?.raw?.product_id || picked?.raw?.productId || picked?.raw?.raw?.product_id || "";
   if (!productId) {
     diag?.tries?.push?.({ step: "google_product_skip_no_product_id" });
-    return { offers: [], bestOffer: null, merchantUrl: "", verifiedBarcode: false, verifiedBy: "", confidence: "medium" };
+    return { offersTrusted: [], offersOther: [], offers: [], bestOffer: null, merchantUrl: "", verifiedBarcode: false, verifiedBy: "", confidence: "medium" };
   }
 
   const { hl, gl } = localePack(localeShort);
@@ -894,11 +1014,12 @@ async function fetchGoogleProduct(barcode, picked, localeShort, diag) {
 
   if (!gp) {
     diag?.tries?.push?.({ step: "google_product_null" });
-    return { offers: [], bestOffer: null, merchantUrl: "", verifiedBarcode: false, verifiedBy: "", confidence: "medium" };
+    return { offersTrusted: [], offersOther: [], offers: [], bestOffer: null, merchantUrl: "", verifiedBarcode: false, verifiedBy: "", confidence: "medium" };
   }
 
-  const offers = extractOffersFromGoogleProduct(gp);
-  const bestOffer = pickBestOffer(offers);
+  const offersAll = extractOffersFromGoogleProduct(gp);
+  const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
+  const bestOffer = pickBestOffer(offersTrusted);
   const merchantUrl = bestOffer?.url || "";
 
   // Strong GTIN evidence
@@ -909,11 +1030,11 @@ async function fetchGoogleProduct(barcode, picked, localeShort, diag) {
   const gtinMatch = strongSet.has(String(barcode || "").trim());
   const gtinsFound = strongSet.size;
 
-  diag?.tries?.push?.({ step: "google_product_ok", offers: offers.length, gtinMatch, gtinsFound: Math.min(gtinsFound, 5) });
+  diag?.tries?.push?.({ step: "google_product_ok", offersAll: offersAll.length, offersTrusted: offersTrusted.length, offersOther: offersOther.length, gtinMatch, gtinsFound: Math.min(gtinsFound, 5) });
 
   let verifiedBarcode = false;
   let verifiedBy = "";
-  let confidence = offers.length ? "medium" : "low";
+  let confidence = (offersTrusted.length || offersOther.length) ? "medium" : "low";
 
   if (gtinMatch) {
     verifiedBarcode = true;
@@ -921,7 +1042,7 @@ async function fetchGoogleProduct(barcode, picked, localeShort, diag) {
     confidence = "high";
   }
 
-  return { offers, bestOffer, merchantUrl, verifiedBarcode, verifiedBy, confidence };
+  return { offersTrusted, offersOther, offers: offersTrusted, bestOffer, merchantUrl, verifiedBarcode, verifiedBy, confidence };
 }
 
 // ======================================================================
@@ -1011,6 +1132,10 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
           verifiedBarcode: true,
           verifiedBy: host || "catalog",
           verifiedUrl: url,
+          offersTrusted: [],
+
+          offersOther: [],
+
           offers: [],
           bestOffer: null,
           merchantUrl: url,
@@ -1061,7 +1186,26 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
     const url0 = safeStr(h?.url || h?.link || "", 2000) || "";
     const url = normalizeOutboundUrl(url0);
 
+    const domain0 = pickDomain(url);
+    const rawOffers = url
+      ? [
+          {
+            merchant: domain0 || "local",
+            merchantKey: domain0 || "local",
+            url,
+            price: null,
+            delivery: "",
+            domain: domain0,
+            rank: merchantRank(domain0, domain0 || "local"),
+          },
+        ]
+      : [];
+
+    const { offersTrusted, offersOther } = splitOffersForVitrine(rawOffers);
+    const bestOfferPick = pickBestOffer(offersTrusted);
+
     const product = {
+
       name,
       title: name,
       description: "",
@@ -1075,9 +1219,13 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       verifiedBarcode: true,
       verifiedBy: pickDomain(url) || "local",
       verifiedUrl: url || "",
-      offers: url ? [{ merchant: pickDomain(url) || "local", merchantKey: pickDomain(url), url, price: null, delivery: "", domain: pickDomain(url), rank: merchantRank(pickDomain(url), pickDomain(url) || "local") }] : [],
-      bestOffer: url ? { merchant: pickDomain(url) || "local", url, price: null, delivery: "" } : null,
-      merchantUrl: url || "",
+      offersTrusted,
+      offersOther,
+      offers: offersTrusted,
+      bestOffer: bestOfferPick
+        ? { merchant: bestOfferPick.merchant, url: bestOfferPick.url, price: bestOfferPick.price ?? null, delivery: bestOfferPick.delivery || "" }
+        : null,
+      merchantUrl: bestOfferPick?.url || "",
       confidence: "high",
       raw: h,
     };
@@ -1225,7 +1373,9 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
         const raw = picked?.raw || {};
 
         // DEFAULTS (NEW)
-        let offers = [];
+        let offersTrusted = [];
+        let offersOther = [];
+        let offersAll = [];
         let bestOffer = null;
         let merchantUrl = "";
         let verifiedBarcode = false;
@@ -1234,8 +1384,10 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
 
         // 1) Immersive offers + strong GTIN evidence
         const imm = await fetchImmersiveOffers(raw, code, diag);
-        offers = imm?.offers || [];
-        bestOffer = pickBestOffer(offers);
+        offersAll = imm?.offers || [];
+        ({ offersTrusted, offersOther } = splitOffersForVitrine(offersAll));
+        diag?.tries?.push?.({ step: "offers_split_immersive", offersTrusted: offersTrusted.length, offersOther: offersOther.length });
+        bestOffer = pickBestOffer(offersTrusted);
         merchantUrl = bestOffer?.url || "";
 
         if (imm?.gtinMatch) {
@@ -1244,17 +1396,28 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           confidence = "high";
         } else {
           // GTIN yoksa: offers varsa medium, yoksa low'a yakın
-          confidence = offers.length ? "medium" : "low";
+          confidence = (offersTrusted.length || offersOther.length) ? "medium" : "low";
         }
 
-        // 2) Google Product fallback: (a) offers boşsa, (b) verified yoksa GTIN aramak için
-        if (!offers.length || (!verifiedBarcode && raw?.raw?.product_id)) {
+        // 2) Google Product fallback: (a) trusted boşsa, (b) verified yoksa GTIN aramak için
+        if (!offersTrusted.length || (!verifiedBarcode && raw?.raw?.product_id)) {
           const gp = await fetchGoogleProduct(code, picked, localeShort, diag);
-          if (gp?.offers?.length && !offers.length) {
-            offers = gp.offers;
-            bestOffer = gp.bestOffer;
-            if (!merchantUrl) merchantUrl = gp.merchantUrl || "";
+          const gpTrusted = Array.isArray(gp?.offersTrusted) ? gp.offersTrusted : [];
+          const gpOther = Array.isArray(gp?.offersOther) ? gp.offersOther : [];
+
+          if (gpTrusted.length || gpOther.length) {
+            offersTrusted = mergeOffersUnique(offersTrusted, gpTrusted);
+            offersOther = mergeOffersUnique(offersOther, gpOther);
+            sortOffersTrusted(offersTrusted);
+            sortOffersOther(offersOther);
+            offersTrusted = offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT);
+            offersOther = offersOther.slice(0, OFFERS_OTHER_LIMIT);
+            diag?.tries?.push?.({ step: "offers_merge_google_product", offersTrusted: offersTrusted.length, offersOther: offersOther.length });
           }
+
+          bestOffer = pickBestOffer(offersTrusted);
+          merchantUrl = bestOffer?.url || merchantUrl || "";
+
           if (!verifiedBarcode && gp?.verifiedBarcode) {
             verifiedBarcode = true;
             verifiedBy = gp.verifiedBy || "serpapi:google_product";
@@ -1291,7 +1454,7 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
             raw?.product_url ||
             raw?.raw?.product_id
         );
-        const hasMerchantSignal = Boolean(raw?.source || raw?.seller || raw?.merchant || (offers && offers.length));
+        const hasMerchantSignal = Boolean(raw?.source || raw?.seller || raw?.merchant || offersTrusted.length || offersOther.length);
 
         const accept = verifiedBarcode || (hasIdSignal && hasMerchantSignal) || Boolean(picked?.title);
 
@@ -1311,7 +1474,9 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           qrCode: code,
           provider: "barcode",
           source: "serpapi-shopping",
-          offers: offers?.slice?.(0, 12) || [],
+          offersTrusted: offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT),
+          offersOther: offersOther.slice(0, OFFERS_OTHER_LIMIT),
+          offers: offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT),
           bestOffer: bestOffer
             ? {
                 merchant: bestOffer.merchant,
@@ -1334,7 +1499,8 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
           q,
           verifiedBarcode: Boolean(verifiedBarcode),
           verifiedBy: verifiedBy || "",
-          offers: product.offers.length,
+          offersTrusted: product.offersTrusted?.length || 0,
+          offersOther: product.offersOther?.length || 0,
           merchantUrl: product.merchantUrl ? safeStr(product.merchantUrl, 120) : null,
           confidence: product.confidence,
         });
@@ -1387,6 +1553,10 @@ async function fetchOpenFoodFacts(code, diag) {
       source: "openfoodfacts",
       verifiedBarcode: true,
       verifiedBy: "openfoodfacts",
+      offersTrusted: [],
+
+      offersOther: [],
+
       offers: [],
       bestOffer: null,
       merchantUrl: "",
@@ -1444,7 +1614,7 @@ async function handleProduct(req, res) {
       : null;
 
     try {
-      res.setHeader("x-product-info-ver", "S22.8");
+      res.setHeader("x-product-info-ver", "S22.9");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -1537,6 +1707,10 @@ async function handleProduct(req, res) {
         source: "barcode-unresolved",
         verifiedBarcode: false,
         verifiedBy: "",
+        offersTrusted: [],
+
+        offersOther: [],
+
         offers: [],
         bestOffer: null,
         merchantUrl: "",
@@ -1560,6 +1734,10 @@ async function handleProduct(req, res) {
         source: "url",
         verifiedBarcode: false,
         verifiedBy: "",
+        offersTrusted: [],
+
+        offersOther: [],
+
         offers: [],
         bestOffer: null,
         merchantUrl: normalizeOutboundUrl(qr) || "",
@@ -1591,6 +1769,10 @@ async function handleProduct(req, res) {
       source: "text",
       verifiedBarcode: false,
       verifiedBy: "",
+      offersTrusted: [],
+
+      offersOther: [],
+
       offers: [],
       bestOffer: null,
       merchantUrl: "",
