@@ -394,22 +394,171 @@ function parsePriceAny(v) {
 }
 
 function normalizeMerchant(m) {
-  return safeStr(m, 80).toLowerCase().replace(/\s+/g, " ").trim();
+  // Noktalama/emoji vb. -> boşluk: name matching daha sağlam olur
+  return safeStr(m, 120)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function merchantRank(domainOrName) {
-  const s = String(domainOrName || "").toLowerCase();
-  if (s.includes("hepsiburada")) return 100;
-  if (s.includes("trendyol")) return 95;
-  if (s.includes("n11")) return 80;
-  if (s.includes("amazon")) return 75;
-  if (s.includes("ciceksepeti")) return 60;
+// ======================================================================
+// Offer safety: blacklist/whitelist + trust (rank) based on known providers
+//  - Amaç: "ucuz ama çöp" linklerin en üste zıplamasını engellemek
+//  - NOT: whitelist "hard block" değil; unknown yine görünür ama rank düşük kalır.
+//         STRICT_OFFER_ALLOWLIST=true yaparsan unknown offer'ları tamamen düşürür.
+// ======================================================================
+const STRICT_OFFER_ALLOWLIST = false;
+
+// Tamamen drop edeceğimiz domainler (redirect / tracking / sosyal vb.)
+const OFFER_DOMAIN_BLACKLIST = new Set([
+  "google.com",
+  "www.google.com",
+  "shopping.google.com",
+  "googleusercontent.com",
+  "gstatic.com",
+  "ggpht.com",
+  "doubleclick.net",
+  "googleadservices.com",
+  "t.co",
+  "bit.ly",
+  "linktr.ee",
+  "l.facebook.com",
+  "facebook.com",
+  "instagram.com",
+  "tiktok.com",
+  "pinterest.com",
+  "youtube.com",
+  "youtu.be",
+]);
+
+// Türkiye ağırlıklı "bilinen" satıcılar / pazaryerleri (rank = trustScore)
+const PROVIDER_TRUST = [
+  { domain: "hepsiburada.com", score: 100, names: ["hepsiburada"] },
+  { domain: "trendyol.com", score: 95, names: ["trendyol"] },
+  { domain: "n11.com", score: 85, names: ["n11"] },
+  { domain: "amazon.com.tr", score: 82, names: ["amazon", "amazon.com.tr", "amazon tr"] },
+  { domain: "pazarama.com", score: 75, names: ["pazarama"] },
+  { domain: "ciceksepeti.com", score: 68, names: ["ciceksepeti", "çiçeksepeti"] },
+  { domain: "teknosa.com", score: 70, names: ["teknosa"] },
+  { domain: "vatanbilgisayar.com", score: 70, names: ["vatan", "vatan bilgisayar"] },
+  { domain: "mediamarkt.com.tr", score: 70, names: ["media markt", "mediamarkt"] },
+  { domain: "migros.com.tr", score: 65, names: ["migros"] },
+  { domain: "carrefoursa.com", score: 60, names: ["carrefoursa", "carrefour"] },
+];
+
+const OFFER_DOMAIN_ALLOWLIST = new Set(PROVIDER_TRUST.map((x) => x.domain));
+
+function canonicalHost(host) {
+  let h = String(host || "").toLowerCase().trim();
+  if (!h) return "";
+  // strip common prefixes
+  h = h.replace(/^https?:\/\//, "");
+  h = h.split("/")[0];
+  h = h.replace(/^www\./, "").replace(/^m\./, "");
+  return h;
+}
+
+function domainMatches(host, baseDomain) {
+  const h = canonicalHost(host);
+  const b = canonicalHost(baseDomain);
+  if (!h || !b) return false;
+  return h === b || h.endsWith("." + b);
+}
+
+function isBlacklistedDomain(domainOrHost) {
+  const h = canonicalHost(domainOrHost);
+  if (!h) return false;
+  for (const b of OFFER_DOMAIN_BLACKLIST) {
+    if (domainMatches(h, b)) return true;
+  }
+  return false;
+}
+
+function escapeRegExp(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findProvider(domain, merchantName) {
+  const d = canonicalHost(domain);
+  const m = normalizeMerchant(merchantName || "");
+  if (d) {
+    for (const p of PROVIDER_TRUST) {
+      if (domainMatches(d, p.domain)) return p;
+    }
+  }
+  if (m) {
+    for (const p of PROVIDER_TRUST) {
+      for (const n of p.names || []) {
+        const nn = normalizeMerchant(n);
+        if (!nn) continue;
+        if (m === nn) return p;
+        const re = new RegExp(`(^|\\s)${escapeRegExp(nn)}(\\s|$)`, "i");
+        if (re.test(m)) return p;
+      }
+    }
+  }
+  return null;
+}
+
+// Yeni merchantRank imzası: (domain, merchantName)
+function merchantRank(domain, merchantName = "") {
+  const d = canonicalHost(domain);
+  const m = merchantName || "";
+  const p = findProvider(d, m);
+  if (p) return p.score;
+
+  // Unknown: çok düşük ama sıfır değil (listede görünsün)
+  // Blacklist: zaten drop edilmeli; yine de burada 0 verelim
+  if (isBlacklistedDomain(d)) return 0;
   return 10;
 }
 
+// ======================================================================
+// pickBestOffer — trusted-first + price-min, yoksa rank fallback
+// ======================================================================
 function pickBestOffer(offers) {
   const arr = Array.isArray(offers) ? offers : [];
-  return arr.length ? arr[0] : null;
+  if (!arr.length) return null;
+
+  // 1) Önce güvenilirleri dene (rank >= 60) + blacklist/google hariç
+  const trusted = arr.filter((o) => {
+    const url = o?.url || "";
+    const domain = o?.domain || pickDomain(url);
+    if (!url || isGoogleHostedUrl(url)) return false;
+    if (isBlacklistedDomain(domain)) return false;
+    return (o.rank || 0) >= 60;
+  });
+
+  const pool = trusted.length ? trusted : arr.filter((o) => {
+    const url = o?.url || "";
+    const domain = o?.domain || pickDomain(url);
+    if (!url || isGoogleHostedUrl(url)) return false;
+    if (isBlacklistedDomain(domain)) return false;
+    return true;
+  });
+
+  if (!pool.length) return null;
+
+  // 2) Pool içinde en ucuzu bul
+  let best = null;
+  let bestPrice = Number.POSITIVE_INFINITY;
+
+  for (const o of pool) {
+    const p = o && o.price != null ? Number(o.price) : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(p) && p < bestPrice) {
+      bestPrice = p;
+      best = o;
+    }
+  }
+
+  // 3) Fiyat yoksa rank'e göre seç
+  if (!best) {
+    return pool.slice().sort((a, b) => (b.rank || 0) - (a.rank || 0))[0] || null;
+  }
+
+  // 4) “Aşırı ucuz ama güvensiz” senaryosu: trusted varsa zaten engellendi.
+  return best;
 }
 
 // ======================================================================
@@ -565,22 +714,36 @@ function extractOffersFromImmersive(j) {
 
     if (!link || isGoogleHostedUrl(link)) continue;
 
+    const domain = pickDomain(link);
+    if (!domain) continue;
+    if (isBlacklistedDomain(domain)) continue;
+
+    const provider = findProvider(domain, merchant);
+    if (STRICT_OFFER_ALLOWLIST && !provider) continue;
+
     out.push({
       merchant,
       merchantKey: normalizeMerchant(merchant) || pickDomain(link),
       url: link,
       price: price ?? null,
       delivery,
-      domain: pickDomain(link),
-      rank: merchantRank(link || merchant),
+      domain,
+      rank: provider ? provider.score : merchantRank(domain, merchant),
     });
   }
 
   out.sort((a, b) => {
+    const ar = a.rank || 0;
+    const br = b.rank || 0;
+    if (ar !== br) return br - ar;
+
     const ap = a.price != null ? a.price : Number.POSITIVE_INFINITY;
     const bp = b.price != null ? b.price : Number.POSITIVE_INFINITY;
     if (ap !== bp) return ap - bp;
-    return (b.rank || 0) - (a.rank || 0);
+
+    const ak = a.merchantKey || "";
+    const bk = b.merchantKey || "";
+    return ak.localeCompare(bk);
   });
 
   return out;
@@ -678,22 +841,36 @@ function extractOffersFromGoogleProduct(gp) {
 
     if (!link || isGoogleHostedUrl(link)) continue;
 
+    const domain = pickDomain(link);
+    if (!domain) continue;
+    if (isBlacklistedDomain(domain)) continue;
+
+    const provider = findProvider(domain, merchant);
+    if (STRICT_OFFER_ALLOWLIST && !provider) continue;
+
     out.push({
       merchant,
       merchantKey: normalizeMerchant(merchant) || pickDomain(link),
       url: link,
       price: price ?? null,
       delivery,
-      domain: pickDomain(link),
-      rank: merchantRank(link || merchant),
+      domain,
+      rank: provider ? provider.score : merchantRank(domain, merchant),
     });
   }
 
   out.sort((a, b) => {
+    const ar = a.rank || 0;
+    const br = b.rank || 0;
+    if (ar !== br) return br - ar;
+
     const ap = a.price != null ? a.price : Number.POSITIVE_INFINITY;
     const bp = b.price != null ? b.price : Number.POSITIVE_INFINITY;
     if (ap !== bp) return ap - bp;
-    return (b.rank || 0) - (a.rank || 0);
+
+    const ak = a.merchantKey || "";
+    const bk = b.merchantKey || "";
+    return ak.localeCompare(bk);
   });
 
   return out;
@@ -898,7 +1075,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       verifiedBarcode: true,
       verifiedBy: pickDomain(url) || "local",
       verifiedUrl: url || "",
-      offers: url ? [{ merchant: pickDomain(url) || "local", merchantKey: pickDomain(url), url, price: null, delivery: "", domain: pickDomain(url), rank: merchantRank(url) }] : [],
+      offers: url ? [{ merchant: pickDomain(url) || "local", merchantKey: pickDomain(url), url, price: null, delivery: "", domain: pickDomain(url), rank: merchantRank(pickDomain(url), pickDomain(url) || "local") }] : [],
       bestOffer: url ? { merchant: pickDomain(url) || "local", url, price: null, delivery: "" } : null,
       merchantUrl: url || "",
       confidence: "high",
