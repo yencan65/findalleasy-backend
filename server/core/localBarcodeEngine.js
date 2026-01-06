@@ -72,11 +72,64 @@ function cleanText(s, max = 220) {
   return t.length > max ? t.slice(0, max) : t;
 }
 
-function pageIncludesBarcode(html, code) {
-  if (!html || !code) return false;
-  const h = String(html);
-  // strict string match; still robust because barcode is digits
-  return h.includes(String(code));
+function pageIncludesBarcode(html, barcode) {
+  try {
+    if (!html || !barcode) return false;
+    const code = String(barcode).trim();
+    if (!code) return false;
+    const h = String(html);
+
+    // 1) En net kanıt: sayfada barkod rakamı direkt geçiyor
+    if (h.includes(code)) return true;
+
+    // 2) JSON key + barcode kombinasyonu (minify edilmiş scriptlerde sık görülür)
+    const keyRe = new RegExp(
+      String.raw`(?:gtin(?:13|14)?|ean(?:13)?|barcode|barkod|upc|product\\s*id|product_id)\\s*["'\\s:=\\-]{0,20}` + code,
+      "i"
+    );
+    if (keyRe.test(h)) return true;
+
+    // 3) JSON-LD (structured data) içinde gtin/barcode alanları
+    // Not: parse riskli -> küçük bloklarda dene
+    const $ = cheerio.load(h);
+    const scripts = $('script[type="application/ld+json"]').toArray();
+    for (const sc of scripts) {
+      const txt = $(sc).text();
+      if (!txt || txt.length > 250_000) continue;
+      try {
+        const j = JSON.parse(txt);
+        const stack = [j];
+        while (stack.length) {
+          const cur = stack.pop();
+          if (cur == null) continue;
+
+          if (typeof cur === "string") {
+            if (cur.includes(code)) return true;
+            continue;
+          }
+          if (Array.isArray(cur)) {
+            for (const v of cur) stack.push(v);
+            continue;
+          }
+          if (typeof cur === "object") {
+            for (const [k, v] of Object.entries(cur)) {
+              const kk = String(k).toLowerCase();
+              if (["gtin", "gtin13", "gtin14", "ean", "ean13", "barcode", "barkod", "upc"].includes(kk)) {
+                if (String(v || "").includes(code)) return true;
+              }
+              stack.push(v);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function extractMeta($, prop) {
@@ -181,6 +234,20 @@ function extractCandidateLinks(provider, baseUrl, html) {
   } catch {
     return [];
   }
+}
+
+function looksBlocked(html) {
+  if (!html) return true;
+  const t = String(html).toLowerCase();
+  return (
+    t.includes("captcha") ||
+    t.includes("robot") ||
+    t.includes("enable javascript") ||
+    t.includes("javascript etkinle") ||
+    t.includes("access denied") ||
+    t.includes("forbidden") ||
+    t.includes("cloudflare")
+  );
 }
 
 async function resolveOneProvider(provider, barcode, signal, opts = {}) {
