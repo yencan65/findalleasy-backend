@@ -6,6 +6,14 @@
 // ============================================================================
 
 import { serpSearch } from "../services/serpapi.js";
+import {
+  cseSearchSite,
+  resolveCseCxForGroup,
+  resolveCseKey,
+  resolveCseSitesForGroup,
+} from "./googleCseClient.js";
+import { hydrateSeedUrl } from "./seedHydrator.js";
+
 import { getCachedResult, setCachedResult } from "./cacheEngine.js";
 
 const SERPAPI_ENABLED = !!(
@@ -13,6 +21,8 @@ const SERPAPI_ENABLED = !!(
   process.env.SERPAPI_API_KEY ||
   process.env.SERP_API_KEY
 );
+
+const GOOGLE_CSE_ENABLED = (process.env.GOOGLE_CSE_FALLBACK || "1") === "1";
 
 // ============================================================================
 //  CREDIT-SAVING DISCIPLINE (SerpApi fallback)
@@ -130,6 +140,138 @@ function pick(obj, keys) {
   return undefined;
 }
 
+
+function pickLangGeo({ locale, region }) {
+  const loc = safeStr(locale).toLowerCase();
+  const reg = safeStr(region).toLowerCase();
+
+  const hl = (loc.split("-")[0] || "tr").replace(/[^a-z]/g, "") || "tr";
+  // region genelde "TR" geliyor
+  const gl = (reg || (hl === "tr" ? "tr" : "us")).replace(/[^a-z]/g, "") || "tr";
+  const cr = `country${gl.toUpperCase()}`;
+  const lr = hl ? `lang_${hl}` : "";
+  return { hl, gl, cr, lr };
+}
+
+function normalizeUrlForDedupe(u) {
+  try {
+    const url = new URL(u);
+    url.hash = "";
+    const kill = [
+      "utm_source","utm_medium","utm_campaign","utm_term","utm_content",
+      "gclid","fbclid","yclid","mc_cid","mc_eid","ref","ref_","tag"
+    ];
+    for (const k of kill) url.searchParams.delete(k);
+    return url.toString();
+  } catch {
+    return safeStr(u);
+  }
+}
+
+function hostOf(u) {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function providerKeyFromHost(host) {
+  const h = safeStr(host).toLowerCase();
+  if (h.endsWith("trendyol.com")) return "trendyol";
+  if (h.endsWith("hepsiburada.com")) return "hepsiburada";
+  if (h === "n11.com" || h.endsWith(".n11.com")) return "n11";
+  if (h.endsWith("amazon.com.tr")) return "amazon_tr";
+  if (h.endsWith("sahibinden.com")) return "sahibinden";
+  if (h.endsWith("emlakjet.com")) return "emlakjet";
+  if (h.endsWith("hepsiemlak.com")) return "hepsiemlak";
+  if (h.endsWith("hurriyetemlak.com")) return "hurriyetemlak";
+  if (h.endsWith("koctas.com.tr")) return "koctas";
+  if (h.endsWith("bauhaus.com.tr")) return "bauhaus";
+  if (h.endsWith("ikea.com.tr")) return "ikea";
+  if (h.endsWith("getyourguide.com")) return "getyourguide";
+  if (h.endsWith("viator.com")) return "viator";
+  if (h.endsWith("klook.com")) return "klook";
+  if (h.endsWith("tripadvisor.com")) return "tripadvisor";
+  const p = h.split(".").filter(Boolean);
+  return p.length >= 2 ? p[p.length - 2] : h || "seed";
+}
+
+const PROVIDER_TRUST = {
+  amazon_tr: 0.92,
+  trendyol: 0.90,
+  hepsiburada: 0.90,
+  n11: 0.85,
+  sahibinden: 0.80,
+  emlakjet: 0.78,
+  hepsiemlak: 0.78,
+  hurriyetemlak: 0.78,
+  koctas: 0.82,
+  bauhaus: 0.82,
+  ikea: 0.85,
+  getyourguide: 0.78,
+  viator: 0.78,
+  klook: 0.76,
+  tripadvisor: 0.70,
+};
+
+function trustForProviderKey(k) {
+  const key = safeStr(k).toLowerCase();
+  return PROVIDER_TRUST[key] != null ? PROVIDER_TRUST[key] : 0.45;
+}
+
+function buildS200ItemFromHydrate(h, { source } = {}) {
+  const url = normalizeUrlForDedupe(h.url);
+  const host = h.host || hostOf(url);
+  const providerKey = providerKeyFromHost(host);
+
+  const price = Number(h.price);
+  if (!Number.isFinite(price) || price <= 0) return null;
+
+  return {
+    id: `seed_${cryptoSafeHash(url)}`,
+    provider: providerKey,
+    providerKey,
+    title: safeStr(h.title) || host || "Item",
+    price,
+    finalPrice: price,
+    optimizedPrice: price,
+    currency: safeStr(h.currency) || safeStr(process.env.DEFAULT_CURRENCY || "TRY"),
+    image: safeStr(h.image) || "",
+    url,
+    originUrl: url,
+    finalUrl: url,
+    description: safeStr(h.snippet) || "",
+    commissionMeta: {
+      providerTrust: trustForProviderKey(providerKey),
+      source: source || "google_cse_seed",
+    },
+    raw: {
+      seedHydrator: true,
+      host,
+    },
+  };
+}
+
+function roundRobinBalance(sites, itemsBySite, limit) {
+  const buckets = sites.map((s) => (itemsBySite.get(s) || []).slice());
+  const out = [];
+  let guard = 0;
+  while (out.length < limit && guard < 5000) {
+    guard++;
+    let progressed = false;
+    for (let i = 0; i < buckets.length && out.length < limit; i++) {
+      const b = buckets[i];
+      if (b.length) {
+        out.push(b.shift());
+        progressed = true;
+      }
+    }
+    if (!progressed) break;
+  }
+  return out;
+}
+
 function normalizeSerpItem(it) {
   const obj = it && typeof it === "object" ? it : {};
   const title = safeStr(obj.title || obj.name || obj.product_title);
@@ -176,6 +318,140 @@ function cryptoSafeHash(s) {
     return Math.abs(h).toString(16);
   }
 }
+
+
+async function cseFallback({ q, group, region, locale, limit }) {
+  const key = resolveCseKey();
+  const cx = resolveCseCxForGroup(group);
+  const sites = resolveCseSitesForGroup(group);
+
+  if (!key || !cx || !sites.length) return null;
+
+  const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
+  const maxPerSite = Number(process.env.GOOGLE_CSE_MAX_PER_SITE || 5);
+  const perSiteNum = Math.min(10, Math.max(3, maxPerSite + 3));
+  const target = Math.max(3, Number(limit || 6));
+
+  const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${cryptoSafeHash(
+    `${normalizeQForCache(q)}|${sites.join(",")}`
+  )}:${target}`;
+  const cached = await cacheEngine.get(cacheKey);
+  if (cached?.ok && Array.isArray(cached?.items)) return cached;
+
+  const itemsBySite = new Map();
+  const seen = new Set();
+
+  // 1) site-by-site CSE query
+  for (const s of sites) {
+    const domain = safeStr(s).toLowerCase();
+    const r = await cseSearchSite({
+      key,
+      cx,
+      q,
+      site: domain,
+      hl,
+      gl,
+      cr,
+      lr,
+      num: perSiteNum,
+      start: 1,
+      safe: "off",
+      timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
+    });
+
+    const rawItems = Array.isArray(r?.items) ? r.items : [];
+    const list = [];
+
+    for (const it of rawItems) {
+      const link = safeStr(it?.link);
+      if (!link) continue;
+
+      const norm = normalizeUrlForDedupe(link);
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+
+      list.push({
+        title: safeStr(it?.title),
+        link: norm,
+        snippet: safeStr(it?.snippet),
+        displayLink: safeStr(it?.displayLink) || domain,
+        site: domain,
+      });
+
+      if (list.length >= perSiteNum) break;
+    }
+
+    itemsBySite.set(domain, list.slice(0, Math.max(1, maxPerSite)));
+  }
+
+  // 2) balance seeds
+  const balancedSeeds = roundRobinBalance(
+    sites.map((x) => safeStr(x).toLowerCase()),
+    itemsBySite,
+    Math.max(10, target * 4) // hydrate filtreleyecek
+  );
+
+  if (!balancedSeeds.length) {
+    const out = { ok: false, items: [], diag: { reason: "empty_seeds", sites, group } };
+    await cacheEngine.set(cacheKey, out, { ttlSec: Number(process.env.GOOGLE_CSE_CACHE_TTL || 60) });
+    return out;
+  }
+
+  // 3) hydrate seeds -> gerçek item (price zorunlu)
+  const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
+  const hydrated = [];
+  let idx = 0;
+  let active = 0;
+
+  await new Promise((resolve) => {
+    const kick = () => {
+      if (hydrated.length >= target) return resolve();
+      if (idx >= balancedSeeds.length && active === 0) return resolve();
+
+      while (active < concurrency && idx < balancedSeeds.length && hydrated.length < target) {
+        const seed = balancedSeeds[idx++];
+        active++;
+        (async () => {
+          const h = await hydrateSeedUrl(seed.link, {});
+          if (h?.ok && h.price != null && h.price > 0) {
+            const item = buildS200ItemFromHydrate({
+              ...h,
+              snippet: seed.snippet || h.snippet,
+              title: h.title || seed.title,
+            }, { source: "google_cse_seed" });
+            if (item) hydrated.push(item);
+          }
+        })()
+          .catch(() => {})
+          .finally(() => {
+            active--;
+            kick();
+          });
+      }
+    };
+    kick();
+  });
+
+  const out = {
+    ok: hydrated.length > 0,
+    items: hydrated,
+    diag: {
+      kind: "google_cse_seed",
+      group,
+      sites,
+      seedCount: balancedSeeds.length,
+      hydratedCount: hydrated.length,
+      hl,
+      gl,
+      cr,
+      lr,
+    },
+  };
+
+  await cacheEngine.set(cacheKey, out, { ttlSec: Number(process.env.GOOGLE_CSE_CACHE_TTL || 120) });
+  return out;
+}
+
 
 async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
   const diag = { provider: "serpapi", enabled: SERPAPI_ENABLED };
@@ -292,6 +568,44 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
       inflight.delete(cacheKey);
     } catch {}
   }
+}
+
+
+async function hydrateCseSeedsToItems(seeds, { limit } = {}) {
+  const target = Math.max(1, Number(limit || 6));
+  const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
+
+  const out = [];
+  let idx = 0;
+  let active = 0;
+
+  return await new Promise((resolve) => {
+    const kick = () => {
+      if (out.length >= target) return resolve(out);
+      if (idx >= seeds.length && active === 0) return resolve(out);
+
+      while (active < concurrency && idx < seeds.length && out.length < target) {
+        const seed = seeds[idx++];
+        active++;
+
+        (async () => {
+          const h = await hydrateSeedUrl(seed.link, {});
+          if (h?.ok && h.price != null && h.price > 0) {
+            const item = buildS200ItemFromHydrate(h, { providerKeyHint: providerKeyFromHost(hostOf(h.url)) });
+            // Özet/snippet’i CSE seed’den daha iyi ise taşı
+            if (seed?.snippet && !item.description) item.description = String(seed.snippet);
+            out.push(item);
+          }
+        })()
+          .catch(() => {})
+          .finally(() => {
+            active--;
+            kick();
+          });
+      }
+    };
+    kick();
+  });
 }
 
 export async function applyS200FallbackIfEmpty({
