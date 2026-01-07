@@ -1,6 +1,6 @@
 // server/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S22.9 HARDENED (OFFER TRUST SPLIT + UNKNOWN OUTSIDE VITRINE) (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
+//  PRODUCT INFO ENGINE — S22.11 LOCKDOWN (OFFER TRUST SPLIT + UNKNOWN OUTSIDE VITRINE) (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam/akıllı hale gelir
 //
 //  Amaç:
@@ -601,7 +601,7 @@ function offerIsTrusted(o) {
   const domain = canonicalHost(o?.domain || pickDomain(url));
   if (!domain || isBlacklistedDomain(domain)) return false;
 
-  const p = findProvider(domain, o?.merchant || "");
+  const p = findProviderByDomain(domain);
   if (!p) return false;
 
   return (p.score || 0) >= OFFER_TRUST_MIN_RANK;
@@ -667,6 +667,82 @@ function splitOffersForVitrine(offers) {
     offersOther: offersOther.slice(0, OFFERS_OTHER_LIMIT),
   };
 }
+// Normalize cached product objects before sending to the UI.
+// Goal: keep "vitrine" clean (trusted-only), even if Mongo has legacy records.
+function normalizeProductForVitrine(p) {
+  if (!p || typeof p !== "object") return p;
+
+  // Only enforce strict vitrine rules for barcode products.
+  const provider = String(p.provider || "");
+  const qrCode = String(p.qrCode || "");
+  const isBarcode = provider === "barcode" || /^\d{8,18}$/.test(qrCode);
+
+  // If this isn't a barcode flow, don't break expected deep-link behavior (e.g. direct URL scans).
+  if (!isBarcode) {
+    return {
+      ...p,
+      offersTrusted: Array.isArray(p.offersTrusted) ? p.offersTrusted : [],
+      offersOther: Array.isArray(p.offersOther) ? p.offersOther : [],
+      offers: Array.isArray(p.offers) ? p.offers : [],
+      merchantUrl: String(p.merchantUrl || ""),
+      bestOffer: p.bestOffer || null,
+    };
+  }
+
+  const offersAll = Array.isArray(p.offersAll) ? p.offersAll : Array.isArray(p.offers) ? p.offers : [];
+
+  // Sanitize legacy offers: canonicalize domain, recompute rank from domain, kill junk links.
+  const cleanedAll = [];
+  for (const o of offersAll) {
+    const url0 = safeStr(o?.url || o?.link || "", 2000);
+    const url = normalizeOutboundUrl(url0);
+    if (!url) continue;
+    if (isGoogleHostedUrl(url)) continue;
+
+    const domain = canonicalHost(o?.domain || pickDomain(url));
+    if (!domain) continue;
+    if (isBlacklistedDomain(domain)) continue;
+
+    const providerObj = findProviderByDomain(domain);
+    const merchantLabel = providerObj ? (providerObj.names?.[0] || domain) : safeStr(o?.merchant || domain, 120) || domain;
+
+    cleanedAll.push({
+      merchant: merchantLabel,
+      merchantKey: domain,
+      url,
+      price: parsePriceAny(o?.price) ?? null,
+      delivery: safeStr(o?.delivery || "", 160),
+      domain,
+      rank: providerObj ? providerObj.score : merchantRank(domain),
+    });
+  }
+
+  const { offersTrusted, offersOther } = splitOffersForVitrine(cleanedAll);
+
+  const trusted = offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT);
+  const other = offersOther.slice(0, OFFERS_OTHER_LIMIT);
+
+  const best = pickBestOffer(trusted);
+  const merchantUrl = best?.url || "";
+
+  return {
+    ...p,
+    offersAll: cleanedAll,
+    offersTrusted: trusted,
+    offersOther: other,
+    offers: trusted, // legacy: vitrine uses trusted only
+    bestOffer: best
+      ? {
+          merchant: best.merchant,
+          url: best.url,
+          price: best.price ?? null,
+          delivery: best.delivery || "",
+        }
+      : null,
+    merchantUrl,
+  };
+}
+
 
 // ======================================================================
 // Evidence collection (strong GTIN paths)
@@ -825,12 +901,12 @@ function extractOffersFromImmersive(j) {
     if (!domain) continue;
     if (isBlacklistedDomain(domain)) continue;
 
-    const provider = findProvider(domain, merchant);
+    const provider = findProviderByDomain(domain);
     if (STRICT_OFFER_ALLOWLIST && !provider) continue;
 
     out.push({
       merchant: provider ? (provider.names?.[0] || domain) : (merchant || domain),
-      merchantKey: normalizeMerchant(merchant) || domain,
+      merchantKey: domain,
       url: link,
       price: price ?? null,
       delivery,
@@ -952,12 +1028,12 @@ function extractOffersFromGoogleProduct(gp) {
     if (!domain) continue;
     if (isBlacklistedDomain(domain)) continue;
 
-    const provider = findProvider(domain, merchant);
+    const provider = findProviderByDomain(domain);
     if (STRICT_OFFER_ALLOWLIST && !provider) continue;
 
     out.push({
       merchant: provider ? (provider.names?.[0] || domain) : (merchant || domain),
-      merchantKey: normalizeMerchant(merchant) || domain,
+      merchantKey: domain,
       url: link,
       price: price ?? null,
       delivery,
@@ -1125,7 +1201,7 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
 
           offers: [],
           bestOffer: null,
-          merchantUrl: url,
+          merchantUrl: "",
           confidence: "high",
           raw: it,
         };
@@ -1178,7 +1254,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       ? [
           {
             merchant: domain0 || "local",
-            merchantKey: domain0 || "local",
+            merchantKey: domain0,
             url,
             price: null,
             delivery: "",
@@ -1598,7 +1674,7 @@ async function handleProduct(req, res) {
       : null;
 
     try {
-      res.setHeader("x-product-info-ver", "S22.9");
+      res.setHeader("x-product-info-ver", "S22.11");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -1625,10 +1701,12 @@ async function handleProduct(req, res) {
         diag?.tries?.push?.({ step: "mongo_cache_lookup" });
         const cached = await Product.findOne({ qrCode: qr }).lean();
         if (cached) {
-          const out = { ok: true, product: cached, source: "mongo-cache" };
-          if (diag) out._diag = diag;
-          return safeJson(res, out);
-        }
+    diag?.tries?.push?.({ step: "mongo_cache_hit" });
+    const normalized = normalizeProductForVitrine(cached);
+    const out = { ok: true, product: normalized, source: "mongo-cache" };
+    if (diag) out._diag = diag;
+    return safeJson(res, out);
+  }
       } catch (e) {
         diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
       }
