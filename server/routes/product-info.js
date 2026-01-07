@@ -24,6 +24,47 @@ import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
 import { getHtml } from "../core/NetClient.js";
 
 const router = express.Router();
+// ============================================================================
+// Mongo write helper — upsert (fixes duplicate qrCode create failures)
+// Also stores full offers universe in Mongo (offers / offersAll) so cache can be re-split safely.
+// ============================================================================
+async function upsertProductDoc(product, diag, step = "mongo_upsert") {
+  try {
+    if (!product || typeof product !== "object") return;
+
+    const qrCode = safeStr(product.qrCode || product.qr || "");
+    if (!qrCode) return;
+
+    const toSave = { ...product, qrCode };
+
+    // Persist full offer universe (trusted + other) into `offers` for schema-compat,
+    // and optionally into `offersAll` if schema allows it.
+    const all = [];
+    if (Array.isArray(product.offersAll)) {
+      all.push(...product.offersAll);
+    } else {
+      if (Array.isArray(product.offersTrusted)) all.push(...product.offersTrusted);
+      if (Array.isArray(product.offersOther)) all.push(...product.offersOther);
+    }
+
+    if (all.length) {
+      toSave.offers = all;          // schema-safe primary storage
+      toSave.offersAll = all;       // optional (if schema allows)
+    }
+
+    await Product.updateOne({ qrCode }, { $set: toSave }, { upsert: true });
+
+    if (diag && Array.isArray(diag.tries)) diag.tries.push({ step });
+  } catch (e) {
+    if (diag && Array.isArray(diag.tries)) {
+      diag.tries.push({
+        step: `${step}_error`,
+        error: String(e?.message || e),
+      });
+    }
+  }
+}
+
 
 // ======================================================================
 // RATE LIMIT + micro-burst
@@ -1719,9 +1760,7 @@ async function handleProduct(req, res) {
       // 2.1) OpenFoodFacts (food)
       const off = await fetchOpenFoodFacts(qr, diag);
       if (off) {
-        try {
-          await Product.create(off);
-        } catch {}
+        await upsertProductDoc(off, diag, "mongo_upsert_openfoodfacts");
         const out = { ok: true, product: off, source: "openfoodfacts" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
@@ -1730,9 +1769,7 @@ async function handleProduct(req, res) {
       // 2.2) Catalog verification (epey/cimri/akakce)
       const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
       if (catalog?.name) {
-        try {
-          await Product.create(catalog);
-        } catch {}
+        await upsertProductDoc(catalog, diag, "mongo_upsert_catalog");
         const out = { ok: true, product: catalog, source: "catalog-verified" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
@@ -1741,9 +1778,7 @@ async function handleProduct(req, res) {
       // 2.3) Local marketplaces engine (strict evidence)
       const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
       if (local?.name) {
-        try {
-          await Product.create(local);
-        } catch {}
+        await upsertProductDoc(local, diag, "mongo_upsert_local_marketplaces");
         const out = { ok: true, product: local, source: "local-marketplace-verified" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
@@ -1752,9 +1787,7 @@ async function handleProduct(req, res) {
       // 2.4) Google Shopping + immersive offers (+ google_product fallback)
       const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
       if (shopping?.name) {
-        try {
-          await Product.create(shopping);
-        } catch {}
+        await upsertProductDoc(shopping, diag, "mongo_upsert_shopping");
         const out = { ok: true, product: shopping, source: "serpapi-shopping" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
@@ -1806,9 +1839,7 @@ async function handleProduct(req, res) {
         confidence: "medium",
       };
 
-      try {
-        await Product.create(product);
-      } catch {}
+      await upsertProductDoc(product, diag, "mongo_upsert_product_generic");
 
       const out = { ok: true, product, source: `${provider}-link` };
       if (diag) out._diag = diag;
@@ -1841,9 +1872,7 @@ async function handleProduct(req, res) {
       confidence: "medium",
     };
 
-    try {
-      await Product.create(product);
-    } catch {}
+    await upsertProductDoc(product, diag, "mongo_upsert_product_generic");
 
     const out = { ok: true, product, source: "raw-text" };
     if (diag) out._diag = diag;
