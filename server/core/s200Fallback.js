@@ -381,13 +381,15 @@ function buildS200ItemFromSeed(seed, { group } = {}) {
         origin: "google_cse",
         trustScore: 0.35,
       },
+      snippet: safeStr(seed?.snippet || seed?.description || ""),
+      description: safeStr(seed?.snippet || seed?.description || ""),
       price: null,
       finalPrice: null,
       optimizedPrice: null,
       currency: "",
       image: seed.image || "",
       location: seed.location || "",
-      raw: { seed },
+      raw: { seed, snippet: safeStr(seed?.snippet || seed?.description || "") },
       meta: { source: "google_cse_seed", group: group || "" },
     });
   } catch {
@@ -541,10 +543,20 @@ async function cseFallback({ q, group, region, locale, limit }) {
         }
       }
 
+      const image = safeStr(
+        it?.pagemap?.cse_image?.[0]?.src ||
+          it?.pagemap?.cse_thumbnail?.[0]?.src ||
+          it?.pagemap?.metatags?.[0]?.["og:image"] ||
+          it?.pagemap?.metatags?.[0]?.["twitter:image"] ||
+          it?.image?.thumbnailLink ||
+          ""
+      );
+
       list.push({
         title: safeStr(it?.title),
         link: norm,
         snippet: safeStr(it?.snippet),
+        image,
         displayLink: safeStr(it?.displayLink) || domain,
         site: domain,
       });
