@@ -133,6 +133,12 @@ function safeStr(v) {
   return v == null ? "" : String(v).trim();
 }
 
+// ✅ Key sızdırmasın: query param key=... maskele
+function redactGoogleKey(s) {
+  const x = safeStr(s);
+  return x.replace(/([?&]key=)[^&]+/gi, "$1***");
+}
+
 function pick(obj, keys) {
   for (const k of keys) {
     if (obj && obj[k] != null) return obj[k];
@@ -140,16 +146,18 @@ function pick(obj, keys) {
   return undefined;
 }
 
+// ✅ FIX: sağlam ve deterministik pickLangGeo (gl her koşulda tanımlı)
+function pickLangGeo({ locale, region } = {}) {
+  const loc = String(locale || "tr").trim();
+  const parts = loc.split(/[-_]/).filter(Boolean);
 
-function pickLangGeo({ locale, region }) {
-  const loc = safeStr(locale).toLowerCase();
-  const reg = safeStr(region).toLowerCase();
+  const hl = (parts[0] || "tr").toLowerCase(); // language
+  const gl = String(region || parts[1] || "TR").toUpperCase(); // country
 
-  const hl = (loc.split("-")[0] || "tr").replace(/[^a-z]/g, "") || "tr";
-  // region genelde "TR" geliyor
-  const gl = (reg || (hl === "tr" ? "tr" : "us")).replace(/[^a-z]/g, "") || "tr";
-  const cr = `country${gl.toUpperCase()}`;
-  const lr = hl ? `lang_${hl}` : "";
+  // Custom Search opsiyonları
+  const cr = `country${gl}`; // e.g. countryTR
+  const lr = `lang_${hl}`; // e.g. lang_tr
+
   return { hl, gl, cr, lr };
 }
 
@@ -158,8 +166,19 @@ function normalizeUrlForDedupe(u) {
     const url = new URL(u);
     url.hash = "";
     const kill = [
-      "utm_source","utm_medium","utm_campaign","utm_term","utm_content",
-      "gclid","fbclid","yclid","mc_cid","mc_eid","ref","ref_","tag"
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "gclid",
+      "fbclid",
+      "yclid",
+      "mc_cid",
+      "mc_eid",
+      "ref",
+      "ref_",
+      "tag",
     ];
     for (const k of kill) url.searchParams.delete(k);
     return url.toString();
@@ -176,6 +195,71 @@ function hostOf(u) {
   }
 }
 
+function extractImageFromCseItem(it) {
+  try {
+    const pm = it?.pagemap;
+    // Google CSE often provides these fields
+    const cseImg = pm?.cse_image?.[0]?.src;
+    if (cseImg) return safeStr(cseImg);
+
+    const ogImg = pm?.metatags?.[0]?.["og:image"] || pm?.metatags?.[0]?.["twitter:image"];
+    if (ogImg) return safeStr(ogImg);
+
+    const itemPropImg = pm?.product?.[0]?.image || pm?.item?.[0]?.image;
+    if (itemPropImg) return safeStr(itemPropImg);
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+
+// ✅ Seed URL filtreleme (çöp URL’leri hydratelama)
+//  - Hepsiburada: sadece -p- veya -pm- (ürün sayfası), yorumlar vb dışarıda
+//  - n11: sadece /urun/
+//  - Amazon TR: sadece /dp/ veya /gp/product/
+//  - Trendyol: mümkünse ürün sayfası (-p-)
+// Not: Filtre çok katı gelirse env ile kapatılabilir: GOOGLE_CSE_SEED_FILTER=0
+function seedUrlAllowForSite(site, url) {
+  const s = safeStr(site).toLowerCase();
+  const u = safeStr(url);
+  if (!u) return { ok: false, reason: "EMPTY_URL" };
+
+  let pathname = "";
+  let host = "";
+  try {
+    const x = new URL(u);
+    host = x.hostname.replace(/^www\./, "").toLowerCase();
+    pathname = (x.pathname || "").toLowerCase();
+  } catch {
+    pathname = u.toLowerCase();
+  }
+
+  // Normalize: some sites append "-yorumlari" etc.
+  if ((s.includes("hepsiburada.com") || host.endsWith("hepsiburada.com"))) {
+    if (pathname.includes("-yorumlari")) return { ok: false, reason: "HB_REVIEWS" };
+    if (pathname.includes("-p-") || pathname.includes("-pm-")) return { ok: true, reason: "HB_PRODUCT" };
+    return { ok: false, reason: "HB_NON_PRODUCT" };
+  }
+
+  if ((s === "n11.com" || s.endsWith(".n11.com") || host === "n11.com" || host.endsWith(".n11.com"))) {
+    if (pathname.includes("/urun/")) return { ok: true, reason: "N11_PRODUCT" };
+    return { ok: false, reason: "N11_NON_PRODUCT" };
+  }
+
+  if ((s.includes("amazon.com.tr") || host.endsWith("amazon.com.tr"))) {
+    if (pathname.includes("/dp/") || pathname.includes("/gp/product/")) return { ok: true, reason: "AMZ_PRODUCT" };
+    return { ok: false, reason: "AMZ_NON_PRODUCT" };
+  }
+
+  if ((s.includes("trendyol.com") || host.endsWith("trendyol.com"))) {
+    if (pathname.includes("-p-")) return { ok: true, reason: "TRND_PRODUCT" };
+    return { ok: false, reason: "TRND_NON_PRODUCT" };
+  }
+
+  // default: allow
+  return { ok: true, reason: "ALLOW_DEFAULT" };
+}
 function providerKeyFromHost(host) {
   const h = safeStr(host).toLowerCase();
   if (h.endsWith("trendyol.com")) return "trendyol";
@@ -199,10 +283,10 @@ function providerKeyFromHost(host) {
 
 const PROVIDER_TRUST = {
   amazon_tr: 0.92,
-  trendyol: 0.90,
-  hepsiburada: 0.90,
+  trendyol: 0.9,
+  hepsiburada: 0.9,
   n11: 0.85,
-  sahibinden: 0.80,
+  sahibinden: 0.8,
   emlakjet: 0.78,
   hepsiemlak: 0.78,
   hurriyetemlak: 0.78,
@@ -212,7 +296,7 @@ const PROVIDER_TRUST = {
   getyourguide: 0.78,
   viator: 0.78,
   klook: 0.76,
-  tripadvisor: 0.70,
+  tripadvisor: 0.7,
 };
 
 function trustForProviderKey(k) {
@@ -254,17 +338,54 @@ function buildS200ItemFromHydrate(h, { source } = {}) {
 }
 
 
+// --------------------------------------------------------------------------
+// Local fallbacks (defensive): some older branches referenced stableId / normalizeItemS200
+// without importing them. Keep them here so seed-only mode never crashes.
+// --------------------------------------------------------------------------
+function stableId(s) {
+  return `sid_${cryptoSafeHash(String(s || ""))}`;
+}
+
+function normalizeItemS200(it) {
+  // Minimal normalization to keep callers resilient.
+  // Do not over-normalize here; S200 consumers vary by route.
+  return it && typeof it === "object" ? it : {};
+}
+
 function buildS200ItemFromSeed(seed, { group } = {}) {
   try {
-    if (!seed || !seed.url) return null;
-    const u = String(seed.url);
-    const title = String(seed.title || "").trim();
-    if (!title) return null;
+    if (!seed) return null;
+
+    // Seed shape can be { link, title, snippet, site } from CSE pipeline
+    const uRaw = seed.url || seed.link || seed.href || seed.finalUrl || seed.originUrl;
+    const u = String(uRaw || "").trim();
+    if (!u) return null;
+
+    // Title is optional; if missing, derive a readable one from URL
+    let title = String(seed.title || seed.name || "").trim();
+    if (!title) {
+      try {
+        const U = new URL(u);
+        const last = (U.pathname || "")
+          .split("/")
+          .filter(Boolean)
+          .pop() || "";
+        title = decodeURIComponent(last)
+          .replace(/[-_]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      } catch {}
+    }
+    if (!title) title = "Link";
 
     let host = "";
-    try { host = new URL(u).hostname.replace(/^www\./, ""); } catch {}
+    try {
+      host = new URL(u).hostname.replace(/^www\./, "");
+    } catch {}
 
     const providerKey = `google_cse:${host || "web"}`;
+    const pKey = providerKeyFromHost(host || "");
+    const trust = trustForProviderKey(pKey);
     return normalizeItemS200({
       id: stableId(`cse_seed|${group || "unknown"}|${u}`),
       title,
@@ -272,13 +393,15 @@ function buildS200ItemFromSeed(seed, { group } = {}) {
       originUrl: u,
       finalUrl: u,
       deeplink: u,
-      provider: {
+      provider: providerKey,
+      providerMeta: {
         key: providerKey,
         name: host || "Google CSE",
         type: "cse_seed",
         origin: "google_cse",
-        trustScore: 0.35,
+        trustScore: trust,
       },
+      description: safeStr(seed.snippet || seed.description || ""),
       price: null,
       finalPrice: null,
       optimizedPrice: null,
@@ -317,9 +440,7 @@ function normalizeSerpItem(it) {
   const title = safeStr(obj.title || obj.name || obj.product_title);
   const link = safeStr(obj.link || obj.product_link || obj.url);
   const img = safeStr(obj.thumbnail || obj.image || obj.img);
-  const priceStr = safeStr(
-    pick(obj, ["price", "extracted_price", "price_value", "price_num"])
-  );
+  const priceStr = safeStr(pick(obj, ["price", "extracted_price", "price_value", "price_num"]));
 
   // extracted_price might already be a number
   const priceNum =
@@ -359,7 +480,6 @@ function cryptoSafeHash(s) {
   }
 }
 
-
 async function cseFallback({ q, group, region, locale, limit }) {
   const key = resolveCseKey();
   const cx = resolveCseCxForGroup(group);
@@ -367,19 +487,29 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   if (!key || !cx || !sites.length) return null;
 
- const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
+  const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
 
   const maxPerSite = Number(process.env.GOOGLE_CSE_MAX_PER_SITE || 5);
   const perSiteNum = Math.min(10, Math.max(3, maxPerSite + 3));
   const target = Math.max(3, Number(limit || 6));
 
-  const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${cryptoSafeHash(
+  const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
+  const seedFilterDropsBySite = Object.create(null);
+  const CSE_DIAG_VERSION = 'cse_diag_v3_3_hybridpolicy_2026-01-08';
+
+  const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${seedFilterEnabled ? 1 : 0}:${CSE_DIAG_VERSION}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
   )}:${target}`;
+
   const cached = await getCachedResult(cacheKey);
   if (cached?.ok && Array.isArray(cached?.items)) return cached;
 
   const itemsBySite = new Map();
+
+// ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
+  const siteErrors = [];
+  const siteEmpty = [];
+
   const seen = new Set();
 
   // 1) site-by-site CSE query
@@ -400,6 +530,19 @@ async function cseFallback({ q, group, region, locale, limit }) {
       timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
     });
 
+    // ✅ HATA VARSA KAYDET (yoksa empty_seeds diye maskeleniyor)
+    if (!r?.ok) {
+      siteErrors.push({
+        site: domain,
+        status: r?.status || r?.httpStatus || r?.http_status || null,
+        code: r?.code || r?.errorCode || null,
+        error: redactGoogleKey(r?.error || r?.message || "CSE_ERROR"),
+      });
+      itemsBySite.set(domain, []);
+      continue;
+    }
+
+    let droppedByFilter = 0;
     const rawItems = Array.isArray(r?.items) ? r.items : [];
     const list = [];
 
@@ -411,10 +554,19 @@ async function cseFallback({ q, group, region, locale, limit }) {
       if (!norm || seen.has(norm)) continue;
       seen.add(norm);
 
+      if (seedFilterEnabled) {
+        const allow = seedUrlAllowForSite(domain, norm);
+        if (!allow?.ok) {
+          droppedByFilter++;
+          continue;
+        }
+      }
+
       list.push({
         title: safeStr(it?.title),
         link: norm,
         snippet: safeStr(it?.snippet),
+        image: extractImageFromCseItem(it),
         displayLink: safeStr(it?.displayLink) || domain,
         site: domain,
       });
@@ -422,7 +574,23 @@ async function cseFallback({ q, group, region, locale, limit }) {
       if (list.length >= perSiteNum) break;
     }
 
+    seedFilterDropsBySite[domain] = droppedByFilter;
     itemsBySite.set(domain, list.slice(0, Math.max(1, maxPerSite)));
+
+    if (list.length === 0) {
+      const rawCount = Array.isArray(rawItems) ? rawItems.length : 0;
+      const reason =
+        rawCount === 0
+          ? "NO_RESULTS"
+          : (seedFilterEnabled && droppedByFilter > 0 ? "URL_FILTERED_ALL" : "FILTERED_OUT");
+
+      siteEmpty.push({
+        site: domain,
+        reason,
+        rawCount,
+        droppedByFilter,
+      });
+    }
   }
 
   // 2) balance seeds
@@ -432,36 +600,177 @@ async function cseFallback({ q, group, region, locale, limit }) {
     Math.max(10, target * 4) // hydrate filtreleyecek
   );
 
+  // ✅ Seed dağılımını görünür yap (hangi site kaç seed verdi?)
+  const seedBySite = Object.create(null);
+  const seedSampleBySite = Object.create(null);
+  for (const s of balancedSeeds) {
+    const sk = safeStr(s?.site) || hostOf(s?.link) || "unknown";
+    seedBySite[sk] = (seedBySite[sk] || 0) + 1;
+
+    // küçük örnek: her siteden en fazla 2 URL
+    if (!seedSampleBySite[sk]) seedSampleBySite[sk] = [];
+    if (seedSampleBySite[sk].length < 2) seedSampleBySite[sk].push(normalizeUrlForDedupe(s?.link || ""));
+  }
+
+  // ✅ empty_seeds yerine "cse_failed" + siteErrors
   if (!balancedSeeds.length) {
-    const out = { ok: false, items: [], diag: { reason: "empty_seeds", sites, group } };
+    const out = {
+      ok: false,
+      items: [],
+      diag: {
+        reason: siteErrors.length ? "cse_failed" : "empty_seeds",
+        diagVersion: CSE_DIAG_VERSION,
+        sites,
+        group,
+        seedBySite,
+        seedSampleBySite,
+        seedFilterEnabled,
+        seedFilterDropsBySite,
+        siteErrors: siteErrors.slice(0, 8),
+        siteEmpty: siteEmpty.slice(0, 8),
+      },
+    };
     await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 60));
     return out;
   }
 
-  // 3) hydrate seeds -> gerçek item (price zorunlu)
+  
+// 2.9) Hydrate policy (prod gerçekliği: bazı domainler CAPTCHA/blocked)
+const HYDRATE_POLICY = safeStr(process.env.GOOGLE_CSE_HYDRATE_POLICY || "auto").toLowerCase(); // auto | all | none
+const HYDRATE_ALLOWLIST_RAW = safeStr(process.env.GOOGLE_CSE_HYDRATE_ALLOWLIST || "trendyol.com"); // csv; "*" = all
+const HYDRATE_CAPTCHA_RAW = safeStr(process.env.GOOGLE_CSE_HYDRATE_CAPTCHA_DOMAINS || "hepsiburada.com,n11.com");
+const HYDRATE_SKIP_AMAZON = ["1", "true", "yes", "on"].includes(
+  safeStr(process.env.GOOGLE_CSE_HYDRATE_SKIP_AMAZON || "1").toLowerCase()
+);
+
+const parseDomainSet = (csv) => {
+  const set = new Set();
+  String(csv || "")
+    .split(",")
+    .map((x) => safeStr(x).toLowerCase())
+    .filter(Boolean)
+    .forEach((d) => set.add(d));
+  return set;
+};
+
+const hydrateAllowlist = parseDomainSet(HYDRATE_ALLOWLIST_RAW);
+const hydrateCaptchaDomains = parseDomainSet(HYDRATE_CAPTCHA_RAW);
+
+const hydrateSkippedByPolicyBySite = Object.create(null);
+const bumpHydSkip = (siteKey) => {
+  const k = safeStr(siteKey).toLowerCase() || "unknown";
+  hydrateSkippedByPolicyBySite[k] = (hydrateSkippedByPolicyBySite[k] || 0) + 1;
+};
+
+const shouldHydrateSite = (siteKey) => {
+  const s = safeStr(siteKey).toLowerCase();
+  if (!s) return false;
+
+  if (HYDRATE_POLICY === "none") return false;
+
+  // CAPTCHA / blocked domains: hydrate deneme -> time waste
+  if (hydrateCaptchaDomains.has(s)) return false;
+
+  // Amazon TR: çoğu zaman "blocked/no_price" (opsiyonel hydrate)
+  if (HYDRATE_SKIP_AMAZON && s === "amazon.com.tr") return false;
+
+  // allowlist: boş değilse ve "*" yoksa sadece listedekiler
+  if (hydrateAllowlist.size > 0 && !hydrateAllowlist.has("*") && !hydrateAllowlist.has(s)) return false;
+
+  return true;
+};
+
+const hydrateSeeds = balancedSeeds.filter((seed) => {
+  const siteKey = safeStr(seed?.site) || hostOf(seed?.link || seed?.url || "");
+  const ok = HYDRATE_POLICY === "all" ? true : shouldHydrateSite(siteKey);
+  if (!ok) bumpHydSkip(siteKey);
+  return ok;
+});
+
+// 3) hydrate seeds -> gerçek item (price zorunlu)
   const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
   const hydrated = [];
+
+  // ✅ Hydrate teşhisi: hangi sitede neden fiyat çıkmadı?
+  const hydrateBySite = Object.create(null);
+  const hydrateErrors = [];
+  const HYD_ERR_LIMIT = Math.max(
+    0,
+    Math.min(50, Number(process.env.GOOGLE_CSE_HYDRATE_ERR_LIMIT || 12))
+  );
+
+  function bumpHyd(site, key, inc = 1) {
+    const s = safeStr(site) || "unknown";
+    if (!hydrateBySite[s]) {
+      hydrateBySite[s] = { attempted: 0, ok: 0, priced: 0, noPrice: 0, failed: 0 };
+    }
+    hydrateBySite[s][key] = (hydrateBySite[s][key] || 0) + inc;
+  }
+
+  function pushHydErr(e) {
+    if (HYD_ERR_LIMIT <= 0) return;
+    if (hydrateErrors.length >= HYD_ERR_LIMIT) return;
+    hydrateErrors.push(e);
+  }
   let idx = 0;
   let active = 0;
 
   await new Promise((resolve) => {
     const kick = () => {
       if (hydrated.length >= target) return resolve();
-      if (idx >= balancedSeeds.length && active === 0) return resolve();
+      if (idx >= hydrateSeeds.length && active === 0) return resolve();
 
-      while (active < concurrency && idx < balancedSeeds.length && hydrated.length < target) {
-        const seed = balancedSeeds[idx++];
+      while (active < concurrency && idx < hydrateSeeds.length && hydrated.length < target) {
+        const seed = hydrateSeeds[idx++];
         active++;
         (async () => {
+          const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
+          bumpHyd(siteKey, "attempted", 1);
+
           const h = await hydrateSeedUrl(seed.link, {});
-          if (h?.ok && h.price != null && h.price > 0) {
-            const item = buildS200ItemFromHydrate({
+
+          if (!h?.ok) {
+            bumpHyd(siteKey, "failed", 1);
+            pushHydErr({
+              site: siteKey,
+              url: normalizeUrlForDedupe(seed?.link || ""),
+              reason: "HYDRATE_FAIL",
+              status: h?.status || h?.httpStatus || h?.http_status || null,
+              code: h?.code || h?.errorCode || null,
+              error: safeStr(h?.error || h?.message || ""),
+            });
+            return;
+          }
+
+          bumpHyd(siteKey, "ok", 1);
+
+          const priceNum = Number(h?.price);
+          const hasPrice = Number.isFinite(priceNum) && priceNum > 0;
+
+          if (!hasPrice) {
+            bumpHyd(siteKey, "noPrice", 1);
+            pushHydErr({
+              site: siteKey,
+              url: normalizeUrlForDedupe(seed?.link || ""),
+              reason: "NO_PRICE",
+              status: h?.status || h?.httpStatus || h?.http_status || null,
+              code: h?.code || h?.errorCode || null,
+              note: safeStr(h?.note || h?.reason || ""),
+            });
+            return;
+          }
+
+          bumpHyd(siteKey, "priced", 1);
+
+          const item = buildS200ItemFromHydrate(
+            {
               ...h,
               snippet: seed.snippet || h.snippet,
               title: h.title || seed.title,
-            }, { source: "google_cse_seed" });
-            if (item) hydrated.push(item);
-          }
+            },
+            { source: "google_cse_seed" }
+          );
+          if (item) hydrated.push(item);
         })()
           .catch(() => {})
           .finally(() => {
@@ -473,32 +782,86 @@ async function cseFallback({ q, group, region, locale, limit }) {
     kick();
   });
 
-  const seedOnlyItems = balancedSeeds
-    .map((s) => buildS200ItemFromSeed(s, { group }))
-    .filter(Boolean);
+  
+  const hydrateTotals = { attempted: 0, ok: 0, priced: 0, noPrice: 0, failed: 0 };
+  for (const k of Object.keys(hydrateBySite)) {
+    const v = hydrateBySite[k] || {};
+    hydrateTotals.attempted += Number(v.attempted || 0);
+    hydrateTotals.ok += Number(v.ok || 0);
+    hydrateTotals.priced += Number(v.priced || 0);
+    hydrateTotals.noPrice += Number(v.noPrice || 0);
+    hydrateTotals.failed += Number(v.failed || 0);
+  }
 
-  const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
 
-  const out = {
+const seedOnlyItems = balancedSeeds
+  .map((s) => buildS200ItemFromSeed(s, { group }))
+  .filter(Boolean);
+
+// Hybrid: priced (hydrated) + unpriced (seed-only). Dedup by normalized URL.
+const finalItems = [];
+const seenFinal = new Set();
+
+const pushFinal = (it) => {
+  if (!it) return;
+  const u = normalizeUrlForDedupe(
+    it.url || it.finalUrl || it.originUrl || it.deeplink || ""
+  );
+  if (!u) return;
+  if (seenFinal.has(u)) return;
+  seenFinal.add(u);
+  finalItems.push(it);
+};
+
+
+// priced first
+hydrated.forEach(pushFinal);
+
+// then seed-only (diversity)
+if (finalItems.length < target) {
+  seedOnlyItems.forEach(pushFinal);
+}
+
+if (finalItems.length > target) finalItems.length = target;
+const out = {
     ok: finalItems.length > 0,
     items: finalItems,
     diag: {
-      kind: hydrated.length > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only",
+      kind: hydrated.length > 0 ? (finalItems.length > hydrated.length ? "google_cse_hybrid" : "google_cse_seed_hydrate") : "google_cse_seed_only",
+      diagVersion: CSE_DIAG_VERSION,
       group,
       sites,
       seedCount: balancedSeeds.length,
+      hydratePolicy: HYDRATE_POLICY,
+      hydrateAllowlist: HYDRATE_ALLOWLIST_RAW,
+      hydrateCaptchaDomains: HYDRATE_CAPTCHA_RAW,
+      hydrateSkipAmazon: HYDRATE_SKIP_AMAZON,
+      hydrateCandidates: hydrateSeeds.length,
+      hydrateSkippedByPolicyBySite,
+      seedBySite,
+      seedSampleBySite,
+      seedFilterEnabled,
+      seedFilterDropsBySite,
+      hydrateBySite,
+      hydrateTotals,
+      hydrateErrorsSample: hydrateErrors,
       hydratedCount: hydrated.length,
       finalCount: finalItems.length,
       hl,
       gl,
       cr,
       lr,
+      timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
+      siteErrors: siteErrors.slice(0, 8),
+      siteEmpty: siteEmpty.slice(0, 8),
+      siteErrorCount: siteErrors.length,
+      siteEmptyCount: siteEmpty.length,
     },
   };
+
   await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 120));
   return out;
 }
-
 
 async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
   const diag = { provider: "serpapi", enabled: SERPAPI_ENABLED };
@@ -524,10 +887,16 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
   try {
     const mem = _getFbCache();
     const hit = mem.get(cacheKey);
-    if (hit && (Date.now() - (hit.ts || 0)) <= FB_CACHE_TTL_MS) {
+    if (hit && Date.now() - (hit.ts || 0) <= FB_CACHE_TTL_MS) {
       return {
         items: Array.isArray(hit.items) ? hit.items : [],
-        diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "L1", count: (hit.items || []).length },
+        diag: {
+          ...diag,
+          ms: Date.now() - t0,
+          cached: true,
+          cache: "L1",
+          count: (hit.items || []).length,
+        },
       };
     }
   } catch {}
@@ -566,8 +935,11 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     const inflight = _getFbInflight();
     const job = (async () => {
       const r = await serpSearch({ q: q0, engine: "google_shopping", gl: gl0, hl: hl0 });
-      const arr =
-        Array.isArray(r?.shopping_results) ? r.shopping_results : Array.isArray(r?.results) ? r.results : [];
+      const arr = Array.isArray(r?.shopping_results)
+        ? r.shopping_results
+        : Array.isArray(r?.results)
+          ? r.results
+          : [];
 
       const itemsAll = arr.map(normalizeSerpItem).filter((x) => x?.title && x?.url);
       const items = itemsAll.slice(0, Math.max(1, Math.min(50, Number(limit) || 8)));
@@ -596,8 +968,7 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
       inflight.delete(cacheKey);
     } catch {}
 
-    const arr =
-      Array.isArray(out?.items) ? out.items : [];
+    const arr = Array.isArray(out?.items) ? out.items : [];
 
     return {
       items: arr,
@@ -616,7 +987,6 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     } catch {}
   }
 }
-
 
 async function hydrateCseSeedsToItems(seeds, { limit } = {}) {
   const target = Math.max(1, Number(limit || 6));
@@ -679,9 +1049,9 @@ export async function applyS200FallbackIfEmpty({
     return base;
   }
 
-  // Only for product group
-  const g = safeStr(group || base?.group || base?.category).toLowerCase();
-  if (g !== "product") return base;
+  // Group-aware: we support all verticals via Google CSE.
+  // (SerpApi google_shopping only makes sense for product.)
+  const g = safeStr(group || base?.group || base?.category || "product").toLowerCase();
 
   // Optional: caller can explicitly skip fallback (telemetry, smoke-tests, etc.)
   // This must NEVER break existing callers: flag is opt-in only.
@@ -694,7 +1064,7 @@ export async function applyS200FallbackIfEmpty({
     } catch {}
 
     try {
-      const b = req?.method === "POST" ? (req?.body || {}) : {};
+      const b = req?.method === "POST" ? req?.body || {} : {};
       if (b?.skipFallback === true || b?.telemetryOnly === true) return true;
       const s = String(b?.skipFallback || b?.telemetryOnly || "").trim().toLowerCase();
       if (s === "1" || s === "true" || s === "yes") return true;
@@ -737,37 +1107,57 @@ export async function applyS200FallbackIfEmpty({
     return base;
   }
 
-  // Try serpapi
-  const fb = await serpFallback({
-    q: safeStr(q || base?.q || base?.query),
-    gl: safeStr(region || "TR").toLowerCase(),
-    hl: safeStr(locale || "tr").toLowerCase(),
-    limit,
-  });
+  const qSafe = safeStr(q || base?.q || base?.query);
+  const q0 = qSafe;
+  const loc0 = safeStr(locale || base?._meta?.locale || base?.locale || "tr");
+  const reg0 = safeStr(region || base?._meta?.region || base?.region || "TR");
 
-  const fbItems = Array.isArray(fb?.items) ? fb.items : [];
-  // If serpapi yielded nothing and Google CSE fallback is enabled, try CSE seed+hydrate pipeline
-  let attemptedStrategies = ["serpapi_google_shopping"];
-  let finalItems = fbItems;
-  let strategyUsed = fbItems.length > 0 ? "serpapi_google_shopping" : "none";
-  const diagCombined = exposeDiag ? { serpapi: fb.diag } : undefined;
+  // Strategy order (prod reality):
+  // 1) Google CSE (all verticals)
+  // 2) SerpApi (only product) as a last-resort priced provider
+  let attemptedStrategies = [];
+  let finalItems = [];
+  let strategyUsed = "none";
+  const diagCombined = exposeDiag ? {} : undefined;
 
-  if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
+  // (1) Google CSE first
+  if (GOOGLE_CSE_ENABLED) {
+    attemptedStrategies.push("google_cse_seeds");
     try {
-      const cfb = await cseFallback({ q, group, gl, hl, limit });
+      const cfb = await cseFallback({ q: q0, group: g, region: reg0, locale: loc0, limit });
       const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
-      attemptedStrategies.push("google_cse_seeds");
       if (diagCombined) diagCombined.google_cse = cfb?.diag;
       if (cItems.length > 0) {
         finalItems = cItems;
         strategyUsed = "google_cse_seeds";
       }
     } catch (e) {
-      attemptedStrategies.push("google_cse_seeds");
-      if (diagCombined) diagCombined.google_cse = { provider: "google_cse", enabled: GOOGLE_CSE_ENABLED, error: String(e?.message || e) };
+      if (diagCombined) {
+        diagCombined.google_cse = {
+          provider: "google_cse",
+          enabled: GOOGLE_CSE_ENABLED,
+          error: String(e?.message || e),
+        };
+      }
     }
   }
 
+  // (2) SerpApi for product only (priced fallback)
+  if (finalItems.length === 0 && g === "product") {
+    attemptedStrategies.push("serpapi_google_shopping");
+    const fb = await serpFallback({
+      q: q0,
+      gl: safeStr(reg0 || "TR").toLowerCase(),
+      hl: safeStr(loc0 || "tr").toLowerCase(),
+      limit,
+    });
+    if (diagCombined) diagCombined.serpapi = fb?.diag;
+    const fbItems = Array.isArray(fb?.items) ? fb.items : [];
+    if (fbItems.length > 0) {
+      finalItems = fbItems;
+      strategyUsed = "serpapi_google_shopping";
+    }
+  }
 
   // Merge into response (never crash)
   const next = { ...base };
@@ -793,7 +1183,7 @@ export async function applyS200FallbackIfEmpty({
     cseEnabled: GOOGLE_CSE_ENABLED,
     count: finalItems.length,
     diag: diagCombined,
-  };;
+  };
 
   // Strip _raw if diag not exposed
   if (!exposeDiag) {
