@@ -195,6 +195,53 @@ function hostOf(u) {
   }
 }
 
+
+// ✅ Seed URL filtreleme (çöp URL’leri hydratelama)
+//  - Hepsiburada: sadece -p- veya -pm- (ürün sayfası), yorumlar vb dışarıda
+//  - n11: sadece /urun/
+//  - Amazon TR: sadece /dp/ veya /gp/product/
+//  - Trendyol: mümkünse ürün sayfası (-p-)
+// Not: Filtre çok katı gelirse env ile kapatılabilir: GOOGLE_CSE_SEED_FILTER=0
+function seedUrlAllowForSite(site, url) {
+  const s = safeStr(site).toLowerCase();
+  const u = safeStr(url);
+  if (!u) return { ok: false, reason: "EMPTY_URL" };
+
+  let pathname = "";
+  let host = "";
+  try {
+    const x = new URL(u);
+    host = x.hostname.replace(/^www\./, "").toLowerCase();
+    pathname = (x.pathname || "").toLowerCase();
+  } catch {
+    pathname = u.toLowerCase();
+  }
+
+  // Normalize: some sites append "-yorumlari" etc.
+  if ((s.includes("hepsiburada.com") || host.endsWith("hepsiburada.com"))) {
+    if (pathname.includes("-yorumlari")) return { ok: false, reason: "HB_REVIEWS" };
+    if (pathname.includes("-p-") || pathname.includes("-pm-")) return { ok: true, reason: "HB_PRODUCT" };
+    return { ok: false, reason: "HB_NON_PRODUCT" };
+  }
+
+  if ((s === "n11.com" || s.endsWith(".n11.com") || host === "n11.com" || host.endsWith(".n11.com"))) {
+    if (pathname.includes("/urun/")) return { ok: true, reason: "N11_PRODUCT" };
+    return { ok: false, reason: "N11_NON_PRODUCT" };
+  }
+
+  if ((s.includes("amazon.com.tr") || host.endsWith("amazon.com.tr"))) {
+    if (pathname.includes("/dp/") || pathname.includes("/gp/product/")) return { ok: true, reason: "AMZ_PRODUCT" };
+    return { ok: false, reason: "AMZ_NON_PRODUCT" };
+  }
+
+  if ((s.includes("trendyol.com") || host.endsWith("trendyol.com"))) {
+    if (pathname.includes("-p-")) return { ok: true, reason: "TRND_PRODUCT" };
+    return { ok: false, reason: "TRND_NON_PRODUCT" };
+  }
+
+  // default: allow
+  return { ok: true, reason: "ALLOW_DEFAULT" };
+}
 function providerKeyFromHost(host) {
   const h = safeStr(host).toLowerCase();
   if (h.endsWith("trendyol.com")) return "trendyol";
@@ -414,6 +461,9 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   const itemsBySite = new Map();
 
+  const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
+  const seedFilterDropsBySite = Object.create(null);
+
   // ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
   const siteErrors = [];
   const siteEmpty = [];
@@ -450,6 +500,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
       continue;
     }
 
+    let droppedByFilter = 0;
     const rawItems = Array.isArray(r?.items) ? r.items : [];
     const list = [];
 
@@ -460,6 +511,14 @@ async function cseFallback({ q, group, region, locale, limit }) {
       const norm = normalizeUrlForDedupe(link);
       if (!norm || seen.has(norm)) continue;
       seen.add(norm);
+
+      if (seedFilterEnabled) {
+        const allow = seedUrlAllowForSite(domain, norm);
+        if (!allow?.ok) {
+          droppedByFilter++;
+          continue;
+        }
+      }
 
       list.push({
         title: safeStr(it?.title),
@@ -472,13 +531,21 @@ async function cseFallback({ q, group, region, locale, limit }) {
       if (list.length >= perSiteNum) break;
     }
 
+    seedFilterDropsBySite[domain] = droppedByFilter;
     itemsBySite.set(domain, list.slice(0, Math.max(1, maxPerSite)));
 
     if (list.length === 0) {
+      const rawCount = Array.isArray(rawItems) ? rawItems.length : 0;
+      const reason =
+        rawCount === 0
+          ? "NO_RESULTS"
+          : (seedFilterEnabled && droppedByFilter > 0 ? "URL_FILTERED_ALL" : "FILTERED_OUT");
+
       siteEmpty.push({
         site: domain,
-        reason: (Array.isArray(rawItems) && rawItems.length === 0) ? "NO_RESULTS" : "FILTERED_OUT",
-        rawCount: Array.isArray(rawItems) ? rawItems.length : 0,
+        reason,
+        rawCount,
+        droppedByFilter,
       });
     }
   }
@@ -513,6 +580,8 @@ async function cseFallback({ q, group, region, locale, limit }) {
         group,
         seedBySite,
         seedSampleBySite,
+        seedFilterEnabled,
+        seedFilterDropsBySite,
         siteErrors: siteErrors.slice(0, 8),
         siteEmpty: siteEmpty.slice(0, 8),
       },
@@ -641,6 +710,8 @@ const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group 
       seedCount: balancedSeeds.length,
       seedBySite,
       seedSampleBySite,
+      seedFilterEnabled,
+      seedFilterDropsBySite,
       hydrateBySite,
       hydrateTotals,
       hydrateErrorsSample: hydrateErrors,
