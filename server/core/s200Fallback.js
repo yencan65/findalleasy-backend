@@ -474,7 +474,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
   const seedFilterDropsBySite = Object.create(null);
-  const CSE_DIAG_VERSION = "cse_diag_v3_2_providerstring_2026-01-08";
+  const CSE_DIAG_VERSION = 'cse_diag_v3_3_hybridpolicy_2026-01-08';
 
   const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${seedFilterEnabled ? 1 : 0}:${CSE_DIAG_VERSION}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
@@ -612,7 +612,60 @@ async function cseFallback({ q, group, region, locale, limit }) {
     return out;
   }
 
-  // 3) hydrate seeds -> gerçek item (price zorunlu)
+  
+// 2.9) Hydrate policy (prod gerçekliği: bazı domainler CAPTCHA/blocked)
+const HYDRATE_POLICY = safeStr(process.env.GOOGLE_CSE_HYDRATE_POLICY || "auto").toLowerCase(); // auto | all | none
+const HYDRATE_ALLOWLIST_RAW = safeStr(process.env.GOOGLE_CSE_HYDRATE_ALLOWLIST || "trendyol.com"); // csv; "*" = all
+const HYDRATE_CAPTCHA_RAW = safeStr(process.env.GOOGLE_CSE_HYDRATE_CAPTCHA_DOMAINS || "hepsiburada.com,n11.com");
+const HYDRATE_SKIP_AMAZON = ["1", "true", "yes", "on"].includes(
+  safeStr(process.env.GOOGLE_CSE_HYDRATE_SKIP_AMAZON || "1").toLowerCase()
+);
+
+const parseDomainSet = (csv) => {
+  const set = new Set();
+  String(csv || "")
+    .split(",")
+    .map((x) => safeStr(x).toLowerCase())
+    .filter(Boolean)
+    .forEach((d) => set.add(d));
+  return set;
+};
+
+const hydrateAllowlist = parseDomainSet(HYDRATE_ALLOWLIST_RAW);
+const hydrateCaptchaDomains = parseDomainSet(HYDRATE_CAPTCHA_RAW);
+
+const hydrateSkippedByPolicyBySite = Object.create(null);
+const bumpHydSkip = (siteKey) => {
+  const k = safeStr(siteKey).toLowerCase() || "unknown";
+  hydrateSkippedByPolicyBySite[k] = (hydrateSkippedByPolicyBySite[k] || 0) + 1;
+};
+
+const shouldHydrateSite = (siteKey) => {
+  const s = safeStr(siteKey).toLowerCase();
+  if (!s) return false;
+
+  if (HYDRATE_POLICY === "none") return false;
+
+  // CAPTCHA / blocked domains: hydrate deneme -> time waste
+  if (hydrateCaptchaDomains.has(s)) return false;
+
+  // Amazon TR: çoğu zaman "blocked/no_price" (opsiyonel hydrate)
+  if (HYDRATE_SKIP_AMAZON && s === "amazon.com.tr") return false;
+
+  // allowlist: boş değilse ve "*" yoksa sadece listedekiler
+  if (hydrateAllowlist.size > 0 && !hydrateAllowlist.has("*") && !hydrateAllowlist.has(s)) return false;
+
+  return true;
+};
+
+const hydrateSeeds = balancedSeeds.filter((seed) => {
+  const siteKey = safeStr(seed?.site) || hostOf(seed?.link || seed?.url || "");
+  const ok = HYDRATE_POLICY === "all" ? true : shouldHydrateSite(siteKey);
+  if (!ok) bumpHydSkip(siteKey);
+  return ok;
+});
+
+// 3) hydrate seeds -> gerçek item (price zorunlu)
   const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
   const hydrated = [];
 
@@ -643,10 +696,10 @@ async function cseFallback({ q, group, region, locale, limit }) {
   await new Promise((resolve) => {
     const kick = () => {
       if (hydrated.length >= target) return resolve();
-      if (idx >= balancedSeeds.length && active === 0) return resolve();
+      if (idx >= hydrateSeeds.length && active === 0) return resolve();
 
-      while (active < concurrency && idx < balancedSeeds.length && hydrated.length < target) {
-        const seed = balancedSeeds[idx++];
+      while (active < concurrency && idx < hydrateSeeds.length && hydrated.length < target) {
+        const seed = hydrateSeeds[idx++];
         active++;
         (async () => {
           const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
@@ -718,19 +771,46 @@ async function cseFallback({ q, group, region, locale, limit }) {
     hydrateTotals.failed += Number(v.failed || 0);
   }
 
+
 const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
 
-  const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
+// Hybrid: priced (hydrated) + unpriced (seed-only). Dedup by normalized URL.
+const finalItems = [];
+const seen = new Set();
 
-  const out = {
+const pushFinal = (it) => {
+  if (!it) return;
+  const u = normalizeUrlForDedupe(it.url || it.finalUrl || it.originUrl || it.deeplink || "");
+  if (!u) return;
+  if (seen.has(u)) return;
+  seen.add(u);
+  finalItems.push(it);
+};
+
+// priced first
+hydrated.forEach(pushFinal);
+
+// then seed-only (diversity)
+if (finalItems.length < target) {
+  seedOnlyItems.forEach(pushFinal);
+}
+
+if (finalItems.length > target) finalItems.length = target;
+const out = {
     ok: finalItems.length > 0,
     items: finalItems,
     diag: {
-      kind: hydrated.length > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only",
+      kind: hydrated.length > 0 ? (finalItems.length > hydrated.length ? "google_cse_hybrid" : "google_cse_seed_hydrate") : "google_cse_seed_only",
       diagVersion: CSE_DIAG_VERSION,
       group,
       sites,
       seedCount: balancedSeeds.length,
+      hydratePolicy: HYDRATE_POLICY,
+      hydrateAllowlist: HYDRATE_ALLOWLIST_RAW,
+      hydrateCaptchaDomains: HYDRATE_CAPTCHA_RAW,
+      hydrateSkipAmazon: HYDRATE_SKIP_AMAZON,
+      hydrateCandidates: hydrateSeeds.length,
+      hydrateSkippedByPolicyBySite,
       seedBySite,
       seedSampleBySite,
       seedFilterEnabled,
