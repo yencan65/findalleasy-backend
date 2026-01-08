@@ -367,7 +367,8 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   if (!key || !cx || !sites.length) return null;
 
-  const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
+ const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
+
   const maxPerSite = Number(process.env.GOOGLE_CSE_MAX_PER_SITE || 5);
   const perSiteNum = Math.min(10, Math.max(3, maxPerSite + 3));
   const target = Math.max(3, Number(limit || 6));
