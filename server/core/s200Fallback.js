@@ -133,6 +133,13 @@ function safeStr(v) {
   return v == null ? "" : String(v).trim();
 }
 
+// ✅ (1) Hata görünür olsun ama key sızmasın
+function redactGoogleKey(s) {
+  const x = safeStr(s);
+  // key=... geçen yerleri maskele
+  return x.replace(/([?&]key=)[^&]+/gi, "$1***");
+}
+
 function pick(obj, keys) {
   for (const k of keys) {
     if (obj && obj[k] != null) return obj[k];
@@ -145,12 +152,12 @@ function pickLangGeo({ locale, region } = {}) {
   const loc = String(locale || "tr").trim();
   const parts = loc.split(/[-_]/).filter(Boolean);
 
-  const hl = (parts[0] || "tr").toLowerCase();                 // language
+  const hl = (parts[0] || "tr").toLowerCase(); // language
   const gl = String(region || parts[1] || "TR").toUpperCase(); // country
 
   // Custom Search opsiyonları
-  const cr = `country${gl}`;       // e.g. countryTR
-  const lr = `lang_${hl}`;         // e.g. lang_tr
+  const cr = `country${gl}`; // e.g. countryTR
+  const lr = `lang_${hl}`; // e.g. lang_tr
 
   return { hl, gl, cr, lr };
 }
@@ -160,8 +167,19 @@ function normalizeUrlForDedupe(u) {
     const url = new URL(u);
     url.hash = "";
     const kill = [
-      "utm_source","utm_medium","utm_campaign","utm_term","utm_content",
-      "gclid","fbclid","yclid","mc_cid","mc_eid","ref","ref_","tag"
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "gclid",
+      "fbclid",
+      "yclid",
+      "mc_cid",
+      "mc_eid",
+      "ref",
+      "ref_",
+      "tag",
     ];
     for (const k of kill) url.searchParams.delete(k);
     return url.toString();
@@ -201,10 +219,10 @@ function providerKeyFromHost(host) {
 
 const PROVIDER_TRUST = {
   amazon_tr: 0.92,
-  trendyol: 0.90,
-  hepsiburada: 0.90,
+  trendyol: 0.9,
+  hepsiburada: 0.9,
   n11: 0.85,
-  sahibinden: 0.80,
+  sahibinden: 0.8,
   emlakjet: 0.78,
   hepsiemlak: 0.78,
   hurriyetemlak: 0.78,
@@ -214,7 +232,7 @@ const PROVIDER_TRUST = {
   getyourguide: 0.78,
   viator: 0.78,
   klook: 0.76,
-  tripadvisor: 0.70,
+  tripadvisor: 0.7,
 };
 
 function trustForProviderKey(k) {
@@ -263,7 +281,9 @@ function buildS200ItemFromSeed(seed, { group } = {}) {
     if (!title) return null;
 
     let host = "";
-    try { host = new URL(u).hostname.replace(/^www\./, ""); } catch {}
+    try {
+      host = new URL(u).hostname.replace(/^www\./, "");
+    } catch {}
 
     const providerKey = `google_cse:${host || "web"}`;
     return normalizeItemS200({
@@ -318,9 +338,7 @@ function normalizeSerpItem(it) {
   const title = safeStr(obj.title || obj.name || obj.product_title);
   const link = safeStr(obj.link || obj.product_link || obj.url);
   const img = safeStr(obj.thumbnail || obj.image || obj.img);
-  const priceStr = safeStr(
-    pick(obj, ["price", "extracted_price", "price_value", "price_num"])
-  );
+  const priceStr = safeStr(pick(obj, ["price", "extracted_price", "price_value", "price_num"]));
 
   // extracted_price might already be a number
   const priceNum =
@@ -350,7 +368,11 @@ function cryptoSafeHash(s) {
     // lazy import to avoid bundlers
     // eslint-disable-next-line global-require
     const crypto = require("crypto");
-    return crypto.createHash("sha1").update(String(s || "")).digest("hex").slice(0, 16);
+    return crypto
+      .createHash("sha1")
+      .update(String(s || ""))
+      .digest("hex")
+      .slice(0, 16);
   } catch {
     // fallback
     const x = String(s || "");
@@ -380,6 +402,10 @@ async function cseFallback({ q, group, region, locale, limit }) {
   if (cached?.ok && Array.isArray(cached?.items)) return cached;
 
   const itemsBySite = new Map();
+
+  // ✅ (2) Site bazlı hataları topla (yoksa "empty_seeds" diye maskeleniyor)
+  const siteErrors = [];
+
   const seen = new Set();
 
   // 1) site-by-site CSE query
@@ -399,6 +425,16 @@ async function cseFallback({ q, group, region, locale, limit }) {
       safe: "off",
       timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
     });
+
+    // 👇 HATA VARSA KAYDET (yoksa empty_seeds diye maskeleniyor)
+    if (!r?.ok) {
+      siteErrors.push({
+        site: domain,
+        error: redactGoogleKey(r?.error || "CSE_ERROR"),
+      });
+      itemsBySite.set(domain, []);
+      continue;
+    }
 
     const rawItems = Array.isArray(r?.items) ? r.items : [];
     const list = [];
@@ -432,8 +468,18 @@ async function cseFallback({ q, group, region, locale, limit }) {
     Math.max(10, target * 4) // hydrate filtreleyecek
   );
 
+  // ✅ (3) empty_seeds yerine gerçek hata görünür olsun
   if (!balancedSeeds.length) {
-    const out = { ok: false, items: [], diag: { reason: "empty_seeds", sites, group } };
+    const out = {
+      ok: false,
+      items: [],
+      diag: {
+        reason: siteErrors.length ? "cse_failed" : "empty_seeds",
+        sites,
+        group,
+        siteErrors: siteErrors.slice(0, 8),
+      },
+    };
     await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 60));
     return out;
   }
@@ -526,7 +572,7 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
   try {
     const mem = _getFbCache();
     const hit = mem.get(cacheKey);
-    if (hit && (Date.now() - (hit.ts || 0)) <= FB_CACHE_TTL_MS) {
+    if (hit && Date.now() - (hit.ts || 0) <= FB_CACHE_TTL_MS) {
       return {
         items: Array.isArray(hit.items) ? hit.items : [],
         diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "L1", count: (hit.items || []).length },
@@ -568,8 +614,11 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     const inflight = _getFbInflight();
     const job = (async () => {
       const r = await serpSearch({ q: q0, engine: "google_shopping", gl: gl0, hl: hl0 });
-      const arr =
-        Array.isArray(r?.shopping_results) ? r.shopping_results : Array.isArray(r?.results) ? r.results : [];
+      const arr = Array.isArray(r?.shopping_results)
+        ? r.shopping_results
+        : Array.isArray(r?.results)
+          ? r.results
+          : [];
 
       const itemsAll = arr.map(normalizeSerpItem).filter((x) => x?.title && x?.url);
       const items = itemsAll.slice(0, Math.max(1, Math.min(50, Number(limit) || 8)));
@@ -757,11 +806,15 @@ export async function applyS200FallbackIfEmpty({
 
   if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
     try {
-      // ✅ FIX: gl/hl diye hayalet değişken yok. region/locale ile çağır.
-      const cfb = await cseFallback({ q: qSafe, group: g, region, locale, limit });
+      // ✅ FIX: gl/hl diye hayalet değişken yok. locale/region ile çağır.
+      const loc0 = safeStr(locale || base?.locale || "tr");
+      const reg0 = safeStr(region || base?.region || "TR");
+      const cfb = await cseFallback({ q: qSafe, group: g, locale: loc0, region: reg0, limit });
+
       const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
       attemptedStrategies.push("google_cse_seeds");
       if (diagCombined) diagCombined.google_cse = cfb?.diag;
+
       if (cItems.length > 0) {
         finalItems = cItems;
         strategyUsed = "google_cse_seeds";
