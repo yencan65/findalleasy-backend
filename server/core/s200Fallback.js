@@ -140,16 +140,18 @@ function pick(obj, keys) {
   return undefined;
 }
 
+// ✅ FIX: sağlam ve deterministik pickLangGeo (gl her koşulda tanımlı)
+function pickLangGeo({ locale, region } = {}) {
+  const loc = String(locale || "tr").trim();
+  const parts = loc.split(/[-_]/).filter(Boolean);
 
-function pickLangGeo({ locale, region }) {
-  const loc = safeStr(locale).toLowerCase();
-  const reg = safeStr(region).toLowerCase();
+  const hl = (parts[0] || "tr").toLowerCase();                 // language
+  const gl = String(region || parts[1] || "TR").toUpperCase(); // country
 
-  const hl = (loc.split("-")[0] || "tr").replace(/[^a-z]/g, "") || "tr";
-  // region genelde "TR" geliyor
-  const gl = (reg || (hl === "tr" ? "tr" : "us")).replace(/[^a-z]/g, "") || "tr";
-  const cr = `country${gl.toUpperCase()}`;
-  const lr = hl ? `lang_${hl}` : "";
+  // Custom Search opsiyonları
+  const cr = `country${gl}`;       // e.g. countryTR
+  const lr = `lang_${hl}`;         // e.g. lang_tr
+
   return { hl, gl, cr, lr };
 }
 
@@ -252,7 +254,6 @@ function buildS200ItemFromHydrate(h, { source } = {}) {
     },
   };
 }
-
 
 function buildS200ItemFromSeed(seed, { group } = {}) {
   try {
@@ -359,7 +360,6 @@ function cryptoSafeHash(s) {
   }
 }
 
-
 async function cseFallback({ q, group, region, locale, limit }) {
   const key = resolveCseKey();
   const cx = resolveCseCxForGroup(group);
@@ -367,7 +367,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   if (!key || !cx || !sites.length) return null;
 
- const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
+  const { hl, gl, cr, lr } = pickLangGeo({ locale, region });
 
   const maxPerSite = Number(process.env.GOOGLE_CSE_MAX_PER_SITE || 5);
   const perSiteNum = Math.min(10, Math.max(3, maxPerSite + 3));
@@ -455,11 +455,14 @@ async function cseFallback({ q, group, region, locale, limit }) {
         (async () => {
           const h = await hydrateSeedUrl(seed.link, {});
           if (h?.ok && h.price != null && h.price > 0) {
-            const item = buildS200ItemFromHydrate({
-              ...h,
-              snippet: seed.snippet || h.snippet,
-              title: h.title || seed.title,
-            }, { source: "google_cse_seed" });
+            const item = buildS200ItemFromHydrate(
+              {
+                ...h,
+                snippet: seed.snippet || h.snippet,
+                title: h.title || seed.title,
+              },
+              { source: "google_cse_seed" }
+            );
             if (item) hydrated.push(item);
           }
         })()
@@ -498,7 +501,6 @@ async function cseFallback({ q, group, region, locale, limit }) {
   await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 120));
   return out;
 }
-
 
 async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
   const diag = { provider: "serpapi", enabled: SERPAPI_ENABLED };
@@ -596,8 +598,7 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
       inflight.delete(cacheKey);
     } catch {}
 
-    const arr =
-      Array.isArray(out?.items) ? out.items : [];
+    const arr = Array.isArray(out?.items) ? out.items : [];
 
     return {
       items: arr,
@@ -616,7 +617,6 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     } catch {}
   }
 }
-
 
 async function hydrateCseSeedsToItems(seeds, { limit } = {}) {
   const target = Math.max(1, Number(limit || 6));
@@ -737,15 +737,18 @@ export async function applyS200FallbackIfEmpty({
     return base;
   }
 
+  const qSafe = safeStr(q || base?.q || base?.query);
+
   // Try serpapi
   const fb = await serpFallback({
-    q: safeStr(q || base?.q || base?.query),
+    q: qSafe,
     gl: safeStr(region || "TR").toLowerCase(),
     hl: safeStr(locale || "tr").toLowerCase(),
     limit,
   });
 
   const fbItems = Array.isArray(fb?.items) ? fb.items : [];
+
   // If serpapi yielded nothing and Google CSE fallback is enabled, try CSE seed+hydrate pipeline
   let attemptedStrategies = ["serpapi_google_shopping"];
   let finalItems = fbItems;
@@ -754,7 +757,8 @@ export async function applyS200FallbackIfEmpty({
 
   if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
     try {
-      const cfb = await cseFallback({ q, group, gl, hl, limit });
+      // ✅ FIX: gl/hl diye hayalet değişken yok. region/locale ile çağır.
+      const cfb = await cseFallback({ q: qSafe, group: g, region, locale, limit });
       const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
       attemptedStrategies.push("google_cse_seeds");
       if (diagCombined) diagCombined.google_cse = cfb?.diag;
@@ -764,10 +768,15 @@ export async function applyS200FallbackIfEmpty({
       }
     } catch (e) {
       attemptedStrategies.push("google_cse_seeds");
-      if (diagCombined) diagCombined.google_cse = { provider: "google_cse", enabled: GOOGLE_CSE_ENABLED, error: String(e?.message || e) };
+      if (diagCombined) {
+        diagCombined.google_cse = {
+          provider: "google_cse",
+          enabled: GOOGLE_CSE_ENABLED,
+          error: String(e?.message || e),
+        };
+      }
     }
   }
-
 
   // Merge into response (never crash)
   const next = { ...base };
@@ -793,7 +802,7 @@ export async function applyS200FallbackIfEmpty({
     cseEnabled: GOOGLE_CSE_ENABLED,
     count: finalItems.length,
     diag: diagCombined,
-  };;
+  };
 
   // Strip _raw if diag not exposed
   if (!exposeDiag) {
