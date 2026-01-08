@@ -452,7 +452,11 @@ async function cseFallback({ q, group, region, locale, limit }) {
   const perSiteNum = Math.min(10, Math.max(3, maxPerSite + 3));
   const target = Math.max(3, Number(limit || 6));
 
-  const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${cryptoSafeHash(
+  const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
+  const seedFilterDropsBySite = Object.create(null);
+  const CSE_DIAG_VERSION = "cse_diag_v3_seedfilter_2026-01-08";
+
+  const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${seedFilterEnabled ? 1 : 0}:${CSE_DIAG_VERSION}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
   )}:${target}`;
 
@@ -461,10 +465,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   const itemsBySite = new Map();
 
-  const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
-  const seedFilterDropsBySite = Object.create(null);
-
-  // ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
+// ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
   const siteErrors = [];
   const siteEmpty = [];
 
@@ -576,6 +577,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
       items: [],
       diag: {
         reason: siteErrors.length ? "cse_failed" : "empty_seeds",
+        diagVersion: CSE_DIAG_VERSION,
         sites,
         group,
         seedBySite,
@@ -705,6 +707,7 @@ const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group 
     items: finalItems,
     diag: {
       kind: hydrated.length > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only",
+      diagVersion: CSE_DIAG_VERSION,
       group,
       sites,
       seedCount: balancedSeeds.length,
