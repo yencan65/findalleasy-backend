@@ -133,10 +133,9 @@ function safeStr(v) {
   return v == null ? "" : String(v).trim();
 }
 
-// ✅ (1) Hata görünür olsun ama key sızmasın
+// ✅ Key sızdırmasın: query param key=... maskele
 function redactGoogleKey(s) {
   const x = safeStr(s);
-  // key=... geçen yerleri maskele
   return x.replace(/([?&]key=)[^&]+/gi, "$1***");
 }
 
@@ -368,11 +367,7 @@ function cryptoSafeHash(s) {
     // lazy import to avoid bundlers
     // eslint-disable-next-line global-require
     const crypto = require("crypto");
-    return crypto
-      .createHash("sha1")
-      .update(String(s || ""))
-      .digest("hex")
-      .slice(0, 16);
+    return crypto.createHash("sha1").update(String(s || "")).digest("hex").slice(0, 16);
   } catch {
     // fallback
     const x = String(s || "");
@@ -398,12 +393,13 @@ async function cseFallback({ q, group, region, locale, limit }) {
   const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
   )}:${target}`;
+
   const cached = await getCachedResult(cacheKey);
   if (cached?.ok && Array.isArray(cached?.items)) return cached;
 
   const itemsBySite = new Map();
 
-  // ✅ (2) Site bazlı hataları topla (yoksa "empty_seeds" diye maskeleniyor)
+  // ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
   const siteErrors = [];
 
   const seen = new Set();
@@ -426,11 +422,11 @@ async function cseFallback({ q, group, region, locale, limit }) {
       timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
     });
 
-    // 👇 HATA VARSA KAYDET (yoksa empty_seeds diye maskeleniyor)
+    // ✅ HATA VARSA KAYDET (yoksa empty_seeds diye maskeleniyor)
     if (!r?.ok) {
       siteErrors.push({
         site: domain,
-        error: redactGoogleKey(r?.error || "CSE_ERROR"),
+        error: redactGoogleKey(r?.error || r?.message || "CSE_ERROR"),
       });
       itemsBySite.set(domain, []);
       continue;
@@ -468,7 +464,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
     Math.max(10, target * 4) // hydrate filtreleyecek
   );
 
-  // ✅ (3) empty_seeds yerine gerçek hata görünür olsun
+  // ✅ empty_seeds yerine "cse_failed" + siteErrors
   if (!balancedSeeds.length) {
     const out = {
       ok: false,
@@ -522,9 +518,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
     kick();
   });
 
-  const seedOnlyItems = balancedSeeds
-    .map((s) => buildS200ItemFromSeed(s, { group }))
-    .filter(Boolean);
+  const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
 
   const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
 
@@ -544,6 +538,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
       lr,
     },
   };
+
   await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 120));
   return out;
 }
@@ -575,7 +570,13 @@ async function serpFallback({ q, gl = "tr", hl = "tr", limit = 8 }) {
     if (hit && Date.now() - (hit.ts || 0) <= FB_CACHE_TTL_MS) {
       return {
         items: Array.isArray(hit.items) ? hit.items : [],
-        diag: { ...diag, ms: Date.now() - t0, cached: true, cache: "L1", count: (hit.items || []).length },
+        diag: {
+          ...diag,
+          ms: Date.now() - t0,
+          cached: true,
+          cache: "L1",
+          count: (hit.items || []).length,
+        },
       };
     }
   } catch {}
@@ -743,7 +744,7 @@ export async function applyS200FallbackIfEmpty({
     } catch {}
 
     try {
-      const b = req?.method === "POST" ? (req?.body || {}) : {};
+      const b = req?.method === "POST" ? req?.body || {} : {};
       if (b?.skipFallback === true || b?.telemetryOnly === true) return true;
       const s = String(b?.skipFallback || b?.telemetryOnly || "").trim().toLowerCase();
       if (s === "1" || s === "true" || s === "yes") return true;
@@ -806,15 +807,11 @@ export async function applyS200FallbackIfEmpty({
 
   if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
     try {
-      // ✅ FIX: gl/hl diye hayalet değişken yok. locale/region ile çağır.
-      const loc0 = safeStr(locale || base?.locale || "tr");
-      const reg0 = safeStr(region || base?.region || "TR");
-      const cfb = await cseFallback({ q: qSafe, group: g, locale: loc0, region: reg0, limit });
-
+      // ✅ FIX: gl/hl diye hayalet değişken yok. region/locale ile çağır.
+      const cfb = await cseFallback({ q: qSafe, group: g, region, locale, limit });
       const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
       attemptedStrategies.push("google_cse_seeds");
       if (diagCombined) diagCombined.google_cse = cfb?.diag;
-
       if (cItems.length > 0) {
         finalItems = cItems;
         strategyUsed = "google_cse_seeds";
