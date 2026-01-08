@@ -490,6 +490,18 @@ async function cseFallback({ q, group, region, locale, limit }) {
     Math.max(10, target * 4) // hydrate filtreleyecek
   );
 
+  // ✅ Seed dağılımını görünür yap (hangi site kaç seed verdi?)
+  const seedBySite = Object.create(null);
+  const seedSampleBySite = Object.create(null);
+  for (const s of balancedSeeds) {
+    const sk = safeStr(s?.site) || hostOf(s?.link) || "unknown";
+    seedBySite[sk] = (seedBySite[sk] || 0) + 1;
+
+    // küçük örnek: her siteden en fazla 2 URL
+    if (!seedSampleBySite[sk]) seedSampleBySite[sk] = [];
+    if (seedSampleBySite[sk].length < 2) seedSampleBySite[sk].push(normalizeUrlForDedupe(s?.link || ""));
+  }
+
   // ✅ empty_seeds yerine "cse_failed" + siteErrors
   if (!balancedSeeds.length) {
     const out = {
@@ -499,6 +511,8 @@ async function cseFallback({ q, group, region, locale, limit }) {
         reason: siteErrors.length ? "cse_failed" : "empty_seeds",
         sites,
         group,
+        seedBySite,
+        seedSampleBySite,
         siteErrors: siteErrors.slice(0, 8),
         siteEmpty: siteEmpty.slice(0, 8),
       },
@@ -510,6 +524,28 @@ async function cseFallback({ q, group, region, locale, limit }) {
   // 3) hydrate seeds -> gerçek item (price zorunlu)
   const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
   const hydrated = [];
+
+  // ✅ Hydrate teşhisi: hangi sitede neden fiyat çıkmadı?
+  const hydrateBySite = Object.create(null);
+  const hydrateErrors = [];
+  const HYD_ERR_LIMIT = Math.max(
+    0,
+    Math.min(50, Number(process.env.GOOGLE_CSE_HYDRATE_ERR_LIMIT || 12))
+  );
+
+  function bumpHyd(site, key, inc = 1) {
+    const s = safeStr(site) || "unknown";
+    if (!hydrateBySite[s]) {
+      hydrateBySite[s] = { attempted: 0, ok: 0, priced: 0, noPrice: 0, failed: 0 };
+    }
+    hydrateBySite[s][key] = (hydrateBySite[s][key] || 0) + inc;
+  }
+
+  function pushHydErr(e) {
+    if (HYD_ERR_LIMIT <= 0) return;
+    if (hydrateErrors.length >= HYD_ERR_LIMIT) return;
+    hydrateErrors.push(e);
+  }
   let idx = 0;
   let active = 0;
 
@@ -522,18 +558,53 @@ async function cseFallback({ q, group, region, locale, limit }) {
         const seed = balancedSeeds[idx++];
         active++;
         (async () => {
+          const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
+          bumpHyd(siteKey, "attempted", 1);
+
           const h = await hydrateSeedUrl(seed.link, {});
-          if (h?.ok && h.price != null && h.price > 0) {
-            const item = buildS200ItemFromHydrate(
-              {
-                ...h,
-                snippet: seed.snippet || h.snippet,
-                title: h.title || seed.title,
-              },
-              { source: "google_cse_seed" }
-            );
-            if (item) hydrated.push(item);
+
+          if (!h?.ok) {
+            bumpHyd(siteKey, "failed", 1);
+            pushHydErr({
+              site: siteKey,
+              url: normalizeUrlForDedupe(seed?.link || ""),
+              reason: "HYDRATE_FAIL",
+              status: h?.status || h?.httpStatus || h?.http_status || null,
+              code: h?.code || h?.errorCode || null,
+              error: safeStr(h?.error || h?.message || ""),
+            });
+            return;
           }
+
+          bumpHyd(siteKey, "ok", 1);
+
+          const priceNum = Number(h?.price);
+          const hasPrice = Number.isFinite(priceNum) && priceNum > 0;
+
+          if (!hasPrice) {
+            bumpHyd(siteKey, "noPrice", 1);
+            pushHydErr({
+              site: siteKey,
+              url: normalizeUrlForDedupe(seed?.link || ""),
+              reason: "NO_PRICE",
+              status: h?.status || h?.httpStatus || h?.http_status || null,
+              code: h?.code || h?.errorCode || null,
+              note: safeStr(h?.note || h?.reason || ""),
+            });
+            return;
+          }
+
+          bumpHyd(siteKey, "priced", 1);
+
+          const item = buildS200ItemFromHydrate(
+            {
+              ...h,
+              snippet: seed.snippet || h.snippet,
+              title: h.title || seed.title,
+            },
+            { source: "google_cse_seed" }
+          );
+          if (item) hydrated.push(item);
         })()
           .catch(() => {})
           .finally(() => {
@@ -545,7 +616,18 @@ async function cseFallback({ q, group, region, locale, limit }) {
     kick();
   });
 
-  const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
+  
+  const hydrateTotals = { attempted: 0, ok: 0, priced: 0, noPrice: 0, failed: 0 };
+  for (const k of Object.keys(hydrateBySite)) {
+    const v = hydrateBySite[k] || {};
+    hydrateTotals.attempted += Number(v.attempted || 0);
+    hydrateTotals.ok += Number(v.ok || 0);
+    hydrateTotals.priced += Number(v.priced || 0);
+    hydrateTotals.noPrice += Number(v.noPrice || 0);
+    hydrateTotals.failed += Number(v.failed || 0);
+  }
+
+const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
 
   const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
 
@@ -557,6 +639,11 @@ async function cseFallback({ q, group, region, locale, limit }) {
       group,
       sites,
       seedCount: balancedSeeds.length,
+      seedBySite,
+      seedSampleBySite,
+      hydrateBySite,
+      hydrateTotals,
+      hydrateErrorsSample: hydrateErrors,
       hydratedCount: hydrated.length,
       finalCount: finalItems.length,
       hl,
