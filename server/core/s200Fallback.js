@@ -772,20 +772,25 @@ const hydrateSeeds = balancedSeeds.filter((seed) => {
   }
 
 
-const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
+const seedOnlyItems = balancedSeeds
+  .map((s) => buildS200ItemFromSeed(s, { group }))
+  .filter(Boolean);
 
 // Hybrid: priced (hydrated) + unpriced (seed-only). Dedup by normalized URL.
 const finalItems = [];
-const = new Set();
+const seenFinal = new Set();
 
 const pushFinal = (it) => {
   if (!it) return;
-  const u = normalizeUrlForDedupe(it.url || it.finalUrl || it.originUrl || it.deeplink || "");
+  const u = normalizeUrlForDedupe(
+    it.url || it.finalUrl || it.originUrl || it.deeplink || ""
+  );
   if (!u) return;
-  if (seen.has(u)) return;
-  seen.add(u);
+  if (seenFinal.has(u)) return;
+  seenFinal.add(u);
   finalItems.push(it);
 };
+
 
 // priced first
 hydrated.forEach(pushFinal);
