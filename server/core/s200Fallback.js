@@ -336,15 +336,28 @@ function normalizeItemS200(it) {
 
 function buildS200ItemFromSeed(seed, { group } = {}) {
   try {
-    if (!seed || !seed.url) return null;
-    const u = String(seed.url);
-    const title = String(seed.title || "").trim();
-    if (!title) return null;
+    if (!seed) return null;
+    const u = String(seed.url || seed.link || "");
+    if (!u) return null;
 
     let host = "";
     try {
       host = new URL(u).hostname.replace(/^www\./, "");
     } catch {}
+
+    // Title may be missing from some CSE items; never drop seed-only because of that.
+    let title = String(seed.title || "").trim();
+    if (!title) {
+      // Derive a human-ish title from the URL path
+      try {
+        const uu = new URL(u);
+        const last = (uu.pathname || "").split("/").filter(Boolean).slice(-1)[0] || "";
+        const decoded = decodeURIComponent(last).replace(/[-_]+/g, " ").trim();
+        title = decoded || (host ? `Ürün — ${host}` : "Ürün");
+      } catch {
+        title = host ? `Ürün — ${host}` : "Ürün";
+      }
+    }
 
     const providerKey = `google_cse:${host || "web"}`;
     return normalizeItemS200({
@@ -592,6 +605,46 @@ async function cseFallback({ q, group, region, locale, limit }) {
     return out;
   }
 
+  // 3) hydrate policy (CAPTCHA/blocked domain => seed-only)
+  const hydratePolicy = safeStr(process.env.GOOGLE_CSE_HYDRATE_POLICY || "auto").toLowerCase(); // auto|all|none|allowlist
+  const hydrateAllowlistEnv = safeStr(process.env.GOOGLE_CSE_HYDRATE_ALLOWLIST || "trendyol.com")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  const hydrateAllowlist = new Set(hydrateAllowlistEnv.split(",").filter(Boolean));
+
+  // Domains that consistently return CAPTCHA/blocked on server-side fetch
+  const captchaDomainsEnv = safeStr(process.env.GOOGLE_CSE_HYDRATE_CAPTCHA_DOMAINS || "hepsiburada.com,n11.com")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  const captchaDomains = new Set(captchaDomainsEnv.split(",").filter(Boolean));
+
+  const skipAmazon = String(process.env.GOOGLE_CSE_HYDRATE_SKIP_AMAZON || "1").trim() !== "0";
+  if (skipAmazon) captchaDomains.add("amazon.com.tr");
+
+  const hydrateSeeds = [];
+  const seedOnlySeeds = [];
+  const hydrateSkippedBySite = Object.create(null);
+
+  for (const seed of balancedSeeds) {
+    const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
+
+    let doHydrate = true;
+    if (hydratePolicy === "none") doHydrate = false;
+    else if (hydratePolicy === "all") doHydrate = true;
+    else if (hydratePolicy === "allowlist") doHydrate = hydrateAllowlist.has(siteKey);
+    else {
+      // auto: allowlist-only + captcha domains are seed-only
+      if (captchaDomains.has(siteKey)) doHydrate = false;
+      else if (hydrateAllowlist.size > 0 && !hydrateAllowlist.has(siteKey)) doHydrate = false;
+    }
+
+    if (doHydrate) hydrateSeeds.push(seed);
+    else {
+      seedOnlySeeds.push(seed);
+      hydrateSkippedBySite[siteKey] = (hydrateSkippedBySite[siteKey] || 0) + 1;
+    }
+  }
+
   // 3) hydrate seeds -> gerçek item (price zorunlu)
   const concurrency = Math.max(1, Math.min(8, Number(process.env.SEED_HYDRATE_CONCURRENCY || 4)));
   const hydrated = [];
@@ -613,126 +666,168 @@ async function cseFallback({ q, group, region, locale, limit }) {
   }
 
   function pushHydErr(e) {
-    if (HYD_ERR_LIMIT <= 0) return;
+    if (!e) return;
     if (hydrateErrors.length >= HYD_ERR_LIMIT) return;
     hydrateErrors.push(e);
   }
+
   let idx = 0;
-  let active = 0;
+  const workers = new Array(concurrency).fill(0).map(async () => {
+    while (hydrated.length < target) {
+      const seed = hydrateSeeds[idx++];
+      if (!seed) break;
 
-  await new Promise((resolve) => {
-    const kick = () => {
-      if (hydrated.length >= target) return resolve();
-      if (idx >= balancedSeeds.length && active === 0) return resolve();
+      const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
+      bumpHyd(siteKey, "attempted", 1);
 
-      while (active < concurrency && idx < balancedSeeds.length && hydrated.length < target) {
-        const seed = balancedSeeds[idx++];
-        active++;
-        (async () => {
-          const siteKey = safeStr(seed?.site) || hostOf(seed?.link) || "unknown";
-          bumpHyd(siteKey, "attempted", 1);
+      try {
+        const h = await hydrateSeedUrl({
+          url: seed.link,
+          timeoutMs,
+          locale: hl,
+          region: gl,
+          group,
+        });
 
-          const h = await hydrateSeedUrl(seed.link, {});
-
-          if (!h?.ok) {
-            bumpHyd(siteKey, "failed", 1);
-            pushHydErr({
-              site: siteKey,
-              url: normalizeUrlForDedupe(seed?.link || ""),
-              reason: "HYDRATE_FAIL",
-              status: h?.status || h?.httpStatus || h?.http_status || null,
-              code: h?.code || h?.errorCode || null,
-              error: safeStr(h?.error || h?.message || ""),
-            });
-            return;
-          }
-
-          bumpHyd(siteKey, "ok", 1);
-
-          const priceNum = Number(h?.price);
-          const hasPrice = Number.isFinite(priceNum) && priceNum > 0;
-
-          if (!hasPrice) {
-            bumpHyd(siteKey, "noPrice", 1);
-            pushHydErr({
-              site: siteKey,
-              url: normalizeUrlForDedupe(seed?.link || ""),
-              reason: "NO_PRICE",
-              status: h?.status || h?.httpStatus || h?.http_status || null,
-              code: h?.code || h?.errorCode || null,
-              note: safeStr(h?.note || h?.reason || ""),
-            });
-            return;
-          }
-
-          bumpHyd(siteKey, "priced", 1);
-
-          const item = buildS200ItemFromHydrate(
-            {
-              ...h,
-              snippet: seed.snippet || h.snippet,
-              title: h.title || seed.title,
-            },
-            { source: "google_cse_seed" }
-          );
-          if (item) hydrated.push(item);
-        })()
-          .catch(() => {})
-          .finally(() => {
-            active--;
-            kick();
+        if (!h || !h.ok) {
+          bumpHyd(siteKey, "failed", 1);
+          pushHydErr({
+            site: siteKey,
+            url: normalizeUrlForDedupe(seed?.link || ""),
+            reason: "HYDRATE_FAIL",
+            status: h?.status || h?.httpStatus || h?.http_status || null,
+            code: h?.code || h?.errorCode || null,
+            error: safeStr(h?.error || h?.message || ""),
           });
+          continue;
+        }
+
+        bumpHyd(siteKey, "ok", 1);
+
+        const priceNum = Number(h?.price);
+        const hasPrice = Number.isFinite(priceNum) && priceNum > 0;
+
+        if (!hasPrice) {
+          bumpHyd(siteKey, "noPrice", 1);
+          pushHydErr({
+            site: siteKey,
+            url: normalizeUrlForDedupe(seed?.link || ""),
+            reason: "NO_PRICE",
+            status: h?.status || h?.httpStatus || h?.http_status || null,
+            code: h?.code || h?.errorCode || null,
+            note: safeStr(h?.note || h?.reason || ""),
+          });
+          continue;
+        }
+
+        bumpHyd(siteKey, "priced", 1);
+
+        const item = buildS200ItemFromHydrate(
+          {
+            ...h,
+            snippet: seed.snippet || h.snippet,
+            title: h.title || seed.title || "",
+            url: h.url || seed.link,
+            site: siteKey,
+          },
+          { group }
+        );
+
+        if (item) hydrated.push(item);
+      } catch (e) {
+        bumpHyd(siteKey, "failed", 1);
+        pushHydErr({
+          site: siteKey,
+          url: normalizeUrlForDedupe(seed?.link || ""),
+          reason: "EXCEPTION",
+          error: safeStr(e?.message || e),
+        });
       }
-    };
-    kick();
+    }
   });
 
-  
-  const hydrateTotals = { attempted: 0, ok: 0, priced: 0, noPrice: 0, failed: 0 };
-  for (const k of Object.keys(hydrateBySite)) {
-    const v = hydrateBySite[k] || {};
-    hydrateTotals.attempted += Number(v.attempted || 0);
-    hydrateTotals.ok += Number(v.ok || 0);
-    hydrateTotals.priced += Number(v.priced || 0);
-    hydrateTotals.noPrice += Number(v.noPrice || 0);
-    hydrateTotals.failed += Number(v.failed || 0);
+  await Promise.all(workers);
+
+  // 4) seed-only items (CAPTCHA/blocked domains)
+  const seedOnlySource = hydrated.length > 0 ? seedOnlySeeds : balancedSeeds; // if nothing hydrated, at least show something
+  const seedOnlyItems = seedOnlySource.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
+
+  // final list: priced first, then seed-only (dedupe by url)
+  const seen = new Set();
+  function takeUrl(it) {
+    const u = safeStr(it?.finalUrl || it?.url || it?.originUrl || "");
+    return normalizeUrlForDedupe(u);
+  }
+  const finalItems = [];
+  for (const it of hydrated) {
+    const k = takeUrl(it);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    finalItems.push(it);
+    if (finalItems.length >= target) break;
+  }
+  for (const it of seedOnlyItems) {
+    const k = takeUrl(it);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    finalItems.push(it);
+    if (finalItems.length >= target) break;
   }
 
-const seedOnlyItems = balancedSeeds.map((s) => buildS200ItemFromSeed(s, { group })).filter(Boolean);
+  const pricedCount = hydrated.length;
+  const seedOnlyCount = Math.max(0, finalItems.length - pricedCount);
+  const kind =
+    pricedCount > 0 && seedOnlyCount > 0
+      ? "google_cse_hybrid"
+      : (pricedCount > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only");
 
-  const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
+  const hydrateTotals = {
+    attempted: hydrateSeeds.length,
+    ok: hydrated.length,
+    priced: hydrated.length,
+    noPrice: hydrateErrors.filter((x) => x?.reason === "NO_PRICE").length,
+    failed: hydrateErrors.filter((x) => x?.reason !== "NO_PRICE").length,
+  };
 
   const out = {
     ok: finalItems.length > 0,
     items: finalItems,
     diag: {
-      kind: hydrated.length > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only",
+      kind,
       diagVersion: CSE_DIAG_VERSION,
       group,
       sites,
       seedCount: balancedSeeds.length,
-      seedBySite,
-      seedSampleBySite,
-      seedFilterEnabled,
-      seedFilterDropsBySite,
-      hydrateBySite,
-      hydrateTotals,
-      hydrateErrorsSample: hydrateErrors,
       hydratedCount: hydrated.length,
       finalCount: finalItems.length,
       hl,
       gl,
       cr,
       lr,
-      timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
+      timeoutMs,
+
+      seedBySite,
+      seedSampleBySite,
+      seedFilterEnabled,
+      seedFilterDropsBySite,
+
+      // hydrate policy stats
+      hydratePolicy,
+      hydrateAllowlist: Array.from(hydrateAllowlist),
+      captchaDomains: Array.from(captchaDomains),
+      hydrateSeedCount: hydrateSeeds.length,
+      seedOnlySeedCount: seedOnlySeeds.length,
+      hydrateSkippedBySite,
+
       siteErrors: siteErrors.slice(0, 8),
       siteEmpty: siteEmpty.slice(0, 8),
-      siteErrorCount: siteErrors.length,
-      siteEmptyCount: siteEmpty.length,
+
+      hydrateTotals,
+      hydrateBySite,
+      hydrateErrorsSample: hydrateErrors.slice(0, HYD_ERR_LIMIT),
     },
   };
 
-  await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 120));
   return out;
 }
 
