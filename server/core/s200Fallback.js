@@ -272,6 +272,21 @@ function buildS200ItemFromHydrate(h, { source } = {}) {
   };
 }
 
+
+// --------------------------------------------------------------------------
+// Local fallbacks (defensive): some older branches referenced stableId / normalizeItemS200
+// without importing them. Keep them here so seed-only mode never crashes.
+// --------------------------------------------------------------------------
+function stableId(s) {
+  return `sid_${cryptoSafeHash(String(s || ""))}`;
+}
+
+function normalizeItemS200(it) {
+  // Minimal normalization to keep callers resilient.
+  // Do not over-normalize here; S200 consumers vary by route.
+  return it && typeof it === "object" ? it : {};
+}
+
 function buildS200ItemFromSeed(seed, { group } = {}) {
   try {
     if (!seed || !seed.url) return null;
@@ -401,6 +416,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   // ✅ NEW: site bazında CSE hata toplama (empty_seeds maskesini kır)
   const siteErrors = [];
+  const siteEmpty = [];
 
   const seen = new Set();
 
@@ -426,6 +442,8 @@ async function cseFallback({ q, group, region, locale, limit }) {
     if (!r?.ok) {
       siteErrors.push({
         site: domain,
+        status: r?.status || r?.httpStatus || r?.http_status || null,
+        code: r?.code || r?.errorCode || null,
         error: redactGoogleKey(r?.error || r?.message || "CSE_ERROR"),
       });
       itemsBySite.set(domain, []);
@@ -455,6 +473,14 @@ async function cseFallback({ q, group, region, locale, limit }) {
     }
 
     itemsBySite.set(domain, list.slice(0, Math.max(1, maxPerSite)));
+
+    if (list.length === 0) {
+      siteEmpty.push({
+        site: domain,
+        reason: (Array.isArray(rawItems) && rawItems.length === 0) ? "NO_RESULTS" : "FILTERED_OUT",
+        rawCount: Array.isArray(rawItems) ? rawItems.length : 0,
+      });
+    }
   }
 
   // 2) balance seeds
@@ -474,6 +500,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
         sites,
         group,
         siteErrors: siteErrors.slice(0, 8),
+        siteEmpty: siteEmpty.slice(0, 8),
       },
     };
     await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 60));
@@ -536,6 +563,11 @@ async function cseFallback({ q, group, region, locale, limit }) {
       gl,
       cr,
       lr,
+      timeoutMs: Number(process.env.GOOGLE_CSE_TIMEOUT_MS || 4500),
+      siteErrors: siteErrors.slice(0, 8),
+      siteEmpty: siteEmpty.slice(0, 8),
+      siteErrorCount: siteErrors.length,
+      siteEmptyCount: siteEmpty.length,
     },
   };
 
@@ -788,12 +820,15 @@ export async function applyS200FallbackIfEmpty({
   }
 
   const qSafe = safeStr(q || base?.q || base?.query);
+  const q0 = qSafe;
+  const loc0 = safeStr(locale || base?._meta?.locale || base?.locale || "tr");
+  const reg0 = safeStr(region || base?._meta?.region || base?.region || "TR");
 
   // Try serpapi
   const fb = await serpFallback({
-    q: qSafe,
-    gl: safeStr(region || "TR").toLowerCase(),
-    hl: safeStr(locale || "tr").toLowerCase(),
+    q: q0,
+    gl: safeStr(reg0 || "TR").toLowerCase(),
+    hl: safeStr(loc0 || "tr").toLowerCase(),
     limit,
   });
 
@@ -808,7 +843,7 @@ export async function applyS200FallbackIfEmpty({
   if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
     try {
       // ✅ FIX: gl/hl diye hayalet değişken yok. region/locale ile çağır.
-      const cfb = await cseFallback({ q: qSafe, group: g, region, locale, limit });
+      const cfb = await cseFallback({ q: q0, group: g, region: reg0, locale: loc0, limit });
       const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
       attemptedStrategies.push("google_cse_seeds");
       if (diagCombined) diagCombined.google_cse = cfb?.diag;
