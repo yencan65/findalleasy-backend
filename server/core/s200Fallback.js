@@ -253,6 +253,46 @@ function buildS200ItemFromHydrate(h, { source } = {}) {
   };
 }
 
+
+function buildS200ItemFromSeed(seed, { group } = {}) {
+  try {
+    if (!seed || !seed.url) return null;
+    const u = String(seed.url);
+    const title = String(seed.title || "").trim();
+    if (!title) return null;
+
+    let host = "";
+    try { host = new URL(u).hostname.replace(/^www\./, ""); } catch {}
+
+    const providerKey = `google_cse:${host || "web"}`;
+    return normalizeItemS200({
+      id: stableId(`cse_seed|${group || "unknown"}|${u}`),
+      title,
+      url: u,
+      originUrl: u,
+      finalUrl: u,
+      deeplink: u,
+      provider: {
+        key: providerKey,
+        name: host || "Google CSE",
+        type: "cse_seed",
+        origin: "google_cse",
+        trustScore: 0.35,
+      },
+      price: null,
+      finalPrice: null,
+      optimizedPrice: null,
+      currency: "",
+      image: seed.image || "",
+      location: seed.location || "",
+      raw: { seed },
+      meta: { source: "google_cse_seed", group: group || "" },
+    });
+  } catch {
+    return null;
+  }
+}
+
 function roundRobinBalance(sites, itemsBySite, limit) {
   const buckets = sites.map((s) => (itemsBySite.get(s) || []).slice());
   const out = [];
@@ -335,7 +375,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
   const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
   )}:${target}`;
-  const cached = await cacheEngine.get(cacheKey);
+  const cached = await getCachedResult(cacheKey);
   if (cached?.ok && Array.isArray(cached?.items)) return cached;
 
   const itemsBySite = new Map();
@@ -393,7 +433,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   if (!balancedSeeds.length) {
     const out = { ok: false, items: [], diag: { reason: "empty_seeds", sites, group } };
-    await cacheEngine.set(cacheKey, out, { ttlSec: Number(process.env.GOOGLE_CSE_CACHE_TTL || 60) });
+    await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 60));
     return out;
   }
 
@@ -432,23 +472,29 @@ async function cseFallback({ q, group, region, locale, limit }) {
     kick();
   });
 
+  const seedOnlyItems = balancedSeeds
+    .map((s) => buildS200ItemFromSeed(s, { group }))
+    .filter(Boolean);
+
+  const finalItems = hydrated.length > 0 ? hydrated : seedOnlyItems;
+
   const out = {
-    ok: hydrated.length > 0,
-    items: hydrated,
+    ok: finalItems.length > 0,
+    items: finalItems,
     diag: {
-      kind: "google_cse_seed",
+      kind: hydrated.length > 0 ? "google_cse_seed_hydrate" : "google_cse_seed_only",
       group,
       sites,
       seedCount: balancedSeeds.length,
       hydratedCount: hydrated.length,
+      finalCount: finalItems.length,
       hl,
       gl,
       cr,
       lr,
     },
   };
-
-  await cacheEngine.set(cacheKey, out, { ttlSec: Number(process.env.GOOGLE_CSE_CACHE_TTL || 120) });
+  await setCachedResult(cacheKey, out, Number(process.env.GOOGLE_CSE_CACHE_TTL || 120));
   return out;
 }
 
@@ -699,13 +745,35 @@ export async function applyS200FallbackIfEmpty({
   });
 
   const fbItems = Array.isArray(fb?.items) ? fb.items : [];
+  // If serpapi yielded nothing and Google CSE fallback is enabled, try CSE seed+hydrate pipeline
+  let attemptedStrategies = ["serpapi_google_shopping"];
+  let finalItems = fbItems;
+  let strategyUsed = fbItems.length > 0 ? "serpapi_google_shopping" : "none";
+  const diagCombined = exposeDiag ? { serpapi: fb.diag } : undefined;
+
+  if (finalItems.length === 0 && GOOGLE_CSE_ENABLED) {
+    try {
+      const cfb = await cseFallback({ q, group, gl, hl, limit });
+      const cItems = Array.isArray(cfb?.items) ? cfb.items : [];
+      attemptedStrategies.push("google_cse_seeds");
+      if (diagCombined) diagCombined.google_cse = cfb?.diag;
+      if (cItems.length > 0) {
+        finalItems = cItems;
+        strategyUsed = "google_cse_seeds";
+      }
+    } catch (e) {
+      attemptedStrategies.push("google_cse_seeds");
+      if (diagCombined) diagCombined.google_cse = { provider: "google_cse", enabled: GOOGLE_CSE_ENABLED, error: String(e?.message || e) };
+    }
+  }
+
 
   // Merge into response (never crash)
   const next = { ...base };
-  next.items = fbItems;
-  next.results = fbItems;
-  next.count = fbItems.length;
-  next.total = fbItems.length;
+  next.items = finalItems;
+  next.results = finalItems;
+  next.count = finalItems.length;
+  next.total = finalItems.length;
   next.hasMore = false;
   next.nextOffset = 0;
 
@@ -713,25 +781,18 @@ export async function applyS200FallbackIfEmpty({
   next._meta.engineVariant = next._meta.engineVariant || "S200_FALLBACK";
   if (typeof next._meta.deadlineHit !== "boolean") next._meta.deadlineHit = false;
 
-  next._meta.fallback = (() => {
-    const attemptedStrategy = "serpapi_google_shopping";
-    const used = fbItems.length > 0;
-
-    // Semantics:
-    // - attempted: fallback denendi
-    // - used: fallback usable item üretti
-    // - strategy: sadece used=true ise "none" dışı
-    return {
-      attempted: true,
-      used,
-      strategy: used ? attemptedStrategy : "none",
-      attemptedStrategy,
-      reason,
-      serpapiEnabled: SERPAPI_ENABLED,
-      count: fbItems.length,
-      ...(exposeDiag ? { diag: fb.diag } : {}),
-    };
-  })();
+  next._meta.fallback = {
+    attempted: true,
+    used: finalItems.length > 0,
+    strategy: strategyUsed,
+    attemptedStrategy: attemptedStrategies[attemptedStrategies.length - 1],
+    attemptedStrategies,
+    reason,
+    serpapiEnabled: SERPAPI_ENABLED,
+    cseEnabled: GOOGLE_CSE_ENABLED,
+    count: finalItems.length,
+    diag: diagCombined,
+  };;
 
   // Strip _raw if diag not exposed
   if (!exposeDiag) {
