@@ -373,7 +373,8 @@ function buildS200ItemFromSeed(seed, { group } = {}) {
       originUrl: u,
       finalUrl: u,
       deeplink: u,
-      provider: {
+      provider: providerKey,
+      providerMeta: {
         key: providerKey,
         name: host || "Google CSE",
         type: "cse_seed",
@@ -473,7 +474,7 @@ async function cseFallback({ q, group, region, locale, limit }) {
 
   const seedFilterEnabled = String(process.env.GOOGLE_CSE_SEED_FILTER || "1") !== "0";
   const seedFilterDropsBySite = Object.create(null);
-  const CSE_DIAG_VERSION = "cse_diag_v3_1_seedfilter_seedonlyfix_2026-01-08";
+  const CSE_DIAG_VERSION = "cse_diag_v3_2_providerstring_2026-01-08";
 
   const cacheKey = `s200:cse:${safeStr(group)}:${gl}:${hl}:${seedFilterEnabled ? 1 : 0}:${CSE_DIAG_VERSION}:${cryptoSafeHash(
     `${normalizeQForCache(q)}|${sites.join(",")}`
