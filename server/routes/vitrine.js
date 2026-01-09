@@ -13,6 +13,8 @@ import jwt from "jsonwebtoken";
 
 import { getDb } from "../db.js";
 import { buildDynamicVitrin, buildDynamicVitrinSafe } from "../core/vitrinEngine.js";
+import { applyS200FallbackIfEmpty } from "../core/s200Fallback.js";
+import { scoreAndFuseS200 } from "../core/scorerFusionS200.js";
 import { getCachedResult, setCachedResult } from "../core/cacheEngine.js";
 import { detectIntent } from "../core/intentEngine.js";
 
@@ -392,6 +394,122 @@ function safeStr(v, maxLen = 256) {
     return s.length > maxLen ? s.slice(0, maxLen) : s;
   } catch {
     return "";
+  }
+}
+
+const VITRINE_ENGINE_TIMEOUT_MS = (() => {
+  const n = Number(process.env.VITRINE_ENGINE_TIMEOUT_MS || 6500);
+  return Number.isFinite(n) ? Math.max(1500, Math.min(20000, n)) : 6500;
+})();
+
+const VITRINE_FALLBACK_TIMEOUT_MS = (() => {
+  const n = Number(process.env.VITRINE_FALLBACK_TIMEOUT_MS || 8500);
+  return Number.isFinite(n) ? Math.max(1500, Math.min(25000, n)) : 8500;
+})();
+
+async function buildS200FallbackBestOnly({ req, query, region, locale, intent, preferredType }) {
+  const q = safeStr(query, 512);
+  const reg = safeStr(region || "TR");
+  const loc = safeStr(locale || "tr");
+
+  let cat = null;
+  try {
+    const t = String((intent && (intent.type || intent.category || intent.group)) || preferredType || "product");
+    cat = normText(t) || "product";
+  } catch {
+    cat = "product";
+  }
+  if (!cat || cat === "general" || cat === "mixed") cat = "product";
+
+  const base = {
+    ok: true,
+    query: q,
+    q,
+    region: reg,
+    locale: loc,
+    group: cat,
+    category: cat,
+    items: [],
+    _meta: { source: "route_s200_fallback_base", region: reg, locale: loc, group: cat },
+  };
+
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("s200 fallback timeout")), VITRINE_FALLBACK_TIMEOUT_MS)
+  );
+
+  try {
+    const out = await Promise.race([
+      applyS200FallbackIfEmpty({
+        req,
+        result: base,
+        q,
+        group: cat,
+        region: reg,
+        locale: loc,
+        limit: 20,
+        reason: "VITRINE_ENGINE_EMPTY_OR_TIMEOUT",
+      }),
+      timeout,
+    ]);
+
+    let items = Array.isArray(out?.items)
+      ? out.items
+      : Array.isArray(out?.results)
+      ? out.results
+      : [];
+
+    // deterministic ranking (trustScore / relevance / price if any)
+    try {
+      items = await scoreAndFuseS200(items, { query: q, group: cat, region: reg });
+    } catch {}
+
+    const best = items[0] || null;
+    const best_list = best ? [best] : [];
+
+    return {
+      ok: true,
+      query: q,
+      q,
+      category: cat,
+      group: cat,
+      region: reg,
+      locale: loc,
+      best,
+      best_list,
+      smart: [],
+      others: [],
+      items: best_list,
+      count: best_list.length,
+      total: best_list.length,
+      cards: { best, best_list, smart: [], others: [] },
+      _meta: {
+        ...(out?._meta || out?.meta || {}),
+        source: "route_s200_fallback",
+        fallbackUsed: true,
+        region: reg,
+        locale: loc,
+        group: cat,
+      },
+    };
+  } catch (e) {
+    return {
+      ok: true,
+      query: q,
+      q,
+      category: cat,
+      group: cat,
+      region: reg,
+      locale: loc,
+      best: null,
+      best_list: [],
+      smart: [],
+      others: [],
+      items: [],
+      count: 0,
+      total: 0,
+      cards: { best: null, best_list: [], smart: [], others: [] },
+      _meta: { source: "route_s200_fallback_fail", error: String(e?.message || e), region: reg, locale: loc, group: cat },
+    };
   }
 }
 
@@ -1116,7 +1234,7 @@ async function handleVitrinCore(req, res) {
       })();
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("vitrinEngine timeout")), 11000)
+        setTimeout(() => reject(new Error("vitrinEngine timeout")), VITRINE_ENGINE_TIMEOUT_MS)
       );
 
       engineData = await Promise.race([enginePromise, timeoutPromise]);
@@ -1156,62 +1274,80 @@ async function handleVitrinCore(req, res) {
       (Array.isArray(selected.others) && selected.others.length > 0);
 
     if (!hasAnyRealContent) {
+
+      // ✅ PRIMARY FAILED/EMPTY → S200 fallback (CSE → SerpApi)
       try {
-        const t = String((intent && (intent.type || intent.category)) || preferredType || "product");
-        let cat = normText(t) || "product";
-        if (!cat || cat === "general" || cat === "mixed") cat = "product";
-
-        const eng = await import("../core/adapterEngine.js");
-
-        let raw = null;
-        const engOpts = { limit: 24, offset: 0, region: regionSafe, locale: localeSafe, categoryHint: cat, preferredType: cat, category: cat, group: cat };
-        try {
-          raw = await eng.runAdapters(qSafe, regionSafe, engOpts);
-        } catch (_) {
-          try {
-            raw = await eng.runAdapters(qSafe, cat, engOpts);
-          } catch (_) {
-            try {
-              raw = await eng.runAdapters(qSafe, engOpts);
-            } catch (_) {}
-          }
-        }
-
-        const items = Array.isArray(raw?.items)
-          ? raw.items
-          : Array.isArray(raw?.results)
-          ? raw.results
-          : Array.isArray(raw)
-          ? raw
-          : [];
-
-        if (items.length > 0) {
-          const priceOf = (it) => {
-            const v = it?.optimizedPrice ?? it?.finalPrice ?? it?.price;
-            const n = typeof v === "number" ? v : Number(String(v ?? "").replace(",", "."));
-            return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
-          };
-
-          const sorted = items.slice().sort((a, b) => priceOf(a) - priceOf(b));
-
-          selected = {
-            ok: raw?.ok === false ? false : true,
-            query: qSafe,
-            q: qSafe,
-            category: cat,
-            region: regionSafe,
-            locale: localeSafe,
-            best: sorted[0] || null,
-            best_list: sorted.slice(0, 12),
-            _meta: {
-              ...(raw?._meta || {}),
-              source: "route_adapterEngine_fallback",
-              fallbackUsed: true,
-              reason: selected?._meta?.reason,
-            },
-          };
-        }
+        const s200 = await buildS200FallbackBestOnly({
+          req,
+          query: qSafe,
+          region: regionSafe,
+          locale: localeSafe,
+          intent,
+          preferredType,
+        });
+        if ((s200?.count || 0) > 0) selected = s200;
       } catch {}
+
+      // (Optional) legacy adapterEngine fallback — OFF by default (debug only)
+      if (String(process.env.VITRINE_ALLOW_ADAPTER_FALLBACK || "0") === "1" && ((selected?.count || 0) === 0)) {
+              try {
+                const t = String((intent && (intent.type || intent.category)) || preferredType || "product");
+                let cat = normText(t) || "product";
+                if (!cat || cat === "general" || cat === "mixed") cat = "product";
+
+                const eng = await import("../core/adapterEngine.js");
+
+                let raw = null;
+                const engOpts = { limit: 24, offset: 0, region: regionSafe, locale: localeSafe, categoryHint: cat, preferredType: cat, category: cat, group: cat };
+                try {
+                  raw = await eng.runAdapters(qSafe, regionSafe, engOpts);
+                } catch (_) {
+                  try {
+                    raw = await eng.runAdapters(qSafe, cat, engOpts);
+                  } catch (_) {
+                    try {
+                      raw = await eng.runAdapters(qSafe, engOpts);
+                    } catch (_) {}
+                  }
+                }
+
+                const items = Array.isArray(raw?.items)
+                  ? raw.items
+                  : Array.isArray(raw?.results)
+                  ? raw.results
+                  : Array.isArray(raw)
+                  ? raw
+                  : [];
+
+                if (items.length > 0) {
+                  const priceOf = (it) => {
+                    const v = it?.optimizedPrice ?? it?.finalPrice ?? it?.price;
+                    const n = typeof v === "number" ? v : Number(String(v ?? "").replace(",", "."));
+                    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+                  };
+
+                  const sorted = items.slice().sort((a, b) => priceOf(a) - priceOf(b));
+
+                  selected = {
+                    ok: raw?.ok === false ? false : true,
+                    query: qSafe,
+                    q: qSafe,
+                    category: cat,
+                    region: regionSafe,
+                    locale: localeSafe,
+                    best: sorted[0] || null,
+                    best_list: sorted.slice(0, 12),
+                    _meta: {
+                      ...(raw?._meta || {}),
+                      source: "route_adapterEngine_fallback",
+                      fallbackUsed: true,
+                      reason: selected?._meta?.reason,
+                    },
+                  };
+                }
+              } catch {}
+      }
+
 
       const out = toBestOnlyPayload(selected, qSafe);
       if ((out?.count || 0) > 0) {
