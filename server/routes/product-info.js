@@ -20,8 +20,6 @@ import fetch from "node-fetch";
 import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
-import { searchAkakceAdapter } from "../adapters/akakceAdapter.js";
-import { searchCimriAdapter } from "../adapters/cimriAdapter.js";
 import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
 import { getHtml } from "../core/NetClient.js";
 
@@ -840,24 +838,6 @@ function isStrongGtinPath(path) {
   return false;
 }
 
-
-// ----------------------------------------------------------------------
-// Paid fallback gate (default: OFF). Set one of these envs to enable:
-//   FINDALLEASY_ALLOW_PAID_FALLBACK=1  (or true/yes)
-//   ALLOW_PAID_FALLBACK=1
-//   ENABLE_PAID_FALLBACK=1
-// ----------------------------------------------------------------------
-function paidFallbackEnabled() {
-  const v = String(
-    process.env.FINDALLEASY_ALLOW_PAID_FALLBACK ||
-    process.env.FINDALLEASY_ALLOW_PAID ||
-    process.env.ALLOW_PAID_FALLBACK ||
-    process.env.ENABLE_PAID_FALLBACK ||
-    ""
-  ).trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
-}
-
 // ======================================================================
 // SerpAPI low-level JSON fetch (google_product fallback için)
 // ======================================================================
@@ -1186,7 +1166,6 @@ function isCatalogDomain(host) {
   );
 }
 
-
 async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
   if (!/^\d{8,18}$/.test(code)) return null;
@@ -1195,124 +1174,89 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
   const cached = cacheGetBarcode(cacheKey);
   if (cached) return cached;
 
-  const pack = localePack(localeShort);
-  const region = String(pack?.region || "TR").toUpperCase();
+  const { hl, gl, region } = localePack(localeShort);
 
-  diag?.tries?.push?.({ step: "catalog_price_start", barcode: code, region });
+  const queries = [
+    `site:epey.com ${code} barkod`,
+    `site:cimri.com ${code}`,
+    `site:akakce.com ${code}`,
+    `site:upcindex.com ${code}`,
+    `site:barcodelookup.com ${code}`,
+  ];
 
-  // Free sources: Akakce + Cimri (no SerpAPI here)
-  let ak = null;
-  let ci = null;
+  for (const q of queries) {
+    try {
+      diag?.tries?.push?.({ step: "catalog_search", q });
 
-  try {
-    ak = await searchAkakceAdapter(code, region);
-    diag?.tries?.push?.({ step: "catalog_price_akakce", ok: !!ak?.ok, count: ak?.count ?? (ak?.items?.length || 0) });
-  } catch (e) {
-    diag?.tries?.push?.({ step: "catalog_price_akakce_error", err: String(e?.message || e) });
+      const r = await searchWithSerpApi(q, {
+        mode: "google",
+        region,
+        hl,
+        gl,
+        num: 10,
+        timeoutMs: 12000,
+        includeRaw: true,
+        barcode: true,
+        intent: { type: "barcode" },
+      });
+
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (!items.length) {
+        diag?.tries?.push?.({ step: "catalog_empty", q });
+        continue;
+      }
+
+      for (const it of items.slice(0, 5)) {
+        const title = cleanTitle(it?.title || "");
+        const url0 = safeStr(it?.url || it?.deeplink || it?.originUrl || it?.finalUrl || "", 2000);
+        const url = normalizeOutboundUrl(url0);
+        if (!url) continue;
+
+        const host = pickDomain(url);
+        if (!isCatalogDomain(host)) continue;
+
+        const ok = await probeUrlForBarcode(url, code, diag);
+        if (!ok) continue;
+
+        const raw = it?.raw || {};
+        const desc = safeStr(raw?.snippet || raw?.description || raw?.summary || "", 260) || "";
+        const img = safeStr(it?.image || raw?.thumbnail || raw?.image || "", 2000) || "";
+
+        const product = {
+          name: title || code,
+          title: title || code,
+          description: desc,
+          image: img,
+          brand: safeStr(raw?.brand || raw?.brands || "", 120),
+          category: "product",
+          region,
+          qrCode: code,
+          provider: "barcode",
+          source: `catalog:${host || "unknown"}`,
+          verifiedBarcode: true,
+          verifiedBy: host || "catalog",
+          verifiedUrl: url,
+          offersTrusted: [],
+
+          offersOther: [],
+
+          offers: [],
+          bestOffer: null,
+          merchantUrl: "",
+          confidence: "high",
+          raw: it,
+        };
+
+        cacheSetBarcode(cacheKey, product);
+        diag?.tries?.push?.({ step: "catalog_pick", q, host, url: safeStr(url, 160) });
+        return product;
+      }
+    } catch (e) {
+      diag?.tries?.push?.({ step: "catalog_error", q, error: String(e?.message || e) });
+    }
   }
 
-  try {
-    ci = await searchCimriAdapter(code, { region, timeoutMs: 9000, barcode: true });
-    diag?.tries?.push?.({ step: "catalog_price_cimri", ok: !!ci?.ok, count: ci?.count ?? (ci?.items?.length || 0) });
-  } catch (e) {
-    diag?.tries?.push?.({ step: "catalog_price_cimri_error", err: String(e?.message || e) });
-  }
-
-  const raw = [];
-  if (ak?.ok && Array.isArray(ak.items)) raw.push(...ak.items);
-  if (ci?.ok && Array.isArray(ci.items)) raw.push(...ci.items);
-
-  const items = [];
-  const seen = new Set();
-
-  for (const it of raw) {
-    const url = normalizeOutboundUrl(it?.url || it?.deeplink || it?.originUrl || "");
-    if (!url) continue;
-    if (seen.has(url)) continue;
-    seen.add(url);
-
-    const title = cleanTitle(it?.title || it?.name || "");
-    const price =
-      parsePriceAny(it?.price) ??
-      parsePriceAny(it?.finalPrice) ??
-      parsePriceAny(it?.optimizedPrice) ??
-      null;
-
-    const domain = canonicalHost(pickDomain(url));
-    const providerHit = findProviderByDomain(domain);
-    const rank = providerHit ? Math.round((providerHit.score || 0) * 100) : 0;
-
-    // Prefer real merchant/store name if present, else provider/site
-    const merchant =
-      safeStr(it?.merchant || it?.storeName || "", 120) ||
-      safeStr(it?.provider || domain || "catalog", 120);
-
-    const image =
-      safeStr(it?.image || it?.imageUrl || it?.imageOriginal || it?.imageProxy || "", 2000) ||
-      safeStr(it?.raw?.variants?.large || it?.raw?.variants?.original || it?.raw?.variants?.sm || "", 2000) ||
-      "";
-
-    items.push({
-      title,
-      url,
-      price,
-      currency: safeStr(it?.currency || "TRY", 16) || "TRY",
-      domain,
-      merchant,
-      rank,
-      image,
-    });
-  }
-
-  if (!items.length) {
-    diag?.tries?.push?.({ step: "catalog_price_empty", barcode: code });
-    return null;
-  }
-
-  // Build offers and pick best
-  const offersAll = items
-    .map((x) => ({
-      merchant: x.merchant,
-      url: x.url,
-      price: x.price,
-      currency: x.currency,
-      domain: x.domain,
-      rank: x.rank,
-      provider: x.domain || "catalog",
-    }))
-    .filter((o) => !!o.url);
-
-  const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
-  const bestOffer = pickBestOffer([...offersTrusted, ...offersOther]);
-
-  // Choose best title/image from best offer / first item
-  const bestItem =
-    (bestOffer && items.find((x) => normalizeOutboundUrl(x.url) === normalizeOutboundUrl(bestOffer.url))) || items[0];
-
-  const name = cleanTitle(bestItem?.title || code) || code;
-
-  const product = {
-    name,
-    title: name,
-    qrCode: code,
-    provider: "barcode",
-    source: "catalog-price",
-    verifiedBarcode: true,
-    verifiedBy: "catalog-price",
-    verifiedUrl: safeStr(bestOffer?.url || bestItem?.url || "", 2000),
-    image: safeStr(bestItem?.image || "", 2000),
-
-    offersTrusted,
-    offersOther,
-    offers: offersTrusted, // legacy
-    offersAll,
-    bestOffer: bestOffer || null,
-    merchantUrl: safeStr(bestOffer?.url || bestItem?.url || "", 2000),
-    confidence: "high",
-  };
-
-  cacheSetBarcode(cacheKey, product, 5 * 60_000);
-  return product;
+  return null;
 }
 
 // ======================================================================
@@ -1571,87 +1515,6 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
   }
 }
 
-
-// ======================================================================
-// OpenFoodFacts (free) — optional enrichment for food barcodes
-//  - Never returns offers. Used only as metadata (name/image/brand).
-// ======================================================================
-async function fetchOpenFoodFacts(barcode, diag) {
-  const code = String(barcode || "").trim();
-  if (!/^\d{8,18}$/.test(code)) return null;
-
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 2500);
-
-  try {
-    // v2 API: https://world.openfoodfacts.org/api/v2/product/{barcode}.json
-    const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json`;
-    const r = await fetch(url, { signal: ctrl.signal, headers: { "accept": "application/json" } });
-    if (!r.ok) return null;
-    const j = await r.json().catch(() => null);
-    if (!j || !j.product) return null;
-
-    const p = j.product || {};
-    const title = safeStr(p.product_name || p.product_name_tr || p.generic_name || p.abbreviated_product_name || "", 240);
-    const brand = safeStr(p.brands || "", 200);
-    const image = safeStr(p.image_url || p.image_front_url || p.image_small_url || "", 2000);
-
-    if (!title && !image) return null;
-
-    diag?.tries?.push?.({ step: "openfoodfacts_ok", hasTitle: !!title, hasImage: !!image });
-
-    return {
-      name: title || code,
-      title: title || code,
-      qrCode: code,
-      provider: "barcode",
-      source: "openfoodfacts",
-      verifiedBarcode: true,
-      verifiedBy: "openfoodfacts",
-      image: image || "",
-      brand: brand || null,
-      description: safeStr(p.generic_name || p.ingredients_text || "", 2000) || "",
-      offersTrusted: [],
-      offersOther: [],
-      offers: [],
-      bestOffer: null,
-      merchantUrl: "",
-      confidence: "medium",
-    };
-  } catch (e) {
-    diag?.tries?.push?.({ step: "openfoodfacts_error", err: String(e?.message || e) });
-    return null;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-// ======================================================================
-// Merge metadata from base (e.g., OpenFoodFacts) without touching offers
-// ======================================================================
-function mergeBaseIntoProduct(target, base) {
-  if (!target || typeof target !== "object") return target;
-  if (!base || typeof base !== "object") return target;
-
-  const out = { ...target };
-
-  const baseTitle = safeStr(base.title || base.name || "", 240);
-  const baseName = safeStr(base.name || base.title || "", 240);
-
-  if (!safeStr(out.name || "", 240)) out.name = baseName || baseTitle || out.name;
-  if (!safeStr(out.title || "", 240)) out.title = baseTitle || baseName || out.title;
-
-  const baseImg = safeStr(base.image || base.imageUrl || base.img || "", 2000);
-  if (!safeStr(out.image || "", 2000) && baseImg) out.image = baseImg;
-
-  if (!safeStr(out.brand || "", 200) && base.brand) out.brand = safeStr(base.brand, 200);
-  if (!safeStr(out.description || "", 2000) && base.description) out.description = safeStr(base.description, 2000);
-
-  if (!out.qrCode && base.qrCode) out.qrCode = base.qrCode;
-
-  return out;
-}
-
 // ======================================================================
 // MAIN HANDLER
 // ======================================================================
@@ -1725,15 +1588,20 @@ async function handleProduct(req, res) {
 
     // 2) Barcode (8-18)
     if (/^\d{8,18}$/.test(qr)) {
-      // 2.1) OpenFoodFacts (food) — enrichment only (no offers)
+      // 2.1) OpenFoodFacts (food)
       const off = await fetchOpenFoodFacts(qr, diag);
+      if (off) {
+        await upsertProductDoc(off, diag, "mongo_upsert_openfoodfacts");
+        const out = { ok: true, product: off, source: "openfoodfacts" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
 
       // 2.2) Catalog verification (epey/cimri/akakce)
       const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
       if (catalog?.name) {
-        const catalogMerged = mergeBaseIntoProduct(catalog, off);
-        await upsertProductDoc(catalogMerged, diag, "mongo_upsert_catalog");
-        const out = { ok: true, product: catalogMerged, source: "catalog-verified" };
+        await upsertProductDoc(catalog, diag, "mongo_upsert_catalog");
+        const out = { ok: true, product: catalog, source: "catalog-verified" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
@@ -1741,32 +1609,25 @@ async function handleProduct(req, res) {
       // 2.3) Local marketplaces engine (strict evidence)
       const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
       if (local?.name) {
-        const localMerged = mergeBaseIntoProduct(local, off);
-        await upsertProductDoc(localMerged, diag, "mongo_upsert_local_marketplaces");
-        const out = { ok: true, product: localMerged, source: "local-marketplace-verified" };
+        await upsertProductDoc(local, diag, "mongo_upsert_local_marketplaces");
+        const out = { ok: true, product: local, source: "local-marketplace-verified" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
 
-      // 2.4) SerpAPI Shopping (PAID) — last resort
-      let shopping = null;
-      if (paidFallbackEnabled()) {
-        shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
-      } else {
-        diag?.tries?.push?.({ step: "serpapi_skipped_paid_gate" });
-      }
+      // 2.4) Google Shopping + immersive offers (+ google_product fallback)
+      const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
       if (shopping?.name) {
-        const shoppingMerged = mergeBaseIntoProduct(shopping, off);
-        await upsertProductDoc(shoppingMerged, diag, "mongo_upsert_shopping");
-        const out = { ok: true, product: shoppingMerged, source: "serpapi-shopping" };
+        await upsertProductDoc(shopping, diag, "mongo_upsert_shopping");
+        const out = { ok: true, product: shopping, source: "serpapi-shopping" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
 
       // Barcode çözülemedi: fallback dön
       const product = {
-        name: (off?.name || qr),
-        title: (off?.title || off?.name || qr),
+        name: qr,
+        title: qr,
         qrCode: qr,
         provider: "barcode",
         source: "barcode-unresolved",

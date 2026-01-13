@@ -1142,8 +1142,46 @@ export async function applyS200FallbackIfEmpty({
     }
   }
 
-  // (2) SerpApi for product only (priced fallback)
-  if (finalItems.length === 0 && g === "product") {
+  
+  // Paid fallback gate (SerpApi burns credits)
+  // - Global opt-in: PAID_PRODUCT_ADAPTERS_ENABLED=1
+  // - Per-request opt-out: skipPaid=1 (query/body) or x-fae-skip-paid: 1
+  const paidEnabled = (() => {
+    try {
+      const v = String(process.env.PAID_PRODUCT_ADAPTERS_ENABLED || "").trim().toLowerCase();
+      return v === "1" || v === "true" || v === "yes";
+    } catch {
+      return false;
+    }
+  })();
+
+  const skipPaid = (() => {
+    try {
+      const h = String(req?.headers?.["x-fae-skip-paid"] || req?.headers?.["x-skip-paid"] || "")
+        .trim()
+        .toLowerCase();
+      if (h === "1" || h === "true" || h === "yes") return true;
+    } catch {}
+
+    try {
+      const qv = String(req?.query?.skipPaid || req?.query?.skip_paid || "").trim().toLowerCase();
+      if (qv === "1" || qv === "true" || qv === "yes") return true;
+    } catch {}
+
+    try {
+      const b = req?.method === "POST" ? req?.body || {} : {};
+      if (b?.skipPaid === true || b?.skip_paid === true) return true;
+      const s = String(b?.skipPaid || b?.skip_paid || "").trim().toLowerCase();
+      if (s === "1" || s === "true" || s === "yes") return true;
+    } catch {}
+
+    return false;
+  })();
+
+  const allowPaidFallback = paidEnabled && !skipPaid;
+
+// (2) SerpApi for product only (priced fallback)
+  if (finalItems.length === 0 && g === "product" && allowPaidFallback) {
     attemptedStrategies.push("serpapi_google_shopping");
     const fb = await serpFallback({
       q: q0,

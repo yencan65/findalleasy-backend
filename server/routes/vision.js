@@ -388,25 +388,32 @@ function extractSearchQuery(text = "") {
   if (!text) return "";
   let t = String(text).toLowerCase();
 
+  // dil bağımsız temizlik + "boş konuşma" kırpma
   t = t
-    .replace(
-      /bu fotoğrafta|görünüyor|görünmektedir|olabilir|resimde|fotoğrafta/g,
-      ""
-    )
-    .replace(/looks like|maybe|probably|appears to be/g, "")
-    .replace(/bir\s+/g, "")
+    .replace(/bu fotoğrafta|görünüyor|görünmektedir|olabilir|resimde|fotoğrafta|nesne|obje/g, "")
+    .replace(/looks like|maybe|probably|appears to be|this is|it is|there is/g, "")
+    .replace(/product|item|thing|object|unknown/g, "")
+    .replace(/sanırım|muhtemelen|gibi|bir\s+/g, "")
     .replace(/çok\s+/g, "")
-    .replace(/sanırım|muhtemelen|gibi/g, "")
-    .replace(/this is|it is|there is|object/g, "")
-    .replace(/product|item|thing/g, "");
+    .trim();
 
-  t = t.replace(/[^a-zA-Z0-9ğüşöçİıĞÜŞÖÇ\s]/g, "");
-  t = t.replace(/\s\s+/g, " ").trim();
-
+  // harf/rakam boşluğu dışında her şeyi at
+  t = t.replace(/[^a-zA-Z0-9ğüşöçİıĞÜŞÖÇ\s]/g, " ");
+  t = t.replace(/\s+/g, " ").trim();
   if (!t) return "";
-  const words = t.split(" ").filter(Boolean);
-  if (words.length > 5) t = words.slice(0, 4).join(" ");
-  return t.trim();
+
+  const STOP = new Set([
+    "ve","ile","icin","için","en","cok","çok","uygun","ucuz","fiyat","kampanya","indirim",
+    "orijinal","resmi","satıcı","satici","satın","satin","al","alma","almak","bul","bulun",
+    "lütfen","lutfen","fotoğraf","fotograf","resim","urun","ürün","hizmet","service"
+  ]);
+
+  const words = t.split(" ").filter(Boolean).filter((w) => w.length > 1 && !STOP.has(w));
+  if (!words.length) return "";
+
+  // çok kısaltma yapma: model/seri bilgisi genelde 5+ kelimede çıkıyor
+  const sliced = words.slice(0, 8);
+  return sliced.join(" ").trim();
 }
 
 function detectMimeType(rawImage) {
@@ -418,6 +425,67 @@ function detectMimeType(rawImage) {
   if (s.startsWith("data:image/jpeg")) return "image/jpeg";
   return "image/jpeg";
 }
+
+const VISION_GENERIC = new Set([
+  "urun",
+  "ürün",
+  "product",
+  "item",
+  "object",
+  "thing",
+  "unknown",
+  "bilinmiyor",
+  "nesne",
+  "obje",
+]);
+
+function isGenericVisionQuery(q) {
+  try {
+    const s = String(q || "").trim();
+    if (!s) return true;
+    const lower = s.toLowerCase();
+    if (VISION_GENERIC.has(lower)) return true;
+    const words = lower.split(/\s+/).filter(Boolean);
+    if (words.length === 1 && VISION_GENERIC.has(words[0])) return true;
+    // tek kelime ve çok kısa ise riskli
+    if (words.length === 1 && words[0].length <= 3) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function buildVisionQuery(primaryText, lensOut) {
+  // 1) önce primaryText
+  let q = extractSearchQuery(primaryText || "");
+
+  // 2) Lens shopping başlıkları genelde en spesifik — oradan destekle
+  try {
+    const shop = Array.isArray(lensOut?.shopping_results) ? lensOut.shopping_results : [];
+    const vm = Array.isArray(lensOut?.visual_matches) ? lensOut.visual_matches : [];
+    const kg = lensOut?.knowledge_graph || null;
+
+    const pick = (s) => extractSearchQuery(String(s || ""));
+    const candidates = [];
+
+    if (kg?.title || kg?.name) candidates.push(pick(kg?.title || kg?.name));
+    if (shop[0]?.title || shop[0]?.product_title) candidates.push(pick(shop[0]?.title || shop[0]?.product_title));
+    if (vm[0]?.title) candidates.push(pick(vm[0]?.title));
+    if (shop[1]?.title || shop[1]?.product_title) candidates.push(pick(shop[1]?.title || shop[1]?.product_title));
+
+    // en uzun / en spesifik olanı seç
+    for (const c of candidates) {
+      if (!c) continue;
+      if (!q || c.split(/\s+/).length > q.split(/\s+/).length) q = c;
+    }
+  } catch {
+    // ignore
+  }
+
+  return String(q || "").trim();
+}
+
+
 
 /* ============================================================
    VISION HANDLER
@@ -496,7 +564,36 @@ async function handleVision(req, res) {
     const apiKey = process.env.GOOGLE_API_KEY;
     const serpKey = process.env.SERPAPI_KEY;
 
-    if (!apiKey && !serpKey) {
+    const allowSerpLens = (() => {
+      // Default: OFF (burns credits). Opt-in via env or request.
+      try {
+        const v = String(process.env.VISION_ALLOW_SERP_LENS || "").trim().toLowerCase();
+        if (v === "1" || v === "true" || v === "yes") return true;
+      } catch {}
+
+      try {
+        const h = String(req?.headers?.["x-fae-allow-serp-lens"] || "").trim().toLowerCase();
+        if (h === "1" || h === "true" || h === "yes") return true;
+      } catch {}
+
+      try {
+        const qv = String(req?.query?.allowSerpLens || req?.query?.allow_serp_lens || "")
+          .trim()
+          .toLowerCase();
+        if (qv === "1" || qv === "true" || qv === "yes") return true;
+      } catch {}
+
+      try {
+        if (body?.allowSerpLens === true || body?.allow_serp_lens === true) return true;
+        const b = String(body?.allowSerpLens || body?.allow_serp_lens || "").trim().toLowerCase();
+        if (b === "1" || b === "true" || b === "yes") return true;
+      } catch {}
+
+      return false;
+    })();
+
+
+    if (!apiKey && !(serpKey && allowSerpLens)) {
       return safeJson(
         res,
         {
@@ -583,7 +680,7 @@ async function handleVision(req, res) {
     }
 
     // 2) SerpApi google_lens fallback
-    if ((!rawText || !String(rawText).trim()) && serpKey) {
+    if ((!rawText || !String(rawText).trim()) && serpKey && allowSerpLens) {
       try {
         const buf = Buffer.from(cleanBase64, "base64");
         const id = putTempImage(buf, mimeType || "image/jpeg");
@@ -611,20 +708,39 @@ async function handleVision(req, res) {
       }
     }
 
-    const out = gemOut || lensOut;
+        const out = gemOut || lensOut;
     const text = String(rawText || "").trim();
-    let query = extractSearchQuery(text);
 
+    // ✅ Daha doğru query: Lens shopping başlıklarını da kullan
+    let query = buildVisionQuery(text, lensOut);
+
+    // Son çare: çok hafif fallback (ama "ürün" gibi saçma geneli ASLA dönme)
     if (!query && text) {
       const words = text
         .toLowerCase()
-        .replace(/[^a-zA-Z0-9ğüşöçİıĞÜŞÖÇ\s]/g, "")
+        .replace(/[^a-zA-Z0-9ğüşöçİıĞÜŞÖÇ\s]/g, " ")
         .split(/\s+/)
         .filter(Boolean);
-      if (words.length > 0) query = words.slice(0, 3).join(" ");
+      if (words.length > 0) query = words.slice(0, 6).join(" ");
     }
 
-    if (!query) query = "ürün";
+    // Eğer hala boş / generic ise: yanlış sonuç göstermek yerine NO_MATCH
+    if (!query || isGenericVisionQuery(query)) {
+      const latencyMs = Date.now() - startedAt;
+      return safeJson(res, {
+        ok: false,
+        error: "NO_MATCH",
+        query: "",
+        rawText: safeStr(text, 2000),
+        raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
+        meta: {
+          ipHash: ip ? String(ip).slice(0, 8) : null,
+          uaSnippet: ua,
+          latencyMs,
+          used: used || null,
+        },
+      }, 200);
+    }
 
     const latencyMs = Date.now() - startedAt;
 

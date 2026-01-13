@@ -9,3 +9,7 @@ pnpm-debug.log*
 dist/
 build/
 .coverage/
+.env
+*.zip
+desktop.ini
+_tmp_*
