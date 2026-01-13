@@ -799,6 +799,8 @@ export const CATEGORY_ADAPTER_MAP = {
   // ----------- TEMEL TİCARİ KATEGORİLER -----------
   product: [
     ...wrappedProductAdapters,
+    serpApiAdapterS200,
+    googleShoppingAdapterS200,
   ],
   market: wrappedMarketAdapters,
   fashion: wrappedFashionAdapters,

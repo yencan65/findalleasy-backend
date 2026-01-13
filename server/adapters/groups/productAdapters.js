@@ -799,21 +799,8 @@ export const productAdapters = [
 
   wrapS200("koctas", searchKoctasAdapter),
   wrapS200("ciceksepeti", searchCicekSepetiAdapter),
+  wrapS200("serpapi", searchSerpApiAdapter, getTimeout("serpapi")),
 ];
-
-// ============================================================================
-// PAID FALLBACK (OPT-IN)
-// - SerpApi adapter burns credits. Keep it OUT of default path.
-// - Enable ONLY if you explicitly accept paid fallback.
-//   Env: PAID_PRODUCT_ADAPTERS_ENABLED=1
-// ============================================================================
-try {
-  const paid = String(process.env.PAID_PRODUCT_ADAPTERS_ENABLED || "").trim().toLowerCase();
-  if (paid === "1" || paid === "true" || paid === "yes") {
-    productAdapters.push(wrapS200("serpapi", searchSerpApiAdapter, getTimeout("serpapi")));
-  }
-} catch {}
-
 
 // ============================================================================
 // KATEGORİ FONKSİYONU (kept)
