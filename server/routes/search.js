@@ -727,6 +727,48 @@ async function callRunAdapters(runAdapters, q, group, region, opts) {
   return await runAdapters(q);
 }
 
+
+// ---------------------------------------------------------------------------
+// 🔥 In-memory Search Response Cache (S200) — prevents re-burning credits on refresh
+// Default: 15 minutes. Override with SEARCH_CACHE_TTL_MS env.
+// ---------------------------------------------------------------------------
+const SEARCH_CACHE_TTL_MS = (() => {
+  const n = Number(process.env.SEARCH_CACHE_TTL_MS || 15 * 60 * 1000);
+  return Number.isFinite(n) && n > 0 ? n : 15 * 60 * 1000;
+})();
+
+const searchResponseCache = new Map(); // key -> { ts, data }
+
+function _mkSearchCacheKey({ q, group, region, locale, limit, offset }) {
+  const qq = String(q || "").trim().toLowerCase().slice(0, 300);
+  const gg = String(group || "").trim().toLowerCase().slice(0, 60);
+  const rr = String(region || "TR").trim().toLowerCase().slice(0, 20);
+  const ll = String(locale || "tr").trim().toLowerCase().slice(0, 15);
+  const lim = Number(limit || 20);
+  const off = Number(offset || 0);
+  return `${qq}::${gg}::${rr}::${ll}::${lim}::${off}`;
+}
+
+function _getSearchCache(key) {
+  const hit = searchResponseCache.get(key);
+  if (!hit) return null;
+  const age = Date.now() - (hit.ts || 0);
+  if (age > SEARCH_CACHE_TTL_MS) {
+    searchResponseCache.delete(key);
+    return null;
+  }
+  return { age, data: hit.data };
+}
+
+function _setSearchCache(key, data) {
+  // light pruning
+  if (searchResponseCache.size > 800) {
+    const keys = Array.from(searchResponseCache.keys());
+    for (let i = 0; i < Math.floor(keys.length / 2); i++) searchResponseCache.delete(keys[i]);
+  }
+  searchResponseCache.set(key, { ts: Date.now(), data });
+}
+
 // ---------------------------------------------------------------------------
 // Core handler
 // ---------------------------------------------------------------------------
@@ -867,6 +909,47 @@ async function handle(req, res) {
     resolvedGroup = autoMeta.resolvedGroup || DEFAULT_GROUP;
   }
   if (!resolvedGroup) resolvedGroup = DEFAULT_GROUP;
+
+  // 🔥 response cache (15 min default): prevents re-burning credits on refresh
+  const bypassCache =
+    safeStr(req.method === "POST" ? req.body?.nocache : req.query?.nocache) === "1" ||
+    safeStr(req.method === "POST" ? req.body?.force : req.query?.force) === "1" ||
+    safeStr(req.method === "POST" ? req.body?.diag : req.query?.diag) === "1";
+
+  const cacheKey = _mkSearchCacheKey({
+    q,
+    group: resolvedGroup,
+    region,
+    locale,
+    limit: reqLimit,
+    offset: reqOffset,
+  });
+
+  if (!bypassCache) {
+    const hit = _getSearchCache(cacheKey);
+    if (hit && hit.data) {
+      const cached = JSON.parse(JSON.stringify(hit.data));
+      cached.reqId = reqId;
+      cached.ts = nowIso();
+      cached.q = q;
+      cached.query = cached.query || q;
+      cached.group = cached.group || resolvedGroup;
+      cached.category = cached.category || resolvedGroup;
+
+      cached._meta = ensureDiagKeys(
+        {
+          ...(cached._meta || {}),
+          reqId,
+          ms: Date.now() - t0,
+          cache: { hit: true, ageMs: hit.age, ttlMs: SEARCH_CACHE_TTL_MS },
+        },
+        { engineVariant: cached._meta?.engineVariant || "CACHE_HIT" }
+      );
+
+      return res.status(200).json(cached);
+    }
+  }
+
 
   // ---------------------------------------------------------------------------
   // PRODUCT MODE: catalog-only (default) / catalog-first / adapters-first
@@ -1340,7 +1423,24 @@ async function handle(req, res) {
     } catch {}
   }
 
+
+  // 🔥 store response cache (prevents re-burning credits)
+  if (!bypassCache && response && typeof response === "object" && response.ok !== false) {
+    try {
+      const toCache = JSON.parse(JSON.stringify(response));
+      // normalize volatile fields
+      delete toCache.reqId;
+      delete toCache.ts;
+      if (toCache._meta && typeof toCache._meta === "object") {
+        delete toCache._meta.reqId;
+        delete toCache._meta.ms;
+      }
+      _setSearchCache(cacheKey, toCache);
+    } catch {}
+  }
+
   return res.json(response);
+
 }
 
 // ---------------------------------------------------------------------------

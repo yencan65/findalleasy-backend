@@ -261,6 +261,7 @@ function _isTimeout(e) {
 // MAIN — S200
 // ======================================================================
 export async function searchWithSerpApi(query, opts = {}) {
+  const noRetry = Boolean(opts?.noRetry || opts?.barcode || opts?.intent?.type === "barcode");
   const t0 = Date.now();
   const q = safe(query, 260);
   const regionUpper = normalizeRegionArg(opts?.region || "TR");
@@ -373,7 +374,7 @@ export async function searchWithSerpApi(query, opts = {}) {
         const status = Number(e?.status || e?.response?.status || 0);
 
         // One retry on 429/5xx — best effort within remaining time.
-        if (status === 429 || (status >= 500 && status <= 599)) {
+        if (!noRetry && (status === 429 || (status >= 500 && status <= 599))) {
           const elapsed = Date.now() - t0;
           const remaining = timeoutMs - elapsed - 300;
           if (remaining > 0) {

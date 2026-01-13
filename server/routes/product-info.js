@@ -1422,266 +1422,97 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
 
   const { hl, gl, region } = localePack(localeShort);
 
-  const queries = [`"${code}" barkod`, `gtin ${code}`, `ean ${code}`, `${code}`];
+  // ✅ Tek request disiplini: tek query + tek Serp çağrısı (noRetry) + immersive yok.
+  const q = code;
 
-  for (const q of queries) {
-    try {
-      diag?.tries?.push?.({ step: "shopping_serpapi", q });
-
-      const r = await searchWithSerpApi(q, {
-        mode: "google_shopping",
-        region,
-        hl,
-        gl,
-        num: 10,
-        timeoutMs: 12000,
-        includeRaw: true,
-        barcode: true,
-        intent: { type: "barcode" },
-      });
-
-      const items = Array.isArray(r?.items) ? r.items : [];
-      if (!items.length) {
-        diag?.tries?.push?.({ step: "shopping_empty", q });
-        continue;
-      }
-
-      const scored = [];
-      for (const it of items) {
-        const title = cleanTitle(it?.title || "");
-        if (!title || title.length < 6) continue;
-
-        const raw = it?.raw || {};
-        const url0 = safeStr(it?.url || it?.deeplink || raw?.link || raw?.product_link || raw?.product_url || "", 2000);
-        const url = normalizeOutboundUrl(url0);
-
-        const snippet = safeStr(raw?.snippet || raw?.description || raw?.summary || raw?.product_description || "", 600);
-
-        let score = 0;
-        if (hasBarcodeEvidenceInText(title, code)) score += 4;
-        if (hasBarcodeEvidenceInText(snippet, code)) score += 4;
-        if (url && url.includes(code)) score += 6;
-        if (url && !isGoogleHostedUrl(url)) score += 3;
-
-        const tl = title.toLowerCase();
-        if (tl.includes("arama sonuç") || tl.includes("search results")) score -= 5;
-
-        scored.push({ it, title, url, score });
-      }
-
-      if (!scored.length) continue;
-      scored.sort((a, b) => b.score - a.score);
-
-      for (const cand of scored.slice(0, 2)) {
-        const picked = cand.it;
-        const raw = picked?.raw || {};
-
-        // DEFAULTS (NEW)
-        let offersTrusted = [];
-        let offersOther = [];
-        let offersAll = [];
-        let bestOffer = null;
-        let merchantUrl = "";
-        let verifiedUrl = "";
-        let verifiedBarcode = false;
-        let verifiedBy = "";
-        let confidence = "medium";
-
-        // 1) Immersive offers + strong GTIN evidence
-        const imm = await fetchImmersiveOffers(raw, code, diag);
-        offersAll = imm?.offers || [];
-        ({ offersTrusted, offersOther } = splitOffersForVitrine(offersAll));
-        diag?.tries?.push?.({ step: "offers_split_immersive", offersTrusted: offersTrusted.length, offersOther: offersOther.length });
-        bestOffer = pickBestOffer(offersTrusted);
-        merchantUrl = bestOffer?.url || "";
-
-        if (imm?.gtinMatch) {
-          verifiedBarcode = true;
-          verifiedBy = "serpapi:google_immersive_product";
-          confidence = "high";
-        } else {
-          // GTIN yoksa: offers varsa medium, yoksa low'a yakın
-          confidence = (offersTrusted.length || offersOther.length) ? "medium" : "low";
-        }
-
-        // 2) Google Product fallback: (a) trusted boşsa, (b) verified yoksa GTIN aramak için
-        if (!offersTrusted.length || (!verifiedBarcode && raw?.raw?.product_id)) {
-          const gp = await fetchGoogleProduct(code, picked, localeShort, diag);
-          const gpTrusted = Array.isArray(gp?.offersTrusted) ? gp.offersTrusted : [];
-          const gpOther = Array.isArray(gp?.offersOther) ? gp.offersOther : [];
-
-          if (gpTrusted.length || gpOther.length) {
-            offersTrusted = mergeOffersUnique(offersTrusted, gpTrusted);
-            offersOther = mergeOffersUnique(offersOther, gpOther);
-            sortOffersTrusted(offersTrusted);
-            sortOffersOther(offersOther);
-            offersTrusted = offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT);
-            offersOther = offersOther.slice(0, OFFERS_OTHER_LIMIT);
-            diag?.tries?.push?.({ step: "offers_merge_google_product", offersTrusted: offersTrusted.length, offersOther: offersOther.length });
-          }
-
-          bestOffer = pickBestOffer(offersTrusted);
-          merchantUrl = bestOffer?.url || "";
-
-          if (!verifiedBarcode && gp?.verifiedBarcode) {
-            verifiedBarcode = true;
-            verifiedBy = gp.verifiedBy || "serpapi:google_product";
-            confidence = "high";
-          }
-        }
-
-        // 3) STRICT catalog snippet verify fallback (HTML probe ile)
-        if (!verifiedBarcode) {
-          const v = await verifyViaCatalogSnippet(code, diag, picked?.title || raw?.title || "");
-          if (v) {
-            verifiedBarcode = true;
-            verifiedBy = v.verifiedBy || "catalog";
-            confidence = "high";
-            verifiedUrl = v.url || "";
-          }
-        }
-
-        // Kabul: GTIN verified ise süper. Verified değilse bile ürün objesi + en az bir sinyal varsa vitrin için döndür.
-        const hasIdSignal = Boolean(
-          raw?.product_id ||
-            raw?.productId ||
-            raw?.catalogid ||
-            raw?.catalog_id ||
-            raw?.gpcid ||
-            raw?.gpc_id ||
-            raw?.product_link ||
-            raw?.product_url ||
-            raw?.raw?.product_id
-        );
-        const hasMerchantSignal = Boolean(raw?.source || raw?.seller || raw?.merchant || offersTrusted.length || offersOther.length);
-
-        const accept = verifiedBarcode || (hasIdSignal && hasMerchantSignal) || Boolean(picked?.title);
-
-        if (!accept) {
-          diag?.tries?.push?.({ step: "shopping_reject_no_signal", q, title: cand.title, score: cand.score });
-          continue;
-        }
-
-        const product = {
-          name: cand.title,
-          title: cand.title,
-          description: safeStr(raw?.snippet || raw?.description || raw?.summary || "", 260) || "",
-          image: safeStr(picked?.image || raw?.thumbnail || raw?.image || "", 2000) || "",
-          brand: safeStr(raw?.brand || raw?.brands || "", 120),
-          category: "product",
-          region,
-          qrCode: code,
-          provider: "barcode",
-          source: "serpapi-shopping",
-          offersTrusted: offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT),
-          offersOther: offersOther.slice(0, OFFERS_OTHER_LIMIT),
-          offers: offersTrusted.slice(0, OFFERS_TRUSTED_LIMIT),
-          bestOffer: bestOffer
-            ? {
-                merchant: bestOffer.merchant,
-                url: bestOffer.url,
-                price: bestOffer.price ?? null,
-                delivery: bestOffer.delivery || "",
-              }
-            : null,
-          merchantUrl: merchantUrl || "",
-          verifiedBarcode: Boolean(verifiedBarcode),
-          verifiedBy: verifiedBy || "",
-          verifiedUrl: verifiedUrl || "",
-          confidence: confidence || "medium",
-          raw: picked,
-        };
-
-        cacheSetBarcode(cacheKey, product);
-
-        diag?.tries?.push?.({
-          step: "shopping_pick",
-          q,
-          verifiedBarcode: Boolean(verifiedBarcode),
-          verifiedBy: verifiedBy || "",
-          verifiedUrl: verifiedUrl || "",
-          offersTrusted: product.offersTrusted?.length || 0,
-          offersOther: product.offersOther?.length || 0,
-          merchantUrl: product.merchantUrl ? safeStr(product.merchantUrl, 120) : null,
-          confidence: product.confidence,
-        });
-
-        return product;
-      }
-    } catch (e) {
-      diag?.tries?.push?.({ step: "shopping_error", q, error: String(e?.message || e) });
-    }
-  }
-
-  return null;
-}
-
-// ======================================================================
-// OpenFoodFacts (food products)
-// ======================================================================
-async function fetchOpenFoodFacts(code, diag) {
-  const barcode = String(code || "").trim();
-  if (!/^\d{8,18}$/.test(barcode)) return null;
-
-  const url = `https://world.openfoodfacts.org/api/v0/product/${barcode}.json`;
   try {
-    diag?.tries?.push?.({ step: "openfoodfacts_fetch", url });
+    diag?.tries?.push?.({ step: "shopping_serpapi_single", q });
 
-    const r = await fetch(url, { method: "GET", headers: { "user-agent": "findalleasy/1.0" } });
-    if (!r.ok) {
-      diag?.tries?.push?.({ step: "openfoodfacts_http_fail", status: r.status });
+    const r = await searchWithSerpApi(q, {
+      region,
+      hl,
+      gl,
+      num: 12,
+      timeoutMs: 12000,
+      barcode: true,
+      intent: { type: "barcode" },
+      noRetry: true,
+    });
+
+    const items = Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : [];
+    if (!items.length) {
+      diag?.tries?.push?.({ step: "shopping_empty", q });
       return null;
     }
-    const j = await r.json().catch(() => null);
-    if (!j || j.status !== 1 || !j.product) {
-      diag?.tries?.push?.({ step: "openfoodfacts_no_product", status: j?.status ?? 0 });
-      return null;
+
+    // Basit ama sağlam skor: barkod aramasında başlık en kritik sinyal.
+    const scoreTitleForBarcode = (title, codeStr) => {
+      const t = String(title || "").toLowerCase();
+      const c = String(codeStr || "");
+      let s = 0;
+      if (c && t.includes(c)) s += 40;
+      if (t.includes("ean") || t.includes("gtin") || t.includes("barkod")) s += 10;
+      if (t.length >= 12) s += 5;
+      if (t.length >= 20) s += 5;
+      return s;
+    };
+    const scored = [];
+    for (const it of items) {
+      const title = cleanTitle(it?.title || it?.name || "");
+      if (!title || title.length < 6) continue;
+      const raw = it?.raw || {};
+      const url0 = safeStr(it?.url || it?.link || it?.product_link || raw?.link || raw?.product_link || "");
+      const host = urlHost(url0);
+      const score = scoreTitleForBarcode(title, code) + (host ? 5 : 0);
+      scored.push({ it, score });
     }
+    scored.sort((a, b) => b.score - a.score);
 
-    const p = j.product || {};
-    const name = cleanTitle(p.product_name || p.product_name_tr || p.generic_name || "") || barcode;
+    const best = scored[0]?.it || items[0] || {};
+    const raw = best?.raw || {};
+    const title = cleanTitle(best?.title || best?.name || "") || safeStr(best?.title || best?.name || code);
+    const url = safeStr(best?.url || best?.link || best?.product_link || raw?.link || raw?.product_link || "");
+    const image = safeStr(best?.image || best?.thumbnail || raw?.thumbnail || "");
+    const currency = safeStr(best?.currency || raw?.currency || "");
+    const priceRaw = best?.price ?? raw?.price ?? null;
+    const price = typeof priceRaw === "number" && priceRaw > 0 ? priceRaw : null;
 
-    const product = {
-      name,
-      title: name,
-      description: safeStr(p.ingredients_text || p.ingredients_text_tr || "", 260) || "",
-      image: safeStr(p.image_url || p.image_front_url || "", 2000) || "",
-      brand: safeStr(p.brands || "", 120),
-      category: "product",
-      region: "TR",
-      qrCode: barcode,
-      provider: "barcode",
-      source: "openfoodfacts",
-      verifiedBarcode: true,
-      verifiedBy: "openfoodfacts",
-      offersTrusted: [],
+    const offer0 = url
+      ? {
+          title: title || code,
+          url,
+          price,
+          currency: currency || null,
+          source: "serpapi",
+        }
+      : null;
 
-      offersOther: [],
+    const offersAll = offer0 ? [offer0] : [];
+    const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
 
-      offers: [],
-      bestOffer: null,
-      merchantUrl: "",
-      confidence: "high",
-      raw: j,
+    const out = {
+      ok: true,
+      source: "serpapi-shopping-single",
+      verifiedBarcode: false,
+      verifiedBy: "serpapi:shopping_single",
+      confidence: offersTrusted.length ? "medium" : "low",
+      product: {
+        name: title || code,
+        title: title || code,
+        image: image || "",
+        barcode: code,
+        merchantUrl: url || "",
+        offersTrusted,
+        offersOther,
+      },
     };
 
-    return product;
+    cacheSetBarcode(cacheKey, out, 60_000);
+    return out;
   } catch (e) {
-    diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(e?.message || e) });
+    diag?.tries?.push?.({ step: "shopping_error", q, err: String(e?.message || e) });
     return null;
   }
-}
-
-// ======================================================================
-// Negative cache — sadece "çok kısa / anlamsız" inputlar için
-// ======================================================================
-const badCache = new Map();
-function isBadQR(qr) {
-  const ts = badCache.get(qr);
-  return ts && Date.now() - ts < 30 * 60 * 1000;
-}
-function markBad(qr) {
-  badCache.set(qr, Date.now());
 }
 
 // ======================================================================

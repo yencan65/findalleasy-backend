@@ -247,8 +247,6 @@ function s21_sanitizeItem(item = {}) {
     item.amount ??
     item.minPrice ??
     item.maxPrice ??
-    item.value ??
-    item.cost ??
     item.priceText ??
     item.priceStr ??
     item.priceString ??
@@ -549,7 +547,7 @@ function injectProviderLogo(item) {
 // 🔥 Vitrin Cache (S8.4 → userId dahil)
 // ---------------------------------------------------------
 const vitrinCache = new Map();
-const VITRIN_CACHE_TTL_MS = 60_000;
+const VITRIN_CACHE_TTL_MS = 15 * 60_000;
 
 function getCachedVitrin(query, region, userId = null, category = null, variant = null) {
   const qk = (String(query ?? "").trim().toLowerCase() || "null").slice(0, 300);

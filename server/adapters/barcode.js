@@ -569,6 +569,7 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
         mode: "shopping",
         num: 12,
         intent: { type: "barcode" },
+        noRetry: true,
       });
 
       let serpItems = Array.isArray(serpRes1?.items)
@@ -580,32 +581,8 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
       // 2nd try: Turkish marketplaces (best-effort)
       // Not: Local resolver (site içi arama + barcode doğrulama) zaten yukarıda.
       // Buradaki amaç: Serp tarafında da TR marketlerden ek aday yakalamak.
-      if (!serpItems.length) {
-        const siteTries = [
-          `site:trendyol.com ${code}`,
-          `site:hepsiburada.com ${code}`,
-          `site:n11.com ${code}`,
-        ];
-        for (const q of siteTries) {
-          const serpRes2 = await searchWithSerpApi(q, {
-            region,
-            signal,
-            barcode: true,
-            num: 10,
-            intent: { type: "barcode" },
-          });
 
-          const maybe = Array.isArray(serpRes2?.items)
-            ? serpRes2.items
-            : Array.isArray(serpRes2)
-            ? serpRes2
-            : [];
-          if (maybe.length) {
-            serpItems = maybe;
-            break;
-          }
-        }
-      }
+      // ❌ Tek request disiplini: site-loop kaldırıldı (ek Serp çağrısı yok).
 
       if (Array.isArray(serpItems) && serpItems.length > 0) {
         serpItems.forEach((x, i) => {
