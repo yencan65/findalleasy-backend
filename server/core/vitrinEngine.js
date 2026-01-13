@@ -1473,25 +1473,68 @@ export async function buildDynamicVitrin(query = "", region = "TR", userId = nul
     const intentType = (intent && (intent.type || intent.category)) || mainCategory;
     const isProductIntent = intentType === "product" || ["electronics", "product", "fashion"].includes(mainCategory);
 
-    if (isProductIntent) {
-      const hasPricedItem = finalPool.some((it) => (getItemPrice(it) || 0) > 0);
-      if (!hasPricedItem) {
-        console.warn("⚠️ S21 PRODUCT GUARD: priced item yok (MOCK YOK) — fiyatı olmayan kartlarla devam.");
+    
+if (isProductIntent) {
+      // ✅ ÜRÜN ise fiyat zorunlu: fiyat yoksa kart göstermeyiz (alakasız/boş kart yerine)
+      const pricedOnly = finalPool.filter((it) => (getItemPrice(it) || 0) > 0);
+
+      if (!pricedOnly.length) {
+        // ürün niyeti var ama fiyatlı sonuç yok → boş vitrin (yanlış kart göstermekten iyidir)
+        if (__allowMockVitrin()) return await buildMockVitrin(query, region, userClicks, intent, categoryHint, memoryProfile);
+        return buildEmptyVitrin(query, region, categoryHint, "NO_PRICED_RESULTS", true, null);
       }
 
+      finalPool = pricedOnly;
+
+      // provider + product-like güçlendirme (varsa)
       const strongPool = finalPool.filter((it) => {
         const cat = String(it.category || mainCategory || "").toLowerCase();
         const hasPrice = (getItemPrice(it) || 0) > 0;
         const hasProvider = !!it.provider && it.provider !== "unknown";
-        const isProductLike = ["electronics", "product", "fashion"].includes(cat);
+        const isProductLike =
+          ["electronics", "product", "fashion"].includes(cat) ||
+          ["electronics", "product", "fashion"].includes(mainCategory);
         return hasPrice && hasProvider && isProductLike;
       });
 
       if (strongPool.length) finalPool = strongPool;
+    } else {
+      // ✅ HİZMET ise: fiyat opsiyonel ama güven/sağlayıcı skoru zorunlu (yoksa uydurma yok)
+      finalPool = finalPool
+        .map((it) => {
+          try {
+            if (!it) return it;
+            const out = { ...it };
+
+            // providerScore -> trustScore köprüle (UI trust gösteriyor)
+            const ts = typeof out.trustScore === "number" ? out.trustScore : null;
+            const ps = typeof out.providerScore === "number" ? out.providerScore : null;
+
+            if (ts == null && ps != null) out.trustScore = Math.min(1, Math.max(0, ps));
+            if (ts == null && ps == null) {
+              // qualityScore (0..1) veya qualityScore5 (0..5) varsa trust'a çevir
+              if (typeof out.qualityScore === "number")
+                out.trustScore = Math.min(1, Math.max(0, out.qualityScore));
+              else if (typeof out.qualityScore5 === "number")
+                out.trustScore = Math.min(1, Math.max(0, out.qualityScore5 / 5));
+            }
+
+            return out;
+          } catch {
+            return it;
+          }
+        })
+        .filter((it) => {
+          if (!it) return false;
+          const hasPrice = (getItemPrice(it) || 0) > 0;
+          const hasTrust = typeof it.trustScore === "number" && it.trustScore > 0;
+          const hasRating = typeof it.rating === "number" && it.rating > 0;
+          return hasPrice || hasTrust || hasRating;
+        });
     }
 
     // ==================================================
-    // 9) BEST SELECTION (S21)
+    // 9) BEST SELECTION (S21) (S21)
     // ==================================================
     const groupA = finalPool.filter((it) => (it?.commissionMeta?.platformRate || 0) > 0);
     const groupB = finalPool.filter((it) => (it?.commissionMeta?.platformRate || 0) === 0);
