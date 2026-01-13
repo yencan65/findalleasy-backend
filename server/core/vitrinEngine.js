@@ -325,12 +325,31 @@ function isValidNumber(n) {
 
 // tek fiyat kaynağı: finalUserPrice > price > null
 function getItemPrice(it) {
-  const p1 = it?.finalUserPrice;
-  if (isValidNumber(p1) && p1 > 0) return p1;
-  const p2 = it?.price;
-  if (isValidNumber(p2) && p2 > 0) return p2;
+  // Price can arrive in different fields depending on adapter / fusion stage.
+  // We normalize here so product-best selection doesn't accidentally pick "no-price" cards.
+  const v =
+    it?.finalUserPrice ??
+    it?.optimizedPrice ??
+    it?.finalPrice ??
+    it?.final_price ??
+    it?.price ??
+    it?.rawPrice ??
+    it?.raw_price ??
+    null;
+
+  let n = null;
+  if (typeof v === "number") {
+    n = v;
+  } else if (v !== null && v !== undefined) {
+    const s = String(v).replace(/[^0-9.,]/g, "").replace(",", ".");
+    const x = Number(s);
+    if (Number.isFinite(x)) n = x;
+  }
+
+  if (isValidNumber(n) && n > 0) return n;
   return null;
 }
+
 
 function asArray(val) {
   if (!val) return [];

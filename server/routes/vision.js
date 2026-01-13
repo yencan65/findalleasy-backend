@@ -564,7 +564,36 @@ async function handleVision(req, res) {
     const apiKey = process.env.GOOGLE_API_KEY;
     const serpKey = process.env.SERPAPI_KEY;
 
-    if (!apiKey && !serpKey) {
+    const allowSerpLens = (() => {
+      // Default: OFF (burns credits). Opt-in via env or request.
+      try {
+        const v = String(process.env.VISION_ALLOW_SERP_LENS || "").trim().toLowerCase();
+        if (v === "1" || v === "true" || v === "yes") return true;
+      } catch {}
+
+      try {
+        const h = String(req?.headers?.["x-fae-allow-serp-lens"] || "").trim().toLowerCase();
+        if (h === "1" || h === "true" || h === "yes") return true;
+      } catch {}
+
+      try {
+        const qv = String(req?.query?.allowSerpLens || req?.query?.allow_serp_lens || "")
+          .trim()
+          .toLowerCase();
+        if (qv === "1" || qv === "true" || qv === "yes") return true;
+      } catch {}
+
+      try {
+        if (body?.allowSerpLens === true || body?.allow_serp_lens === true) return true;
+        const b = String(body?.allowSerpLens || body?.allow_serp_lens || "").trim().toLowerCase();
+        if (b === "1" || b === "true" || b === "yes") return true;
+      } catch {}
+
+      return false;
+    })();
+
+
+    if (!apiKey && !(serpKey && allowSerpLens)) {
       return safeJson(
         res,
         {
@@ -651,7 +680,7 @@ async function handleVision(req, res) {
     }
 
     // 2) SerpApi google_lens fallback
-    if ((!rawText || !String(rawText).trim()) && serpKey) {
+    if ((!rawText || !String(rawText).trim()) && serpKey && allowSerpLens) {
       try {
         const buf = Buffer.from(cleanBase64, "base64");
         const id = putTempImage(buf, mimeType || "image/jpeg");
