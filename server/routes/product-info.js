@@ -1297,7 +1297,12 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
             merchant: domain0 || "local",
             merchantKey: domain0,
             url,
-            price: null,
+            title: name,
+            image: safeStr(h?.image || "", 2000) || "",
+            price: typeof h?.price === "number" ? h.price : null,
+            currency:
+              typeof h?.price === "number" && h.price > 0 ? safeStr(h?.currency || "TRY", 10) : null,
+            verifiedBarcode: !!h?.verifiedBarcode,
             delivery: "",
             domain: domain0,
             rank: merchantRank(domain0),
