@@ -464,9 +464,7 @@ async function fetchWithTimeout(resource, options = {}) {
 function sanitizeLLMAnswer(answer, normLocale) {
   let txt = clampText(answer, MAX_LLM_ANSWER_LENGTH);
   if (!txt) {
-    return normLocale === "en"
-      ? "I prepared suitable options for you."
-      : "Senin için uygun seçenekleri hazırladım.";
+    return L.defaultAnswer;
   }
 
   // AI kimlik cümlelerini törpüle
@@ -497,9 +495,76 @@ async function callLLM({
   const baseUrl =
     safeString(process.env.OPENAI_BASE_URL) || "https://api.openai.com/v1";
 
-  const normLocale = safeString(locale || "tr").toLowerCase().startsWith("en")
-    ? "en"
-    : "tr";
+  const normLocale = (() => {
+    const l = safeString(locale || "tr").toLowerCase();
+    if (l.startsWith("tr")) return "tr";
+    if (l.startsWith("en")) return "en";
+    if (l.startsWith("fr")) return "fr";
+    if (l.startsWith("ru")) return "ru";
+    if (l.startsWith("ar")) return "ar";
+    // Varsayılan
+    return "tr";
+  })();
+
+  const LOCALE_TEXT = {
+    tr: {
+      defaultAnswer: "Senin için uygun seçenekleri hazırladım.",
+      limitedMode:
+        "Sono AI şu an sınırlı modda çalışıyor ama senin için seçenekleri hazırlıyorum.",
+      noTextAnswer:
+        "Şu an metin yanıtı veremiyorum ama senin için vitrini hazırladım.",
+      exceptionText: "تعذّر الحصول على ردّ نصي الآن، لكن الاقتراحات جاهزة.",
+      exceptionText: "Сейчас не удалось получить текстовый ответ, но предложения уже готовы.",
+      exceptionText: "Impossible d’obtenir une réponse texte pour le moment, mais des suggestions sont prêtes.",
+      exceptionText: "Text answer could not be retrieved, but suggestions are ready.",
+      exceptionText: "Şu an metin yanıtında sorun oluştu ama vitrin çalışmaya devam ediyor.",
+      genericPrepared: "İsteklerin için uygun seçenekleri hazırladım.",
+      suggestHeader: "Öneriler:",
+      langName: "Türkçe",
+    },
+    en: {
+      defaultAnswer: "I prepared suitable options for you.",
+      limitedMode:
+        "Sono AI is running in limited mode right now, but I’m still preparing options for you.",
+      noTextAnswer:
+        "Text answer is not available right now, but I have prepared options for you.",
+      genericPrepared: "I prepared the options for you.",
+      suggestHeader: "Related suggestions:",
+      langName: "English",
+    },
+    fr: {
+      defaultAnswer: "J’ai préparé des options adaptées pour vous.",
+      limitedMode:
+        "Sono AI fonctionne en mode limité pour le moment, mais je prépare quand même des options pour vous.",
+      noTextAnswer:
+        "Je ne peux pas répondre en texte pour l’instant, mais j’ai préparé des options pour vous.",
+      genericPrepared: "J’ai préparé des options pour vous.",
+      suggestHeader: "Suggestions associées :",
+      langName: "Français",
+    },
+    ru: {
+      defaultAnswer: "Я подготовил(а) подходящие варианты для вас.",
+      limitedMode:
+        "Sono AI сейчас в ограниченном режиме, но я всё равно подбираю для вас варианты.",
+      noTextAnswer:
+        "Сейчас я не могу ответить текстом, но я подготовил(а) для вас варианты.",
+      genericPrepared: "Я подготовил(а) варианты для вас.",
+      suggestHeader: "Похожие предложения:",
+      langName: "Русский",
+    },
+    ar: {
+      defaultAnswer: "حضّرت لك خيارات مناسبة.",
+      limitedMode:
+        "Sono AI يعمل الآن بوضع محدود، لكنني ما زلت أُحضّر لك خيارات مناسبة.",
+      noTextAnswer:
+        "لا يمكنني الرد نصيًا الآن، لكنني حضّرت لك خيارات مناسبة.",
+      genericPrepared: "حضّرت لك الخيارات المناسبة.",
+      suggestHeader: "اقتراحات ذات صلة:",
+      langName: "العربية",
+    },
+  };
+
+  const L = LOCALE_TEXT[normLocale] || LOCALE_TEXT.tr;
 
   // Mesajı sert limit ile kısalt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
@@ -507,10 +572,7 @@ async function callLLM({
   if (!apiKey) {
     return {
       provider: "fallback",
-      answer:
-        normLocale === "en"
-          ? "Sono AI is running in limited mode right now, but I’m still preparing options for you."
-          : "Sono AI şu an sınırlı modda çalışıyor ama senin için seçenekleri hazırlamaya devam ediyorum.",
+      answer: L.limitedMode,
     };
   }
 
@@ -534,7 +596,10 @@ Sen Sono isimli akıllı fiyat & fırsat danışmanısın.
 - "sana göre optimize ettim"
 gibi ifadeler kullan.
 
-Kullanıcı hangi dilde yazarsa o dilde yanıt ver. Varsayılan dil Türkçe.
+Yanıt dili: ${L.langName} (locale: ${normLocale}). Bu dilde yanıt ver; başka dil kullanma.
+
+Cevabın sonunda "${L.suggestHeader}" başlığıyla 2–3 kısa öneri ekle.
+Öneriler, kullanıcının aynı konuyu derinleştirmek için sorabileceği ilgili sorular veya yapabileceği sonraki adımlar olsun.
 
 Kullanıcı Persona:
 ${persona} → ${personaNote || "Dengeli, sakin anlatım kullan."}
@@ -586,19 +651,14 @@ YANIT MODU:
 
       return {
         provider: "error",
-        answer:
-          normLocale === "en"
-            ? "Text answer is not available right now, but I have prepared options for you."
-            : "Şu an metin yanıtı veremiyorum ama senin için vitrini hazırladım.",
+        answer: L.noTextAnswer,
       };
     }
 
     const data = await res.json().catch(() => null);
     const rawAnswer =
       data?.choices?.[0]?.message?.content ||
-      (normLocale === "en"
-        ? "I prepared the options for you."
-        : "İsteklerin için uygun seçenekleri hazırladım.");
+      (L.genericPrepared);
 
     const answer = sanitizeLLMAnswer(rawAnswer, normLocale);
 
@@ -608,10 +668,7 @@ YANIT MODU:
 
     return {
       provider: "exception",
-      answer:
-        normLocale === "en"
-          ? "Text answer could not be retrieved, but suggestions are ready."
-          : "Şu an metin yanıtında sorun oluştu ama vitrin çalışmaya devam ediyor.",
+      answer: (L.exceptionText || L.noTextAnswer),
     };
   }
 }
