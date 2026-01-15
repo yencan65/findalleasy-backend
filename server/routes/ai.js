@@ -712,6 +712,7 @@ router.post("/", aiFirewall, async (req, res) => {
       region = "TR",
       city = "",
       userId = null,
+      mode = "",
     } = req.body || {};
 
     const textOriginal = safeString(message);
@@ -737,21 +738,33 @@ router.post("/", aiFirewall, async (req, res) => {
     }
 
     const intent = detectIntent(text);
+
+const modeNorm = safeString(mode).toLowerCase();
+// mode=chat → sadece sohbet/info; adapter çalıştırma (kredi yakma) YASAK
+const noSearchMode =
+  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
+const didSearch = !noSearchMode && (intent === "product" || intent === "mixed");
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
-    let rawResults = [];
-    try {
-      rawResults = await getResults(text, normRegion);
-    } catch (err) {
-      console.error("getResults error:", err);
-      rawResults = [];
-    }
 
-    const cardsObj = buildVitrineCards(text, rawResults);
+let rawResults = [];
+if (didSearch) {
+  try {
+    rawResults = await getResults(text, normRegion);
+  } catch (err) {
+    console.error("getResults error:", err);
+    rawResults = [];
+  }
+}
+
+const cardsObj = didSearch
+  ? buildVitrineCards(text, rawResults)
+  : { best: null, aiSmart: [], others: [] };
+
 
     await updateUserMemory(userId, ip, {
-      clicks: (userMem.clicks || 0) + 1,
+      clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
       lastQuery: text,
       lastRegion: normRegion,
       lastCity: normCity || userMem.lastCity,
@@ -779,6 +792,8 @@ router.post("/", aiFirewall, async (req, res) => {
       JSON.stringify({
         userId: userId || null,
         ip,
+        mode: modeNorm || null,
+        didSearch,
         intent,
         persona,
         region: normRegion,
@@ -801,6 +816,8 @@ router.post("/", aiFirewall, async (req, res) => {
         latencyMs,
         region: normRegion,
         locale: normLocale,
+        mode: modeNorm,
+        didSearch,
       },
     });
   } catch (err) {
