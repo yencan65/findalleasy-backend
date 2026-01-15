@@ -464,7 +464,13 @@ async function fetchWithTimeout(resource, options = {}) {
 function sanitizeLLMAnswer(answer, normLocale) {
   let txt = clampText(answer, MAX_LLM_ANSWER_LENGTH);
   if (!txt) {
-    return L.defaultAnswer;
+    return {
+      en: "I prepared suitable options for you.",
+      fr: "J’ai préparé des options adaptées pour vous.",
+      ru: "Я подготовил(а) подходящие варианты для вас.",
+      ar: "لقد جهّزت لك خيارات مناسبة.",
+      tr: "Senin için uygun seçenekleri hazırladım.",
+    }[normLocale] || "Senin için uygun seçenekleri hazırladım.";
   }
 
   // AI kimlik cümlelerini törpüle
@@ -496,75 +502,13 @@ async function callLLM({
     safeString(process.env.OPENAI_BASE_URL) || "https://api.openai.com/v1";
 
   const normLocale = (() => {
-    const l = safeString(locale || "tr").toLowerCase();
-    if (l.startsWith("tr")) return "tr";
-    if (l.startsWith("en")) return "en";
-    if (l.startsWith("fr")) return "fr";
-    if (l.startsWith("ru")) return "ru";
-    if (l.startsWith("ar")) return "ar";
-    // Varsayılan
-    return "tr";
-  })();
-
-  const LOCALE_TEXT = {
-    tr: {
-      defaultAnswer: "Senin için uygun seçenekleri hazırladım.",
-      limitedMode:
-        "Sono AI şu an sınırlı modda çalışıyor ama senin için seçenekleri hazırlıyorum.",
-      noTextAnswer:
-        "Şu an metin yanıtı veremiyorum ama senin için vitrini hazırladım.",
-      exceptionText: "تعذّر الحصول على ردّ نصي الآن، لكن الاقتراحات جاهزة.",
-      exceptionText: "Сейчас не удалось получить текстовый ответ, но предложения уже готовы.",
-      exceptionText: "Impossible d’obtenir une réponse texte pour le moment, mais des suggestions sont prêtes.",
-      exceptionText: "Text answer could not be retrieved, but suggestions are ready.",
-      exceptionText: "Şu an metin yanıtında sorun oluştu ama vitrin çalışmaya devam ediyor.",
-      genericPrepared: "İsteklerin için uygun seçenekleri hazırladım.",
-      suggestHeader: "Öneriler:",
-      langName: "Türkçe",
-    },
-    en: {
-      defaultAnswer: "I prepared suitable options for you.",
-      limitedMode:
-        "Sono AI is running in limited mode right now, but I’m still preparing options for you.",
-      noTextAnswer:
-        "Text answer is not available right now, but I have prepared options for you.",
-      genericPrepared: "I prepared the options for you.",
-      suggestHeader: "Related suggestions:",
-      langName: "English",
-    },
-    fr: {
-      defaultAnswer: "J’ai préparé des options adaptées pour vous.",
-      limitedMode:
-        "Sono AI fonctionne en mode limité pour le moment, mais je prépare quand même des options pour vous.",
-      noTextAnswer:
-        "Je ne peux pas répondre en texte pour l’instant, mais j’ai préparé des options pour vous.",
-      genericPrepared: "J’ai préparé des options pour vous.",
-      suggestHeader: "Suggestions associées :",
-      langName: "Français",
-    },
-    ru: {
-      defaultAnswer: "Я подготовил(а) подходящие варианты для вас.",
-      limitedMode:
-        "Sono AI сейчас в ограниченном режиме, но я всё равно подбираю для вас варианты.",
-      noTextAnswer:
-        "Сейчас я не могу ответить текстом, но я подготовил(а) для вас варианты.",
-      genericPrepared: "Я подготовил(а) варианты для вас.",
-      suggestHeader: "Похожие предложения:",
-      langName: "Русский",
-    },
-    ar: {
-      defaultAnswer: "حضّرت لك خيارات مناسبة.",
-      limitedMode:
-        "Sono AI يعمل الآن بوضع محدود، لكنني ما زلت أُحضّر لك خيارات مناسبة.",
-      noTextAnswer:
-        "لا يمكنني الرد نصيًا الآن، لكنني حضّرت لك خيارات مناسبة.",
-      genericPrepared: "حضّرت لك الخيارات المناسبة.",
-      suggestHeader: "اقتراحات ذات صلة:",
-      langName: "العربية",
-    },
-  };
-
-  const L = LOCALE_TEXT[normLocale] || LOCALE_TEXT.tr;
+  const l = safeString(locale || "tr").toLowerCase();
+  if (l.startsWith("en")) return "en";
+  if (l.startsWith("fr")) return "fr";
+  if (l.startsWith("ru")) return "ru";
+  if (l.startsWith("ar")) return "ar";
+  return "tr";
+})();
 
   // Mesajı sert limit ile kısalt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
@@ -572,7 +516,22 @@ async function callLLM({
   if (!apiKey) {
     return {
       provider: "fallback",
-      answer: L.limitedMode,
+      answer:
+        ({
+          en: "Sono is in limited mode right now, but I can still help with quick information.",
+          fr: "Sono est en mode limité pour le moment, mais je peux quand même aider avec des infos rapides.",
+          ru: "Сейчас Sono работает в ограниченном режиме, но я всё равно могу помочь с быстрыми справками.",
+          ar: "Sono يعمل الآن بوضع محدود، لكن يمكنني مساعدتك بمعلومات سريعة.",
+          tr: "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim.",
+        }[normLocale] || "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim."),
+      suggestions:
+        ({
+          en: ["Tell me about a place", "Explain a concept", "Compare two things"],
+          fr: ["Parle-moi d’un lieu", "Explique un concept", "Compare deux choses"],
+          ru: ["Расскажи о месте", "Объясни понятие", "Сравни два варианта"],
+          ar: ["حدثني عن مكان", "اشرح فكرة", "قارن بين خيارين"],
+          tr: ["Bir yer hakkında bilgi ver", "Bir şeyi açıkla", "İki şeyi karşılaştır"],
+        }[normLocale] || []),
     };
   }
 
@@ -589,34 +548,26 @@ async function callLLM({
   }[persona];
 
   const systemPrompt = `
-Sen Sono isimli akıllı fiyat & fırsat danışmanısın.
-"Komisyon" veya "affiliate" veya "sponsor" kelimelerini asla kullanma; bunun yerine:
-- "avantaj sağlanan teklif"
-- "daha uygun hale getirdim"
-- "sana göre optimize ettim"
-gibi ifadeler kullan.
+You are Sono, a smart assistant. The user may ask for general information or guidance.
+Rules:
+- Reply in the user's language. Target language is based on locale: ${normLocale}.
+  • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
+- Keep it short, clear, and helpful. No fluff.
+- Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
 
-Yanıt dili: ${L.langName} (locale: ${normLocale}). Bu dilde yanıt ver; başka dil kullanma.
+Output format (VERY IMPORTANT):
+Return ONLY valid JSON with this exact shape:
+{"answer":"...","suggestions":["...","...","..."]}
+- answer: a short, direct answer (2–6 short sentences or 3 bullets).
+- suggestions: 2–4 short follow-up prompts the user can click.
+No markdown. No code fences. No extra keys.
 
-Cevabın sonunda "${L.suggestHeader}" başlığıyla 2–3 kısa öneri ekle.
-Öneriler, kullanıcının aynı konuyu derinleştirmek için sorabileceği ilgili sorular veya yapabileceği sonraki adımlar olsun.
-
-Kullanıcı Persona:
-${persona} → ${personaNote || "Dengeli, sakin anlatım kullan."}
-
-Kontekst:
+Context:
 - Intent: ${intent}
-- Bölge: ${region}
-- Şehir: ${city}
-- Geçmiş Aramalar: ${(memorySnapshot?.lastQueries || [])
-    .slice(0, 10)
-    .join(" • ")}
-
-YANIT MODU:
-- 3 net madde ile öneri ver, kısa ve okunur tut.
-- Link üretme; kullanıcı tıklama işlemini vitrin kartlarından yapacak.
-- Fiyat kıyaslaması yapabilirsin ama markaları kötüleme veya itham etme.
-- Sistem mesajının kurallarına aykırı hiçbir cümle kurma.
+- Region: ${region}
+- City: ${city}
+- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" • ")}
+Persona hint: ${persona} → ${personaNote || "balanced"}
 `.trim();
 
   const requestBody = {
@@ -651,24 +602,86 @@ YANIT MODU:
 
       return {
         provider: "error",
-        answer: L.noTextAnswer,
+        answer:
+          ({
+            en: "I can’t generate a text answer right now, but I can still help if you rephrase briefly.",
+            fr: "Je ne peux pas générer de réponse texte pour le moment, mais je peux aider si vous reformulez brièvement.",
+            ru: "Сейчас не получается выдать текстовый ответ, но я смогу помочь, если вы переформулируете короче.",
+            ar: "لا أستطيع إنشاء إجابة نصية الآن، لكن يمكنني المساعدة إذا أعدت صياغة السؤال باختصار.",
+            tr: "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim.",
+          }[normLocale] || "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim."),
+        suggestions:
+          ({
+            en: ["Summarize this topic", "Give key points", "How does it work?"],
+            fr: ["Résume ce sujet", "Donne les points clés", "Comment ça marche ?"],
+            ru: ["Кратко о теме", "Дай ключевые пункты", "Как это работает?"],
+            ar: ["لخّص الموضوع", "أعطني النقاط الأساسية", "كيف يعمل ذلك؟"],
+            tr: ["Konuyu özetle", "Ana maddeleri ver", "Nasıl çalışır?"],
+          }[normLocale] || []),
       };
     }
 
     const data = await res.json().catch(() => null);
     const rawAnswer =
       data?.choices?.[0]?.message?.content ||
-      (L.genericPrepared);
+      ({
+        en: '{"answer":"I prepared options for you.","suggestions":["Summarize this topic","Give key points","How does it work?"]}',
+        fr: '{"answer":"J’ai préparé des options pour vous.","suggestions":["Résume ce sujet","Donne les points clés","Comment ça marche ?"]}',
+        ru: '{"answer":"Я подготовил(а) варианты для вас.","suggestions":["Кратко о теме","Дай ключевые пункты","Как это работает?"]}',
+        ar: '{"answer":"لقد جهّزت لك خيارات.","suggestions":["لخّص الموضوع","أعطني النقاط الأساسية","كيف يعمل ذلك؟"]}',
+        tr: '{"answer":"Senin için seçenekleri hazırladım.","suggestions":["Konuyu özetle","Ana maddeleri ver","Nasıl çalışır?"]}',
+      }[normLocale] || '{"answer":"Senin için seçenekleri hazırladım.","suggestions":[]}');
 
-    const answer = sanitizeLLMAnswer(rawAnswer, normLocale);
+    // Try to parse JSON output {answer, suggestions}
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawAnswer);
+    } catch {
+      // salvage: extract first {...} block
+      try {
+        const s = String(rawAnswer || "");
+        const i = s.indexOf("{");
+        const j = s.lastIndexOf("}");
+        if (i >= 0 && j > i) parsed = JSON.parse(s.slice(i, j + 1));
+      } catch {
+        parsed = null;
+      }
+    }
 
-    return { provider: data?.model || "openai", answer };
+    const answer = sanitizeLLMAnswer(
+      safeString(parsed?.answer) || safeString(rawAnswer),
+      normLocale
+    );
+
+    const suggestions = Array.isArray(parsed?.suggestions)
+      ? parsed.suggestions
+          .map((x) => safeString(x))
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+
+    return { provider: data?.model || "openai", answer, suggestions };
   } catch (err) {
     console.error("LLM çağrı hatası:", err);
 
     return {
       provider: "exception",
-      answer: (L.exceptionText || L.noTextAnswer),
+      answer:
+        ({
+          en: "I couldn’t retrieve a text answer right now. Try again in a moment.",
+          fr: "Je n’ai pas pu récupérer une réponse texte. Réessayez dans un instant.",
+          ru: "Не удалось получить текстовый ответ. Попробуйте ещё раз чуть позже.",
+          ar: "تعذّر الحصول على إجابة نصية الآن. جرّب مرة أخرى بعد قليل.",
+          tr: "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin.",
+        }[normLocale] || "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin."),
+      suggestions:
+        ({
+          en: ["Ask in one sentence", "Give context", "What exactly do you want to know?"],
+          fr: ["Pose une seule phrase", "Donne un peu de contexte", "Qu’est-ce que tu veux savoir exactement ?"],
+          ru: ["Спроси одним предложением", "Дай контекст", "Что именно ты хочешь узнать?"],
+          ar: ["اسأل بجملة واحدة", "أضف بعض السياق", "ما الذي تريد معرفته تحديدًا؟"],
+          tr: ["Tek cümleyle sor", "Biraz bağlam ver", "Tam olarak neyi öğrenmek istiyorsun?"],
+        }[normLocale] || []),
     };
   }
 }
@@ -775,6 +788,14 @@ router.post("/", aiFirewall, async (req, res) => {
     const textOriginal = safeString(message);
     const text = clampText(textOriginal, MAX_MESSAGE_LENGTH);
     const normLocale = safeString(locale || "tr").toLowerCase();
+    const lang = (() => {
+      const l = normLocale;
+      if (l.startsWith("en")) return "en";
+      if (l.startsWith("fr")) return "fr";
+      if (l.startsWith("ru")) return "ru";
+      if (l.startsWith("ar")) return "ar";
+      return "tr";
+    })();
     const normRegion = safeString(region || "TR").toUpperCase();
     const normCity = safeString(city);
     const ip = getClientIp(req);
@@ -786,9 +807,21 @@ router.post("/", aiFirewall, async (req, res) => {
         provider: "local",
         persona: "neutral",
         answer:
-          normLocale.startsWith("en")
-            ? "Tell me what you are looking for, I will prepare the best offers for you."
-            : "Ne aradığını yaz, senin için en uygun teklifleri hazırlayayım.",
+          ({
+            en: "Tell me what you need — I can search products/services or answer questions.",
+            fr: "Dites-moi ce dont vous avez besoin — je peux chercher des produits/services ou répondre à vos questions.",
+            ru: "Скажите, что вам нужно — я могу искать товары/услуги или отвечать на вопросы.",
+            ar: "قل لي ما الذي تحتاجه — يمكنني البحث عن منتج/خدمة أو الإجابة عن الأسئلة.",
+            tr: "Ne aradığını yaz — ürün/hizmet arayabilir ya da sorularını cevaplayabilirim.",
+          }[lang] || "Ne aradığını yaz — ürün/hizmet arayabilir ya da sorularını cevaplayabilirim."),
+        suggestions:
+          ({
+            en: ["Find the cheapest option", "Tell me about a place", "Explain a concept"],
+            fr: ["Trouve l’option la moins chère", "Parle-moi d’un lieu", "Explique un concept"],
+            ru: ["Найди самый дешевый вариант", "Расскажи о месте", "Объясни понятие"],
+            ar: ["اعثر على الأرخص", "حدثني عن مكان", "اشرح فكرة"],
+            tr: ["En ucuzunu bul", "Bir yer hakkında bilgi ver", "Bir şeyi açıkla"],
+          }[lang] || []),
         intent: "mixed",
         cards: { best: null, aiSmart: [], others: [] },
       });
@@ -867,6 +900,7 @@ const cardsObj = didSearch
       provider: llm.provider,
       persona,
       answer: llm.answer,
+      suggestions: llm.suggestions || [],
       intent,
       cards: cardsObj,
       meta: {
