@@ -1245,11 +1245,32 @@ export async function buildDynamicVitrin(query = "", region = "TR", userId = nul
     // ==================================================
     let adapterData = null;
     try {
+      // ✅ Route/client kaynak ipucu (text/voice/camera/qr/...) — intent + adapter öncelikleri için
+      const srcRaw = String(
+        __ctx?.source || __ctx?.querySource || __ctx?.inputSource || ""
+      )
+        .trim()
+        .toLowerCase();
+
+      let source = srcRaw || "text";
+      if (["camera", "image", "photo", "vision"].includes(source)) source = "vision";
+      if (["qr", "barcode", "ean", "upc"].includes(source)) source = "barcode";
+
+      const visionLabelsClean = Array.isArray(__ctx?.visionLabels)
+        ? __ctx.visionLabels
+            .filter(Boolean)
+            .map((x) => String(x).trim())
+            .filter((x) => x)
+            .slice(0, 12)
+        : [];
+
+      const qrPayload = __ctx?.qrPayload || null;
+
       adapterData = await runVitrineS40(query, {
         region,
-        source: "text",
-        visionLabels: [],
-        qrPayload: null,
+        source,
+        visionLabels: visionLabelsClean,
+        qrPayload,
         embedding: null,
         userProfile: memory || null,
         categoryHint,
