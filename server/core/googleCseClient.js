@@ -3,50 +3,43 @@
 //  GOOGLE PROGRAMMABLE SEARCH (CSE) CLIENT — S1 (SITE-BY-SITE)
 //  - key + cx + q ile arama
 //  - siteSearch ile tek domain’e daraltma
-//  - Hata durumunda crash yok: boş sonuç döner
+//  - ✅ 429/403 koruması: cache + otomatik devre dışı (log spam kesilir)
+//  - ✅ Hata durumunda "ok:false" döner (boş ama ok:true değil)
 // ============================================================
 
 import { httpGetJson } from "../utils/httpClient.js";
 
-// ---------------------------------------------------------------------------
-// In-memory cache + 429 circuit breaker (prevents quota burn + log spam)
-// ---------------------------------------------------------------------------
-const CSE_CACHE = new Map(); // key -> { ts, data }
-const FAE_CSE_CACHE_TTL_MS = Number(process.env.FAE_CSE_CACHE_TTL_MS || 10 * 60 * 1000);
-const FAE_CSE_COOLDOWN_MS = Number(process.env.FAE_CSE_COOLDOWN_MS || 10 * 60 * 1000);
+// ----------------------------------------------
+// Cache + cooldown (in-memory)
+// ----------------------------------------------
+const CSE_CACHE = new Map(); // cacheKey -> { exp:number, value:any }
+const TTL_OK_MS = Number(process.env.GOOGLE_CSE_CACHE_TTL_OK_MS || 10 * 60 * 1000);
+const TTL_ERR_MS = Number(process.env.GOOGLE_CSE_CACHE_TTL_ERR_MS || 60 * 1000);
+const COOLDOWN_429_MS = Number(process.env.GOOGLE_CSE_429_COOLDOWN_MS || 15 * 60 * 1000);
 
-const CSE_STATE =
-  globalThis.__FAE_CSE_STATE ||
-  (globalThis.__FAE_CSE_STATE = { disabledUntil: 0, last429: 0 });
+let CSE_DISABLED_UNTIL = 0;
+let CSE_DISABLED_REASON = "";
 
-function cseCacheGet(key) {
+function cacheGet(k) {
   try {
-    if (!FAE_CSE_CACHE_TTL_MS || FAE_CSE_CACHE_TTL_MS <= 0) return null;
-    const hit = CSE_CACHE.get(key);
+    const hit = CSE_CACHE.get(k);
     if (!hit) return null;
-    const age = Date.now() - (hit.ts || 0);
-    if (age > FAE_CSE_CACHE_TTL_MS) return null;
-    return hit.data || null;
+    if (!hit.exp || Date.now() > hit.exp) {
+      CSE_CACHE.delete(k);
+      return null;
+    }
+    return hit.value || null;
   } catch {
     return null;
   }
 }
 
-function cseCacheSet(key, data) {
+function cacheSet(k, value, ttlMs) {
   try {
-    if (!FAE_CSE_CACHE_TTL_MS || FAE_CSE_CACHE_TTL_MS <= 0) return;
-    CSE_CACHE.set(key, { ts: Date.now(), data });
-  } catch {}
-}
-
-function is429(e) {
-  try {
-    const st = Number(e?.status || e?.statusCode || 0);
-    if (st == 429) return true;
-    const msg = String(e?.message || e || '').toLowerCase();
-    return msg.includes(' 429 ') || msg.includes('non_2xx 429') || msg.includes('status 429');
+    const exp = Date.now() + Math.max(1000, Number(ttlMs || 0));
+    CSE_CACHE.set(k, { exp, value });
   } catch {
-    return false;
+    // ignore
   }
 }
 
@@ -83,22 +76,18 @@ function buildParams(obj) {
 export function resolveCseCxForGroup(group) {
   const g = String(group || "").trim().toUpperCase();
   // Öncelik: group’a özel CX -> genel CX -> product CX
-  return (
-    pickEnv(`GOOGLE_CSE_CX_${g}`, "GOOGLE_CSE_CX", "GOOGLE_CSE_CX_PRODUCT") || ""
-  );
+  return pickEnv(`GOOGLE_CSE_CX_${g}`, "GOOGLE_CSE_CX", "GOOGLE_CSE_CX_PRODUCT") || "";
 }
 
 export function resolveCseSitesForGroup(group) {
   const g = String(group || "").trim().toUpperCase();
   // Öncelik: group’a özel sites -> genel sites -> product sites -> boş
-  const raw =
-    pickEnv(`GOOGLE_CSE_SITES_${g}`, "GOOGLE_CSE_SITES", "GOOGLE_CSE_SITES_PRODUCT") || "";
+  const raw = pickEnv(`GOOGLE_CSE_SITES_${g}`, "GOOGLE_CSE_SITES", "GOOGLE_CSE_SITES_PRODUCT") || "";
   const sites = String(raw)
     .split(",")
     .map((x) => normalizeDomain(x))
     .filter(Boolean);
 
-  // Unique
   return Array.from(new Set(sites));
 }
 
@@ -123,12 +112,27 @@ export async function cseSearchSite({
   safe = "off",
   timeoutMs,
 }) {
+  const now = Date.now();
+  if (CSE_DISABLED_UNTIL && now < CSE_DISABLED_UNTIL) {
+    return {
+      ok: false,
+      items: [],
+      error: "cse_disabled",
+      meta: {
+        disabledUntil: CSE_DISABLED_UNTIL,
+        reason: CSE_DISABLED_REASON || "cooldown",
+      },
+    };
+  }
+
   const domain = normalizeDomain(site);
   const apiKey = String(key || "").trim();
   const cseCx = String(cx || "").trim();
   const query = String(q || "").trim();
 
-  if (!apiKey || !cseCx || !query) return { ok: false, items: [], error: "missing_key_or_cx_or_q" };
+  if (!apiKey || !cseCx || !query) {
+    return { ok: false, items: [], error: "missing_key_or_cx_or_q" };
+  }
 
   const params = {
     key: apiKey,
@@ -143,77 +147,59 @@ export async function cseSearchSite({
     lr,
   };
 
-  // Domain daraltma
   if (domain) {
     params.siteSearch = domain;
-    params.siteSearchFilter = "i"; // include
+    params.siteSearchFilter = "i";
   }
 
   const url = `https://www.googleapis.com/customsearch/v1?${buildParams(params)}`;
 
-  // Cache key includes everything that affects the result
-  const cacheKey = [cseCx, query, domain, hl, gl, cr, lr, params.num, params.start, safe].join('|');
-
-  // Circuit breaker: if we recently hit 429, stop calling CSE for a cooldown window
-  const now = Date.now();
-  if (FAE_CSE_COOLDOWN_MS > 0 && now < (CSE_STATE.disabledUntil || 0)) {
-    const until = CSE_STATE.disabledUntil || 0;
-    return {
-      ok: false,
-      items: [],
-      error: 'cse_cooldown_429',
-      meta: { domain: domain || '', url, disabledUntil: until },
-    };
-  }
-
-  const cached = cseCacheGet(cacheKey);
+  const cacheKey = `${domain}|${cseCx}|${query}|${params.start}|${params.num}|${hl}|${gl}|${cr}|${lr}`;
+  const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  try {
-    const r = await httpGetJson(url, {
-      timeoutMs: timeoutMs ?? safeInt(process.env.GOOGLE_CSE_TIMEOUT_MS, 4500),
-      retries: safeInt(process.env.GOOGLE_CSE_RETRIES, 1),
-      headers: {
-        // CSE key bazlı, ama bazı edge durumlarda UA önem kazanıyor
-        "Accept": "application/json",
-      },
-    });
+  const r = await httpGetJson(url, {
+    timeoutMs: timeoutMs ?? safeInt(process.env.GOOGLE_CSE_TIMEOUT_MS, 4500),
+    // retries: 0 -> tek request disiplini (429 log spam azalır)
+    retries: safeInt(process.env.GOOGLE_CSE_RETRIES, 0),
+    headers: { Accept: "application/json" },
+    adapterName: `cse:${domain || "global"}`,
+  });
 
-    const json = r?.data;
-    const items = Array.isArray(json?.items) ? json.items : [];
-    const out = {
-      ok: true,
-      items,
-      meta: {
-        url,
-        domain: domain || "",
-        totalResults: safeInt(json?.searchInformation?.totalResults, 0),
-        searchTime: json?.searchInformation?.searchTime,
-      }
-    };
+  if (!r?.ok) {
+    const status = Number(r?.status || r?.error?.status || 0);
+    const msg = String(r?.error?.message || r?.error || "CSE_ERROR");
 
-    cseCacheSet(cacheKey, out);
-    return out;
-  } catch (e) {
-    // 429 → cooldown (prevents quota burn + noisy logs)
-    if (is429(e) && FAE_CSE_COOLDOWN_MS > 0) {
-      const now2 = Date.now();
-      const nextUntil = now2 + FAE_CSE_COOLDOWN_MS;
-      const prevUntil = Number(CSE_STATE.disabledUntil || 0);
-      CSE_STATE.last429 = now2;
-      if (nextUntil > prevUntil) {
-        CSE_STATE.disabledUntil = nextUntil;
-        try {
-          console.warn('CSE:429 cooldown enabled', { until: new Date(nextUntil).toISOString() });
-        } catch {}
-      }
+    // 429/403: global cooldown (boş deneme kesilir)
+    if (status === 429 || status === 403) {
+      CSE_DISABLED_UNTIL = Date.now() + COOLDOWN_429_MS;
+      CSE_DISABLED_REASON = `http_${status}`;
     }
 
-    return {
+    const out = {
       ok: false,
       items: [],
-      error: e?.message || String(e),
-      meta: { domain: domain || "", url },
+      error: msg,
+      meta: { domain: domain || "", url, status },
     };
+
+    cacheSet(cacheKey, out, TTL_ERR_MS);
+    return out;
   }
+
+  const json = r?.data;
+  const items = Array.isArray(json?.items) ? json.items : [];
+  const out = {
+    ok: true,
+    items,
+    meta: {
+      url,
+      domain: domain || "",
+      totalResults: safeInt(json?.searchInformation?.totalResults, 0),
+      searchTime: json?.searchInformation?.searchTime,
+    },
+  };
+
+  cacheSet(cacheKey, out, TTL_OK_MS);
+  return out;
 }
