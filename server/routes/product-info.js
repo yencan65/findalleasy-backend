@@ -1550,17 +1550,14 @@ async function handleProduct(req, res) {
         }
       : null;
 
-    // paid fallback gating: default OFF (barcode/camera should be free-first)
-    const allowPaid =
-      String(
-        req.query?.paid ??
-          body?.paid ??
-          (body?.allowPaid ? '1' : '0') ??
-          process.env.PRODUCT_INFO_ALLOW_PAID_DEFAULT ??
-          '0'
-      ) === '1';
-
-    if (diag) diag.allowPaid = allowPaid;
+    // Paid gating — SerpAPI vs free-only mode
+    const paidEnabled = String(process.env.PAID_PRODUCT_ADAPTERS_ENABLED || "").trim() === "1";
+    const headerSkipPaid = String(req.headers?.["x-fae-skip-paid"] || "").trim() === "1";
+    const paidParam = String(req.query?.paid ?? body?.paid ?? "").trim();
+    const skipPaidParam = String(req.query?.skipPaid ?? body?.skipPaid ?? "").trim();
+    const skipPaid = headerSkipPaid || paidParam === "0" || skipPaidParam === "1";
+    const allowPaid = paidEnabled && !skipPaid;
+    try { if (diag) diag.paid = { paidEnabled, skipPaid, allowPaid }; } catch {}
 
     try {
       res.setHeader("x-product-info-ver", "S22.11");
@@ -1605,49 +1602,48 @@ async function handleProduct(req, res) {
 
     // 2) Barcode (8-18)
     if (/^\d{8,18}$/.test(qr)) {
-      // 2.1) OpenFoodFacts (food) — isim/gorsel yardimci olur ama tek basina fiyat getirmez
-      let baseProduct = null;
+      // 2.1) OpenFoodFacts (food)
       const off = await fetchOpenFoodFacts(qr, diag);
       if (off) {
-        baseProduct = off;
-        try {
-          await upsertProductDoc(off, diag, "mongo_upsert_openfoodfacts");
-        } catch {}
-      }
-
-      // 2.2) Local marketplaces engine (FREE, strict evidence + price required)
-      const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
-      if (local?.name) {
-        const merged = baseProduct ? { ...local, name: local.name || baseProduct.name, title: local.title || baseProduct.title, image: local.image || baseProduct.image } : local;
-        await upsertProductDoc(merged, diag, "mongo_upsert_local_marketplaces");
-        const out = { ok: true, product: merged, source: "local-marketplace-verified" };
+        await upsertProductDoc(off, diag, "mongo_upsert_openfoodfacts");
+        const out = { ok: true, product: off, source: "openfoodfacts" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
 
-      // 2.3) Paid fallbacks (ONLY if allowPaid=1)
+      // 2.2) Catalog verification (epey/cimri/akakce) — uses SerpAPI (paid)
       if (allowPaid) {
-        // Catalog verification (epey/cimri/akakce)
         const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
         if (catalog?.name) {
-          const merged = baseProduct ? { ...catalog, name: catalog.name || baseProduct.name, title: catalog.title || baseProduct.title, image: catalog.image || baseProduct.image } : catalog;
-          await upsertProductDoc(merged, diag, "mongo_upsert_catalog");
-          const out = { ok: true, product: merged, source: "catalog-verified" };
-          if (diag) out._diag = diag;
-          return safeJson(res, out);
-        }
-
-        // Google Shopping + immersive offers (+ google_product fallback)
-        const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
-        if (shopping?.name) {
-          const merged = baseProduct ? { ...shopping, name: shopping.name || baseProduct.name, title: shopping.title || baseProduct.title, image: shopping.image || baseProduct.image } : shopping;
-          await upsertProductDoc(merged, diag, "mongo_upsert_shopping");
-          const out = { ok: true, product: merged, source: "serpapi-shopping" };
+          await upsertProductDoc(catalog, diag, "mongo_upsert_catalog");
+          const out = { ok: true, product: catalog, source: "catalog-verified" };
           if (diag) out._diag = diag;
           return safeJson(res, out);
         }
       } else {
-        diag?.tries?.push?.({ step: "paid_fallbacks_skipped", reason: "allowPaid=0" });
+        diag?.tries?.push?.({ step: "catalog_skipped_skipPaid" });
+      }
+
+      // 2.3) Local marketplaces engine (strict evidence)
+      const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
+      if (local?.name) {
+        await upsertProductDoc(local, diag, "mongo_upsert_local_marketplaces");
+        const out = { ok: true, product: local, source: "local-marketplace-verified" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
+      // 2.4) SerpAPI Shopping resolver (paid, last resort)
+      if (allowPaid) {
+        const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
+        if (shopping?.name) {
+          await upsertProductDoc(shopping, diag, "mongo_upsert_shopping");
+          const out = { ok: true, product: shopping, source: "serpapi-shopping" };
+          if (diag) out._diag = diag;
+          return safeJson(res, out);
+        }
+      } else {
+        diag?.tries?.push?.({ step: "shopping_skipped_skipPaid" });
       }
 
       // Barcode çözülemedi: fallback dön
