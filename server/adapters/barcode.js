@@ -558,55 +558,54 @@ export async function searchBarcode(query, regionOrOptions = "TR") {
     } catch (localError) {
       console.warn(`Local providers error: ${localError.message}`);
     }
-    // 3) SERPAPI
-    try {
-      // NOTE: searchWithSerpApi() returns an object { ok, items, ... } (array-like but not Array.isArray).
-      // Old code never consumed Serp items => barcode resolution often degraded into random/irrelevant matches elsewhere.
-      const serpRes1 = await searchWithSerpApi(`ean ${code}`, {
-        region,
-        signal,
-        barcode: true,
-        mode: "shopping",
-        num: 12,
-        intent: { type: "barcode" },
-        noRetry: true,
-      });
-
-      let serpItems = Array.isArray(serpRes1?.items)
-        ? serpRes1.items
-        : Array.isArray(serpRes1)
-        ? serpRes1
-        : [];
-
-      // 2nd try: Turkish marketplaces (best-effort)
-      // Not: Local resolver (site içi arama + barcode doğrulama) zaten yukarıda.
-      // Buradaki amaç: Serp tarafında da TR marketlerden ek aday yakalamak.
-
-      // ❌ Tek request disiplini: site-loop kaldırıldı (ek Serp çağrısı yok).
-
-      if (Array.isArray(serpItems) && serpItems.length > 0) {
-        serpItems.forEach((x, i) => {
-          const safeUrl = sanitizeUrl(x.url || x.finalUrl || x.originUrl || x.link);
-          if (!safeUrl) return;
-
-          finalList.push({
-            id: x.id || x.url || `${code}-serp-${i}`,
-            title: safe(x.title),
-            price: null, // DISCOVERY SOURCE RULE (NO-FAKE)
-            rating: x.rating ?? null,
-            url: safeUrl,
-            imageRaw: x.image || null,
-            provider: "serpapi",
-            region,
-            currency: x.currency || "TRY",
-            category: "product",
-            barcode: code,
-            raw: x,
-          });
+    // 3) SERPAPI (PAID) — sadece explicit enabled ise
+    const paidEnabled = String(process.env.PAID_PRODUCT_ADAPTERS_ENABLED || "").trim() === "1";
+    if (paidEnabled && String(process.env.SERPAPI_KEY || "").trim()) {
+      try {
+        // NOTE: searchWithSerpApi() returns an object { ok, items, ... } (array-like but not Array.isArray).
+        // Old code never consumed Serp items => barcode resolution often degraded into random/irrelevant matches elsewhere.
+        const serpRes1 = await searchWithSerpApi(`ean ${code}`, {
+          region,
+          signal,
+          barcode: true,
+          mode: "shopping",
+          num: 12,
+          intent: { type: "barcode" },
+          noRetry: true,
         });
+
+        let serpItems = Array.isArray(serpRes1?.items)
+          ? serpRes1.items
+          : Array.isArray(serpRes1)
+          ? serpRes1
+          : [];
+
+        // ❌ Tek request disiplini: site-loop kaldırıldı (ek Serp çağrısı yok).
+
+        if (Array.isArray(serpItems) && serpItems.length > 0) {
+          serpItems.forEach((x, i) => {
+            const safeUrl = sanitizeUrl(x.url || x.finalUrl || x.originUrl || x.link);
+            if (!safeUrl) return;
+
+            finalList.push({
+              id: x.id || x.url || `${code}-serp-${i}`,
+              title: safe(x.title),
+              price: null, // DISCOVERY SOURCE RULE (NO-FAKE)
+              rating: x.rating ?? null,
+              url: safeUrl,
+              imageRaw: x.image || null,
+              provider: "serpapi",
+              region,
+              currency: x.currency || "TRY",
+              category: "product",
+              barcode: code,
+              raw: x,
+            });
+          });
+        }
+      } catch (serpError) {
+        console.warn(`SerpAPI error: ${serpError.message}`);
       }
-    } catch (serpError) {
-      console.warn(`SerpAPI error: ${serpError.message}`);
     }
 
     // Normalize ve optimize et
