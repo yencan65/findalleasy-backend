@@ -138,6 +138,77 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+/* ============================================================
+   GOOGLE CLOUD VISION FALLBACK (LABEL/LOGO/TEXT)
+   - Bazı projelerde Gemini kapalı olabilir ama Vision API açık olabilir.
+   - Bu fallback, aynı GOOGLE_API_KEY ile çalışmayı dener.
+   - Amaç: kredi yakmadan (SerpApi) önce query çıkarabilmek.
+   ============================================================ */
+
+async function googleCloudVisionExtract(cleanBase64, apiKey) {
+  try {
+    if (!apiKey || !cleanBase64) return { rawText: "", out: null };
+
+    const url =
+      "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey);
+
+    const payload = {
+      requests: [
+        {
+          image: { content: cleanBase64 },
+          features: [
+            { type: "TEXT_DETECTION", maxResults: 5 },
+            { type: "LOGO_DETECTION", maxResults: 5 },
+            { type: "LABEL_DETECTION", maxResults: 10 },
+          ],
+        },
+      ],
+    };
+
+    const r = await fetchWithTimeout(
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      10_000
+    );
+
+    const out = await r.json().catch(() => null);
+    if (!r.ok) throw new Error("GCV_HTTP_ERROR " + r.status);
+
+    const res0 = out?.responses?.[0] || null;
+
+    // OCR
+    const ocr = String(res0?.textAnnotations?.[0]?.description || "").trim();
+
+    // Logo + label adayları
+    const logos = Array.isArray(res0?.logoAnnotations)
+      ? res0.logoAnnotations
+      : [];
+    const labels = Array.isArray(res0?.labelAnnotations)
+      ? res0.labelAnnotations
+      : [];
+
+    const cand = [];
+    if (ocr) cand.push(ocr);
+    for (let i = 0; i < Math.min(logos.length, 3); i++) {
+      const d = logos[i]?.description;
+      if (d) cand.push(String(d));
+    }
+    for (let i = 0; i < Math.min(labels.length, 5); i++) {
+      const d = labels[i]?.description;
+      if (d) cand.push(String(d));
+    }
+
+    const rawText = cand.join(" ").trim();
+    return { rawText, out };
+  } catch {
+    return { rawText: "", out: null };
+  }
+}
+
 function pickSerpLensText(out) {
   try {
     const kg = out?.knowledge_graph;
@@ -627,7 +698,7 @@ async function handleVision(req, res) {
     let lensOut = null;
     let used = null;
 
-    // 1) Gemini
+    // 1) Gemini (Generative Language)
     if (apiKey) {
       used = "gemini";
       try {
@@ -676,6 +747,23 @@ async function handleVision(req, res) {
         );
         rawText = "";
         used = null;
+      }
+    }
+
+    // 1.5) Google Cloud Vision API fallback (LABEL/LOGO/TEXT)
+    // Gemini kapalı/erişilemez olduğunda bile çalışabilir.
+    if ((!rawText || !String(rawText).trim()) && apiKey) {
+      try {
+        const gcv = await googleCloudVisionExtract(cleanBase64, apiKey);
+        if (gcv?.rawText && String(gcv.rawText).trim()) {
+          rawText = String(gcv.rawText).trim();
+          // Gemini başarısızsa used null olabilir, burada işaretle
+          used = used ? used + "+gcv" : "gcv";
+          // Lens tarafında shopping başlıkları yok, ama raw'ı döndürmek faydalı
+          if (!lensOut) lensOut = gcv?.out || null;
+        }
+      } catch {
+        // ignore
       }
     }
 
