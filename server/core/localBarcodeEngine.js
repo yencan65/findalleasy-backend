@@ -158,13 +158,166 @@ function extractImage($) {
   return "";
 }
 
-function extractPriceHeuristic($) {
-  // Best-effort meta patterns (some sites expose product:price)
-  const p1 = extractMeta($, "product:price:amount");
-  if (p1) return p1;
-  const p2 = $("meta[itemprop='price']").attr("content");
-  if (p2) return cleanText(p2, 60);
-  return "";
+function extractPriceHeuristic($, html, provider) {
+  // Stronger price extraction for TR marketplaces.
+  // Priority:
+  //  1) Meta tags / structured data
+  //  2) Provider-specific selectors
+  //  3) Fallback regex on HTML (₺/TL/TRY)
+  try {
+    // ---- 1) Meta tags (fast + reliable when present)
+    const metaCandidates = [
+      extractMeta($, "product:price:amount"),
+      extractMeta($, "og:price:amount"),
+      extractMeta($, "product:price"),
+      extractMeta($, "price"),
+      $("meta[itemprop='price']").attr("content"),
+      $("meta[property='product:price:amount']").attr("content"),
+      $("meta[property='og:price:amount']").attr("content"),
+      $("meta[name='twitter:data1']").attr("content"),
+      $("meta[name='twitter:data2']").attr("content"),
+    ].map((v) => cleanText(v, 80)).filter(Boolean);
+
+    for (const v of metaCandidates) {
+      if (/[0-9]/.test(v)) return v;
+    }
+
+    // JSON-LD walker (JS-only)
+    const extractFromJsonLd = () => {
+      const scripts = $("script[type='application/ld+json']").toArray();
+      for (const sc of scripts) {
+        const txt = $(sc).text();
+        if (!txt || txt.length > 300_000) continue;
+        let j;
+        try { j = JSON.parse(txt); } catch { continue; }
+        const stack = [j];
+        while (stack.length) {
+          const cur = stack.pop();
+          if (cur == null) continue;
+          if (typeof cur === 'string') continue;
+          if (Array.isArray(cur)) { for (const v of cur) stack.push(v); continue; }
+          if (typeof cur === 'object') {
+            // schema: offers.price, priceSpecification.price
+            const offers = cur.offers;
+            if (offers && typeof offers === 'object') {
+              const arr = Array.isArray(offers) ? offers : [offers];
+              for (const off of arr) {
+                const p = off?.price ?? off?.lowPrice ?? off?.highPrice;
+                if (p != null && String(p).trim() !== '') return String(p);
+                const ps = off?.priceSpecification;
+                if (ps && typeof ps === 'object') {
+                  const p2 = ps?.price;
+                  if (p2 != null && String(p2).trim() !== '') return String(p2);
+                }
+              }
+            }
+            if (cur.price != null && String(cur.price).trim() !== '') return String(cur.price);
+            // Traverse
+            for (const v of Object.values(cur)) stack.push(v);
+          }
+        }
+      }
+      return '';
+    };
+
+    const jsonPrice = cleanText(extractFromJsonLd(), 80);
+    if (jsonPrice && /[0-9]/.test(jsonPrice)) return jsonPrice;
+
+    // ---- 3) Provider-specific selectors (best-effort)
+    const prov = String(provider || '').toLowerCase();
+    const selectorsByProvider = {
+      trendyol: [
+        '.prc-dsc',
+        '.prc-slg',
+        '[data-testid="price-current-discounted-price"]',
+        '[data-testid*="price"]',
+        '[class*="price"] [class*="discount"]',
+        '[class*="price"]',
+      ],
+      hepsiburada: [
+        '[data-test-id="price-current-price"]',
+        '[data-test-id="price"]',
+        '.extra-discount-price',
+        '.product-price',
+        '[class*="price"]',
+      ],
+      n11: [
+        '.newPrice ins',
+        '.newPrice',
+        '.unf-p-summary-price',
+        '[class*="price"]',
+      ],
+    };
+
+    const genericSelectors = [
+      '[itemprop="price"]',
+      'meta[itemprop="price"]',
+      '[data-price]',
+      '[data-test-id*="price"]',
+      '[class*="price"]',
+    ];
+
+    const selList = (selectorsByProvider[prov] || []).concat(genericSelectors);
+    for (const sel of selList) {
+      const el = $(sel).first();
+      if (!el || !el.length) continue;
+      const val =
+        el.attr('content') ||
+        el.attr('data-price') ||
+        el.attr('value') ||
+        el.text();
+      const v = cleanText(val, 120);
+      if (v && /[0-9]/.test(v) && (v.includes('₺') || v.toLowerCase().includes('tl') || /\d/.test(v))) {
+        return v;
+      }
+    }
+
+    // ---- 4) Fallback regex on HTML
+    const h = String(html || '');
+    if (!h) return '';
+    const slice = h.length > 250000 ? h.slice(0, 250000) : h;
+
+    const patterns = [
+      /(?:₺|TL|TRY)\s*([0-9][0-9\.,]{0,15})/gi,
+      /([0-9][0-9\.,]{0,15})\s*(?:₺|TL|TRY)/gi,
+    ];
+
+    let best = '';
+    let bestScore = -(10 ** 9);
+
+    for (const re of patterns) {
+      let m;
+      while ((m = re.exec(slice))) {
+        const numRaw = (m[1] || '').trim();
+        if (!numRaw) continue;
+        const idx = m.index || 0;
+        const ctx = slice.slice(Math.max(0, idx - 40), Math.min(slice.length, idx + 40)).toLowerCase();
+
+        // Skip obvious non-price contexts
+        if (ctx.includes('taksit') || ctx.includes('kargo') || ctx.includes('puan') || ctx.includes('kupon') || ctx.includes('%')) continue;
+
+        let score = 0;
+        if (ctx.includes('price') || ctx.includes('fiyat') || ctx.includes('prc') || ctx.includes('amount')) score += 3;
+        if (ctx.includes('current') || ctx.includes('sale') || ctx.includes('discount')) score += 1;
+
+        // Prefer earlier occurrences slightly
+        score -= Math.min(20, idx / 20000);
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = numRaw;
+        }
+
+        // Stop after enough candidates to avoid heavy loops
+        if (re.lastIndex > 200000) break;
+      }
+      re.lastIndex = 0;
+    }
+
+    return best || '';
+  } catch {
+    return '';
+  }
 }
 
 function coercePrice(priceLike) {
@@ -275,7 +428,7 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
       if (!title || title.length < 5) continue;
 
       const image = extractImage($);
-      const priceNum = coercePrice(extractPriceHeuristic($));
+      const priceNum = coercePrice(extractPriceHeuristic($, html, provider));
 
       matches.push({
         provider,
