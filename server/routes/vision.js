@@ -561,7 +561,16 @@ async function handleVision(req, res) {
       });
     }
 
-    const apiKey = process.env.GOOGLE_API_KEY;
+    // Keys
+    const cseKey = process.env.GOOGLE_API_KEY; // often used for CSE
+    const cvKey =
+      process.env.GOOGLE_CLOUD_VISION_KEY ||
+      process.env.GOOGLE_VISION_API_KEY ||
+      cseKey;
+    const enableGemini = String(process.env.VISION_ENABLE_GEMINI || "").trim() === "1";
+    const geminiKey = enableGemini
+      ? (process.env.GOOGLE_GEMINI_API_KEY || cseKey)
+      : null;
     const serpKey = process.env.SERPAPI_KEY;
 
     const allowSerpLens = (() => {
@@ -593,13 +602,13 @@ async function handleVision(req, res) {
     })();
 
 
-    if (!apiKey && !(serpKey && allowSerpLens)) {
+    if (!cvKey && !(geminiKey) && !(serpKey && allowSerpLens)) {
       return safeJson(
         res,
         {
           ok: false,
           error: "VISION_DISABLED",
-          detail: "GOOGLE_API_KEY & SERPAPI_KEY missing",
+          detail: "GOOGLE_CLOUD_VISION_KEY/GOOGLE_VISION_API_KEY (or GOOGLE_API_KEY), GOOGLE_GEMINI_API_KEY, SERPAPI_KEY missing",
         },
         200
       );
@@ -631,10 +640,12 @@ async function handleVision(req, res) {
 	    // 0) Cloud Vision (LABEL/TEXT) — önce dene.
 	    // Not: Cloud Vision API fiyatlandırması tier'lı; ilk 1000 unit/ay ücretsiz kota olabilir.
 	    // Bu katman: "Cloud API key" ile çalışır. Gemini anahtarı yanlışsa bile kurtarır.
-	    if (apiKey) {
+	    const barcodes = [];
+
+    if (cvKey) {
 	      try {
 	        const cvUrl =
-	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey);
+	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(cvKey);
 	
 	        const cvPayload = {
 	          requests: [
@@ -663,18 +674,31 @@ async function handleVision(req, res) {
 
 	        const ann = cvOut?.responses?.[0] || {};
 	
-	        // 1) OCR varsa ilk satır (çok uzun/çöp değilse)
-	        let q = "";
-	        const ocr = String(ann?.textAnnotations?.[0]?.description || "").trim();
-	        if (ocr) {
-	          const firstLine = ocr
-	            .split(/\r?\n/)
-	            .map((s) => String(s || "").trim())
-	            .filter(Boolean)[0];
-	          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
-	        }
+	        // 1) OCR varsa barkod/digit öncelik, yoksa ilk satır
+        let q = "";
+        const ocr = String(ann?.textAnnotations?.[0]?.description || "").trim();
+        // Barcode candidates from OCR (EAN/UPC-like digit groups)
+        try {
+          const hits = (ocr.match(/\b\d{8,18}\b/g) || [])
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+          for (const h of hits) {
+            if (!barcodes.includes(h)) barcodes.push(h);
+          }
+        } catch {}
 
-	        // 2) Label fallback (ilk 2-3 etiket)
+        if (barcodes.length) {
+          q = barcodes[0];
+        }
+        if (!q && ocr) {
+          const firstLine = ocr
+            .split(/\r?\n/)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean)[0];
+          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
+        }
+
+        // 2) Label fallback (ilk 2-3 etiket)
 	        if (!q) {
 	          const labels = Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations : [];
 	          const parts = labels
@@ -696,12 +720,12 @@ async function handleVision(req, res) {
 	    }
 
     // 1) Gemini
-	    if (apiKey && (!rawText || !String(rawText).trim())) {
+	    if (geminiKey && (!rawText || !String(rawText).trim())) {
       used = "gemini";
       try {
         const url =
           "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-          apiKey;
+          geminiKey;
 
         const payload = {
           contents: [
@@ -799,6 +823,8 @@ async function handleVision(req, res) {
         ok: false,
         error: "NO_MATCH",
         query: "",
+        barcode: barcodes?.[0] || "",
+        barcodes: Array.isArray(barcodes) ? barcodes : [],
         rawText: safeStr(text, 2000),
 	        raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
         meta: {
@@ -815,6 +841,8 @@ async function handleVision(req, res) {
     return safeJson(res, {
       ok: true,
       query,
+      barcode: barcodes?.[0] || "",
+      barcodes: Array.isArray(barcodes) ? barcodes : [],
       rawText: safeStr(text, 2000),
 	      raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
       meta: {
