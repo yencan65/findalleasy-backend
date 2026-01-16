@@ -1,134 +1,97 @@
 // server/core/localBarcodeEngine.js
-// ============================================================================
-// LOCAL BARCODE ENGINE — S22 (TR MARKETPLACES)
-//
-// Goal:
-//  - Barcode çözülmezse TR marketplace'lerde "site içi arama" yap
-//  - Aday ürün sayfalarını GET ile çek
-//  - ✅ SADECE barcode string'i sayfada gerçekten geçiyorsa kabul et
-//
-// Notes:
-//  - Bu engine "best-effort": captcha / blok / JS-only sayfa durumlarında boş dönebilir.
-//  - Ama boş dönmesi, yanlış ürün döndürmekten iyidir.
-// ============================================================================
+// ============================================================
+//  LOCAL MARKETPLACE BARCODE ENGINE — S22 (FREE-FIRST)
+//  - Site içi arama sayfalarından aday ürün linklerini bulur
+//  - Ürün sayfalarında barkod kanıtı + fiyat parse eder
+//  - ✅ Daha sağlam fiyat selector + JSON-LD + regex fallback
+//  - ✅ Barkod doğrulama: HTML text + JSON-LD gtin + meta itemprop
+//  - Cache: 15dk (in-memory)
+// ============================================================
 
-import * as cheerio from "cheerio";
-import { getHtml } from "./NetClient.js";
+import cheerio from "cheerio";
+import { cseSearchSite } from "./googleCseClient.js";
+import { getHtml } from "../core/fetcher.js";
 
-// ---------------------------------------------------------------------------
-// Tiny TTL cache (in-memory)
-// ---------------------------------------------------------------------------
-const CACHE = new Map(); // key -> { ts, data }
-const TTL_MS = Number(process.env.FAE_LOCAL_BARCODE_TTL_MS || 10 * 60 * 1000);
+const CACHE_TTL_MS = Number(process.env.LOCAL_BARCODE_CACHE_TTL_MS || 15 * 60 * 1000);
+const cache = new Map(); // key -> { ts, data }
 
 function cacheGet(key) {
-  try {
-    const hit = CACHE.get(key);
-    if (!hit) return null;
-    const age = Date.now() - (hit.ts || 0);
-    if (age > TTL_MS) return null;
-    return hit.data || null;
-  } catch {
+  const it = cache.get(key);
+  if (!it) return null;
+  if (Date.now() - it.ts > CACHE_TTL_MS) {
+    cache.delete(key);
     return null;
   }
+  return it.data || null;
 }
 
 function cacheSet(key, data) {
-  try {
-    CACHE.set(key, { ts: Date.now(), data });
-  } catch {}
+  cache.set(key, { ts: Date.now(), data });
 }
 
 function uniq(arr) {
-  const seen = new Set();
-  const out = [];
-  for (const x of arr || []) {
-    const s = String(x || "");
-    if (!s) continue;
-    if (seen.has(s)) continue;
-    seen.add(s);
-    out.push(s);
+  return Array.from(new Set((arr || []).filter(Boolean)));
+}
+
+function cleanText(s, max = 4000) {
+  try {
+    let t = String(s || "");
+    t = t.replace(/\s+/g, " ").trim();
+    if (t.length > max) t = t.slice(0, max);
+    return t;
+  } catch {
+    return "";
   }
-  return out;
+}
+
+function looksBlocked(html) {
+  const s = String(html || "");
+  if (!s) return true;
+  // basit bot/anti-scrape sinyalleri
+  const low = s.toLowerCase();
+  if (low.includes("captcha") || low.includes("cloudflare") || low.includes("please enable javascript")) return true;
+  // çok küçük sayfa genelde boş/redirect
+  if (s.length < 1200) return true;
+  return false;
 }
 
 function absUrl(base, href) {
   try {
-    if (!href) return null;
-    const h = String(href).trim();
-    if (!h) return null;
-    if (h.startsWith("http://") || h.startsWith("https://")) return h;
-    return new URL(h, base).toString();
+    if (!href) return "";
+    const u = new URL(href, base);
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeDomain(d) {
+  const s = String(d || "").trim().toLowerCase();
+  if (!s) return "";
+  return s.replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/+$/g, "");
+}
+
+function safeJsonParse(maybeJson) {
+  try {
+    return JSON.parse(maybeJson);
   } catch {
     return null;
   }
 }
 
-function cleanText(s, max = 220) {
-  const t = String(s || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return "";
-  return t.length > max ? t.slice(0, max) : t;
-}
-
-function pageIncludesBarcode(html, barcode) {
-  try {
-    if (!html || !barcode) return false;
-    const code = String(barcode).trim();
-    if (!code) return false;
-    const h = String(html);
-
-    // 1) En net kanıt: sayfada barkod rakamı direkt geçiyor
-    if (h.includes(code)) return true;
-
-    // 2) JSON key + barcode kombinasyonu (minify edilmiş scriptlerde sık görülür)
-    const keyRe = new RegExp(
-      String.raw`(?:gtin(?:13|14)?|ean(?:13)?|barcode|barkod|upc|product\\s*id|product_id)\\s*["'\\s:=\\-]{0,20}` + code,
-      "i"
-    );
-    if (keyRe.test(h)) return true;
-
-    // 3) JSON-LD (structured data) içinde gtin/barcode alanları
-    // Not: parse riskli -> küçük bloklarda dene
-    const $ = cheerio.load(h);
-    const scripts = $('script[type="application/ld+json"]').toArray();
-    for (const sc of scripts) {
-      const txt = $(sc).text();
-      if (!txt || txt.length > 250_000) continue;
-      try {
-        const j = JSON.parse(txt);
-        const stack = [j];
-        while (stack.length) {
-          const cur = stack.pop();
-          if (cur == null) continue;
-
-          if (typeof cur === "string") {
-            if (cur.includes(code)) return true;
-            continue;
-          }
-          if (Array.isArray(cur)) {
-            for (const v of cur) stack.push(v);
-            continue;
-          }
-          if (typeof cur === "object") {
-            for (const [k, v] of Object.entries(cur)) {
-              const kk = String(k).toLowerCase();
-              if (["gtin", "gtin13", "gtin14", "ean", "ean13", "barcode", "barkod", "upc"].includes(kk)) {
-                if (String(v || "").includes(code)) return true;
-              }
-              stack.push(v);
-            }
-          }
-        }
-      } catch {
-        // ignore
-      }
+function traverseJson(root, cb) {
+  const stack = [root];
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v) continue;
+    cb(v);
+    if (Array.isArray(v)) {
+      for (const x of v) stack.push(x);
+      continue;
     }
-
-    return false;
-  } catch {
-    return false;
+    if (typeof v === "object") {
+      for (const k of Object.keys(v)) stack.push(v[k]);
+    }
   }
 }
 
@@ -158,168 +121,6 @@ function extractImage($) {
   return "";
 }
 
-function extractPriceHeuristic($, html, provider) {
-  // Stronger price extraction for TR marketplaces.
-  // Priority:
-  //  1) Meta tags / structured data
-  //  2) Provider-specific selectors
-  //  3) Fallback regex on HTML (₺/TL/TRY)
-  try {
-    // ---- 1) Meta tags (fast + reliable when present)
-    const metaCandidates = [
-      extractMeta($, "product:price:amount"),
-      extractMeta($, "og:price:amount"),
-      extractMeta($, "product:price"),
-      extractMeta($, "price"),
-      $("meta[itemprop='price']").attr("content"),
-      $("meta[property='product:price:amount']").attr("content"),
-      $("meta[property='og:price:amount']").attr("content"),
-      $("meta[name='twitter:data1']").attr("content"),
-      $("meta[name='twitter:data2']").attr("content"),
-    ].map((v) => cleanText(v, 80)).filter(Boolean);
-
-    for (const v of metaCandidates) {
-      if (/[0-9]/.test(v)) return v;
-    }
-
-    // JSON-LD walker (JS-only)
-    const extractFromJsonLd = () => {
-      const scripts = $("script[type='application/ld+json']").toArray();
-      for (const sc of scripts) {
-        const txt = $(sc).text();
-        if (!txt || txt.length > 300_000) continue;
-        let j;
-        try { j = JSON.parse(txt); } catch { continue; }
-        const stack = [j];
-        while (stack.length) {
-          const cur = stack.pop();
-          if (cur == null) continue;
-          if (typeof cur === 'string') continue;
-          if (Array.isArray(cur)) { for (const v of cur) stack.push(v); continue; }
-          if (typeof cur === 'object') {
-            // schema: offers.price, priceSpecification.price
-            const offers = cur.offers;
-            if (offers && typeof offers === 'object') {
-              const arr = Array.isArray(offers) ? offers : [offers];
-              for (const off of arr) {
-                const p = off?.price ?? off?.lowPrice ?? off?.highPrice;
-                if (p != null && String(p).trim() !== '') return String(p);
-                const ps = off?.priceSpecification;
-                if (ps && typeof ps === 'object') {
-                  const p2 = ps?.price;
-                  if (p2 != null && String(p2).trim() !== '') return String(p2);
-                }
-              }
-            }
-            if (cur.price != null && String(cur.price).trim() !== '') return String(cur.price);
-            // Traverse
-            for (const v of Object.values(cur)) stack.push(v);
-          }
-        }
-      }
-      return '';
-    };
-
-    const jsonPrice = cleanText(extractFromJsonLd(), 80);
-    if (jsonPrice && /[0-9]/.test(jsonPrice)) return jsonPrice;
-
-    // ---- 3) Provider-specific selectors (best-effort)
-    const prov = String(provider || '').toLowerCase();
-    const selectorsByProvider = {
-      trendyol: [
-        '.prc-dsc',
-        '.prc-slg',
-        '[data-testid="price-current-discounted-price"]',
-        '[data-testid*="price"]',
-        '[class*="price"] [class*="discount"]',
-        '[class*="price"]',
-      ],
-      hepsiburada: [
-        '[data-test-id="price-current-price"]',
-        '[data-test-id="price"]',
-        '.extra-discount-price',
-        '.product-price',
-        '[class*="price"]',
-      ],
-      n11: [
-        '.newPrice ins',
-        '.newPrice',
-        '.unf-p-summary-price',
-        '[class*="price"]',
-      ],
-    };
-
-    const genericSelectors = [
-      '[itemprop="price"]',
-      'meta[itemprop="price"]',
-      '[data-price]',
-      '[data-test-id*="price"]',
-      '[class*="price"]',
-    ];
-
-    const selList = (selectorsByProvider[prov] || []).concat(genericSelectors);
-    for (const sel of selList) {
-      const el = $(sel).first();
-      if (!el || !el.length) continue;
-      const val =
-        el.attr('content') ||
-        el.attr('data-price') ||
-        el.attr('value') ||
-        el.text();
-      const v = cleanText(val, 120);
-      if (v && /[0-9]/.test(v) && (v.includes('₺') || v.toLowerCase().includes('tl') || /\d/.test(v))) {
-        return v;
-      }
-    }
-
-    // ---- 4) Fallback regex on HTML
-    const h = String(html || '');
-    if (!h) return '';
-    const slice = h.length > 250000 ? h.slice(0, 250000) : h;
-
-    const patterns = [
-      /(?:₺|TL|TRY)\s*([0-9][0-9\.,]{0,15})/gi,
-      /([0-9][0-9\.,]{0,15})\s*(?:₺|TL|TRY)/gi,
-    ];
-
-    let best = '';
-    let bestScore = -(10 ** 9);
-
-    for (const re of patterns) {
-      let m;
-      while ((m = re.exec(slice))) {
-        const numRaw = (m[1] || '').trim();
-        if (!numRaw) continue;
-        const idx = m.index || 0;
-        const ctx = slice.slice(Math.max(0, idx - 40), Math.min(slice.length, idx + 40)).toLowerCase();
-
-        // Skip obvious non-price contexts
-        if (ctx.includes('taksit') || ctx.includes('kargo') || ctx.includes('puan') || ctx.includes('kupon') || ctx.includes('%')) continue;
-
-        let score = 0;
-        if (ctx.includes('price') || ctx.includes('fiyat') || ctx.includes('prc') || ctx.includes('amount')) score += 3;
-        if (ctx.includes('current') || ctx.includes('sale') || ctx.includes('discount')) score += 1;
-
-        // Prefer earlier occurrences slightly
-        score -= Math.min(20, idx / 20000);
-
-        if (score > bestScore) {
-          bestScore = score;
-          best = numRaw;
-        }
-
-        // Stop after enough candidates to avoid heavy loops
-        if (re.lastIndex > 200000) break;
-      }
-      re.lastIndex = 0;
-    }
-
-    return best || '';
-  } catch {
-    return '';
-  }
-}
-
 function coercePrice(priceLike) {
   const s = String(priceLike || "").replace(/[^0-9.,]/g, "").trim();
   if (!s) return null;
@@ -329,7 +130,225 @@ function coercePrice(priceLike) {
     .replace(/,/g, ".");
   const n = Number(normalized);
   if (!Number.isFinite(n) || n <= 0) return null;
+  // aşırı uç değerleri ele (regex çöpünü kesmek için)
+  if (n < 0.5 || n > 5_000_000) return null;
   return n;
+}
+
+function pickFirstNonEmpty(...vals) {
+  for (const v of vals) {
+    const s = cleanText(v, 120);
+    if (s) return s;
+  }
+  return "";
+}
+
+function extractPriceFromJsonLd($) {
+  try {
+    const scripts = $("script[type='application/ld+json']");
+    let best = null;
+
+    scripts.each((_, el) => {
+      const raw = $(el).contents().text();
+      const parsed = safeJsonParse(raw);
+      if (!parsed) return;
+
+      traverseJson(parsed, (node) => {
+        if (!node || typeof node !== "object") return;
+        const offers = node.offers;
+        if (!offers) return;
+
+        const tryOffer = (off) => {
+          if (!off || typeof off !== "object") return;
+          const p = pickFirstNonEmpty(off.price, off.lowPrice, off.highPrice, off.priceSpecification?.price);
+          const n = coercePrice(p);
+          if (!n) return;
+          if (best == null || n < best) best = n;
+        };
+
+        if (Array.isArray(offers)) {
+          for (const off of offers) tryOffer(off);
+        } else {
+          tryOffer(offers);
+        }
+      });
+    });
+
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+function extractPriceBySelectors($, provider) {
+  try {
+    const p = String(provider || "").toLowerCase();
+    const candidates = [];
+
+    const grab = (sel, attr = null) => {
+      try {
+        if (!sel) return;
+        const el = $(sel).first();
+        if (!el || !el.length) return;
+        const raw = attr ? el.attr(attr) : el.text();
+        const n = coercePrice(raw);
+        if (n) candidates.push(n);
+      } catch {
+        // ignore
+      }
+    };
+
+    // Genel meta
+    grab("meta[property='product:price:amount']", "content");
+    grab("meta[itemprop='price']", "content");
+    grab("meta[property='og:price:amount']", "content");
+
+    if (p === "trendyol") {
+      grab("span.prc-dsc");
+      grab("span.prc-slg");
+      grab("[data-testid='price-current-price']");
+      grab("div.pr-bx-w > span");
+    } else if (p === "hepsiburada") {
+      grab("[data-test-id='price-current-price']");
+      grab("[data-test-id='default-price']");
+      grab("span[data-bind*='currentPrice']");
+      grab(".price__current-price");
+      grab(".final-price");
+    } else if (p === "n11") {
+      grab(".newPrice ins");
+      grab(".newPrice");
+      grab(".unf-p-detail .price");
+      grab(".productPrice");
+    }
+
+    if (!candidates.length) return null;
+    // discount vs eski fiyat: en düşük genelde 'current' olur.
+    candidates.sort((a, b) => a - b);
+    return candidates[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPriceByRegex($) {
+  try {
+    const bodyText = cleanText($("body").text(), 120_000);
+    if (!bodyText) return null;
+
+    // TL / TRY fiyatlarını yakala
+    const re = /(?:₺|TL|TRY)\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:,[0-9]{2})?)/gi;
+    const nums = [];
+    let m;
+    while ((m = re.exec(bodyText)) && nums.length < 25) {
+      const n = coercePrice(m[1]);
+      if (n) nums.push(n);
+    }
+
+    if (!nums.length) {
+      // bazı sayfalar "1.234,56 TL" diye yazar
+      const re2 = /([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?)\s*(?:₺|TL|TRY)/gi;
+      while ((m = re2.exec(bodyText)) && nums.length < 25) {
+        const n = coercePrice(m[1]);
+        if (n) nums.push(n);
+      }
+    }
+
+    if (!nums.length) return null;
+    nums.sort((a, b) => a - b);
+    return nums[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractPriceHeuristic($, provider) {
+  // 1) JSON-LD (en temiz kaynak)
+  const jld = extractPriceFromJsonLd($);
+  if (jld) return jld;
+
+  // 2) Site-specific selectors + meta
+  const sel = extractPriceBySelectors($, provider);
+  if (sel) return sel;
+
+  // 3) Regex fallback (son çare)
+  return extractPriceByRegex($);
+}
+
+function extractBarcodeEvidenceFromJsonLd($) {
+  try {
+    const scripts = $("script[type='application/ld+json']");
+    const out = new Set();
+
+    scripts.each((_, el) => {
+      const raw = $(el).contents().text();
+      const parsed = safeJsonParse(raw);
+      if (!parsed) return;
+
+      traverseJson(parsed, (node) => {
+        if (!node || typeof node !== "object") return;
+        for (const k of ["gtin13", "gtin12", "gtin", "barcode", "sku"]) {
+          const v = node[k];
+          if (v == null) continue;
+          const s = String(v).replace(/\s+/g, "").trim();
+          if (/^\d{8,18}$/.test(s)) out.add(s);
+        }
+      });
+    });
+
+    return Array.from(out);
+  } catch {
+    return [];
+  }
+}
+
+function extractBarcodeEvidenceFromMeta($) {
+  try {
+    const out = new Set();
+    const take = (sel, attr = "content") => {
+      const v = $(sel).first().attr(attr);
+      if (!v) return;
+      const s = String(v).replace(/\s+/g, "").trim();
+      if (/^\d{8,18}$/.test(s)) out.add(s);
+    };
+
+    take("meta[itemprop='gtin13']");
+    take("meta[itemprop='gtin12']");
+    take("meta[itemprop='gtin']");
+    take("meta[itemprop='sku']");
+
+    // bazı siteler JSON içinden değil, data-* içine gömer
+    const body = cleanText($("body").attr("data-barcode") || "", 64);
+    if (body) {
+      const s = String(body).replace(/\s+/g, "").trim();
+      if (/^\d{8,18}$/.test(s)) out.add(s);
+    }
+
+    return Array.from(out);
+  } catch {
+    return [];
+  }
+}
+
+function pageMatchesBarcode(html, $, barcode) {
+  try {
+    const code = String(barcode || "").replace(/\s+/g, "").trim();
+    if (!/^\d{8,18}$/.test(code)) return false;
+
+    // hızlı: ham HTML içinde geçiyorsa
+    if (String(html || "").includes(code)) return true;
+
+    // JSON-LD evidence
+    const jld = extractBarcodeEvidenceFromJsonLd($);
+    if (jld.includes(code)) return true;
+
+    // Meta evidence
+    const meta = extractBarcodeEvidenceFromMeta($);
+    if (meta.includes(code)) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function fetchHtml(url, signal, adapterName) {
@@ -354,19 +373,23 @@ function providerSearchUrl(provider, barcode) {
   return null;
 }
 
+function providerDomain(provider) {
+  if (provider === "hepsiburada") return "hepsiburada.com";
+  if (provider === "trendyol") return "trendyol.com";
+  if (provider === "n11") return "n11.com";
+  return "";
+}
+
 function isLikelyProductUrl(provider, url) {
   const u = String(url || "");
   const low = u.toLowerCase();
   if (provider === "hepsiburada") {
-    // common pattern: -p-HB...
     return /-p-(hb[\w\d]+)/i.test(low) && low.includes("hepsiburada.com");
   }
   if (provider === "trendyol") {
-    // pattern: -p-<digits>
     return /-p-\d+/.test(low) && low.includes("trendyol.com");
   }
   if (provider === "n11") {
-    // pattern: /urun/...
     return low.includes("n11.com") && (low.includes("/urun/") || /-p-\d+/.test(low));
   }
   return false;
@@ -389,20 +412,6 @@ function extractCandidateLinks(provider, baseUrl, html) {
   }
 }
 
-function looksBlocked(html) {
-  if (!html) return true;
-  const t = String(html).toLowerCase();
-  return (
-    t.includes("captcha") ||
-    t.includes("robot") ||
-    t.includes("enable javascript") ||
-    t.includes("javascript etkinle") ||
-    t.includes("access denied") ||
-    t.includes("forbidden") ||
-    t.includes("cloudflare")
-  );
-}
-
 async function resolveOneProvider(provider, barcode, signal, opts = {}) {
   const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 7;
   const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 2;
@@ -413,22 +422,58 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
   const searchHtml = await fetchHtml(searchUrl, signal, `barcode-search:${provider}`);
   if (!searchHtml) return [];
 
-  const candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
+  let candidates = [];
+
+  // 1) Provider arama sayfasından çekmeyi dene
+  if (!looksBlocked(searchHtml)) {
+    candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
+  }
+
+  // 2) Anti-bot / boş sayfa ise CSE ile ücretsiz yedek
+  if (!candidates.length) {
+    const domain = providerDomain(provider);
+    if (domain) {
+      try {
+        const cse = await cseSearchSite(barcode, domain, {
+          num: maxCandidates,
+          hl: "tr",
+          gl: "TR",
+          cr: "countryTR",
+          lr: "lang_tr",
+        });
+        if (cse?.ok && Array.isArray(cse.items)) {
+          candidates = cse.items
+            .map((it) => String(it?.link || "").trim())
+            .filter(Boolean)
+            .filter((u) => isLikelyProductUrl(provider, u))
+            .map((u) => u.split("#")[0])
+            .slice(0, maxCandidates);
+        }
+      } catch {
+        // sessiz
+      }
+    }
+  }
+
   if (!candidates.length) return [];
 
   const matches = [];
   for (const url of candidates) {
     const html = await fetchHtml(url, signal, `barcode-page:${provider}`);
     if (!html) continue;
-    if (!pageIncludesBarcode(html, barcode)) continue; // ✅ strict
 
     try {
       const $ = cheerio.load(html);
+      if (!pageMatchesBarcode(html, $, barcode)) continue; // ✅ strict but smarter
+
       const title = extractTitle($);
       if (!title || title.length < 5) continue;
 
       const image = extractImage($);
-      const priceNum = coercePrice(extractPriceHeuristic($, html, provider));
+      const priceNum = extractPriceHeuristic($, provider);
+
+      // fiyat zorunlu (ürün)
+      if (!priceNum) continue;
 
       matches.push({
         provider,
@@ -436,9 +481,10 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
         title,
         image,
         price: priceNum,
-        currency: priceNum ? "TRY" : null,
+        currency: "TRY",
         verifiedBarcode: true,
       });
+
       if (matches.length >= maxMatches) break;
     } catch {
       // ignore parse errors
@@ -450,7 +496,6 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
 
 /**
  * searchLocalBarcodeEngine(barcode, opts)
- *
  * Returns: Array<{ provider, url, title, image, price, currency, verifiedBarcode }>
  */
 export async function searchLocalBarcodeEngine(barcode, opts = {}) {
@@ -463,11 +508,8 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
   if (cached) return cached;
 
   const signal = opts?.signal;
-  const providers = Array.isArray(opts?.providers)
-    ? opts.providers
-    : ["trendyol", "hepsiburada", "n11"];
+  const providers = Array.isArray(opts?.providers) ? opts.providers : ["trendyol", "hepsiburada", "n11"];
 
-  // Parallel but controlled: Promise.allSettled across 3 providers is ok.
   const settled = await Promise.allSettled(
     providers.map((p) => resolveOneProvider(String(p), code, signal, opts))
   );
@@ -477,14 +519,13 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
     if (s.status === "fulfilled" && Array.isArray(s.value)) out.push(...s.value);
   }
 
-  // Keep deterministic ordering (providers order) but still dedupe urls
   const byUrl = new Map();
   for (const it of out) {
     if (!it?.url) continue;
     if (!byUrl.has(it.url)) byUrl.set(it.url, it);
   }
-  const finalList = Array.from(byUrl.values());
 
+  const finalList = Array.from(byUrl.values());
   cacheSet(cacheKey, finalList);
   return finalList;
 }
