@@ -147,12 +147,12 @@ export async function httpGet(url, options = {}) {
         message: err.message,
       });
 
-      // 4xx (özellikle 429 kota) → anında stop. Aynı isteği tekrar atıp sadece kota yakmayalım.
+      // 4xx (özellikle 429/401/403) tekrar denemeyelim: log spam + boş deneme kesilsin
       const status = Number(err?.status || 0);
-      const isHardClientError = status >= 400 && status < 500 && status !== 408;
-      if (isHardClientError) {
-        break;
-      }
+      const is4xx = status >= 400 && status < 500;
+
+      // Abort/timeout da genelde tekrar denenmez (deadline/abort loop olmasın)
+      if (isAbort || is4xx) break;
 
       // Son denemeyse artık tekrar deneme
       if (attempt > retries) break;
