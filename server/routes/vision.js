@@ -623,12 +623,80 @@ async function handleVision(req, res) {
     const { hl, gl } = pickHlGlFromLocale(body.locale || body.localeHint || "tr");
 
     let rawText = "";
+	    let cvOut = null;
     let gemOut = null;
     let lensOut = null;
     let used = null;
 
+	    // 0) Cloud Vision (LABEL/TEXT) — önce dene.
+	    // Not: Cloud Vision API fiyatlandırması tier'lı; ilk 1000 unit/ay ücretsiz kota olabilir.
+	    // Bu katman: "Cloud API key" ile çalışır. Gemini anahtarı yanlışsa bile kurtarır.
+	    if (apiKey) {
+	      try {
+	        const cvUrl =
+	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey);
+	
+	        const cvPayload = {
+	          requests: [
+	            {
+	              image: { content: cleanBase64 },
+	              features: [
+	                { type: "LABEL_DETECTION", maxResults: 6 },
+	                { type: "TEXT_DETECTION", maxResults: 3 },
+	              ],
+	            },
+	          ],
+	        };
+	
+	        const rr = await fetchWithTimeout(
+	          cvUrl,
+	          {
+	            method: "POST",
+	            headers: { "Content-Type": "application/json" },
+	            body: JSON.stringify(cvPayload),
+	          },
+	          8_000
+	        );
+	
+	        cvOut = await rr.json().catch(() => null);
+	        if (!rr.ok) throw new Error("CLOUD_VISION_HTTP_ERROR " + rr.status);
+
+	        const ann = cvOut?.responses?.[0] || {};
+	
+	        // 1) OCR varsa ilk satır (çok uzun/çöp değilse)
+	        let q = "";
+	        const ocr = String(ann?.textAnnotations?.[0]?.description || "").trim();
+	        if (ocr) {
+	          const firstLine = ocr
+	            .split(/\r?\n/)
+	            .map((s) => String(s || "").trim())
+	            .filter(Boolean)[0];
+	          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
+	        }
+
+	        // 2) Label fallback (ilk 2-3 etiket)
+	        if (!q) {
+	          const labels = Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations : [];
+	          const parts = labels
+	            .filter((l) => (l?.score ?? 0) >= 0.45)
+	            .map((l) => String(l?.description || "").trim())
+	            .filter(Boolean)
+	            .slice(0, 3);
+	          if (parts.length) q = parts.join(" ");
+	        }
+
+	        if (q) {
+	          rawText = q;
+	          used = used ? used + "+cloud_vision" : "cloud_vision";
+	        }
+	      } catch (err) {
+	        // Cloud Vision başarısızsa sessizce sonraki katmana geç
+	        cvOut = null;
+	      }
+	    }
+
     // 1) Gemini
-    if (apiKey) {
+	    if (apiKey && (!rawText || !String(rawText).trim())) {
       used = "gemini";
       try {
         const url =
@@ -708,7 +776,7 @@ async function handleVision(req, res) {
       }
     }
 
-        const out = gemOut || lensOut;
+	        const out = cvOut || gemOut || lensOut;
     const text = String(rawText || "").trim();
 
     // ✅ Daha doğru query: Lens shopping başlıklarını da kullan
@@ -732,7 +800,7 @@ async function handleVision(req, res) {
         error: "NO_MATCH",
         query: "",
         rawText: safeStr(text, 2000),
-        raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
+	        raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
         meta: {
           ipHash: ip ? String(ip).slice(0, 8) : null,
           uaSnippet: ua,
@@ -748,7 +816,7 @@ async function handleVision(req, res) {
       ok: true,
       query,
       rawText: safeStr(text, 2000),
-      raw: { gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
+	      raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
       meta: {
         ipHash: ip ? String(ip).slice(0, 8) : null,
         uaSnippet: ua,
