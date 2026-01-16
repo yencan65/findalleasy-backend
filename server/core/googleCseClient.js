@@ -8,6 +8,48 @@
 
 import { httpGetJson } from "../utils/httpClient.js";
 
+// ---------------------------------------------------------------------------
+// In-memory cache + 429 circuit breaker (prevents quota burn + log spam)
+// ---------------------------------------------------------------------------
+const CSE_CACHE = new Map(); // key -> { ts, data }
+const FAE_CSE_CACHE_TTL_MS = Number(process.env.FAE_CSE_CACHE_TTL_MS || 10 * 60 * 1000);
+const FAE_CSE_COOLDOWN_MS = Number(process.env.FAE_CSE_COOLDOWN_MS || 10 * 60 * 1000);
+
+const CSE_STATE =
+  globalThis.__FAE_CSE_STATE ||
+  (globalThis.__FAE_CSE_STATE = { disabledUntil: 0, last429: 0 });
+
+function cseCacheGet(key) {
+  try {
+    if (!FAE_CSE_CACHE_TTL_MS || FAE_CSE_CACHE_TTL_MS <= 0) return null;
+    const hit = CSE_CACHE.get(key);
+    if (!hit) return null;
+    const age = Date.now() - (hit.ts || 0);
+    if (age > FAE_CSE_CACHE_TTL_MS) return null;
+    return hit.data || null;
+  } catch {
+    return null;
+  }
+}
+
+function cseCacheSet(key, data) {
+  try {
+    if (!FAE_CSE_CACHE_TTL_MS || FAE_CSE_CACHE_TTL_MS <= 0) return;
+    CSE_CACHE.set(key, { ts: Date.now(), data });
+  } catch {}
+}
+
+function is429(e) {
+  try {
+    const st = Number(e?.status || e?.statusCode || 0);
+    if (st == 429) return true;
+    const msg = String(e?.message || e || '').toLowerCase();
+    return msg.includes(' 429 ') || msg.includes('non_2xx 429') || msg.includes('status 429');
+  } catch {
+    return false;
+  }
+}
+
 function pickEnv(...names) {
   for (const n of names) {
     const v = process.env[n];
@@ -109,6 +151,24 @@ export async function cseSearchSite({
 
   const url = `https://www.googleapis.com/customsearch/v1?${buildParams(params)}`;
 
+  // Cache key includes everything that affects the result
+  const cacheKey = [cseCx, query, domain, hl, gl, cr, lr, params.num, params.start, safe].join('|');
+
+  // Circuit breaker: if we recently hit 429, stop calling CSE for a cooldown window
+  const now = Date.now();
+  if (FAE_CSE_COOLDOWN_MS > 0 && now < (CSE_STATE.disabledUntil || 0)) {
+    const until = CSE_STATE.disabledUntil || 0;
+    return {
+      ok: false,
+      items: [],
+      error: 'cse_cooldown_429',
+      meta: { domain: domain || '', url, disabledUntil: until },
+    };
+  }
+
+  const cached = cseCacheGet(cacheKey);
+  if (cached) return cached;
+
   try {
     const r = await httpGetJson(url, {
       timeoutMs: timeoutMs ?? safeInt(process.env.GOOGLE_CSE_TIMEOUT_MS, 4500),
@@ -121,7 +181,7 @@ export async function cseSearchSite({
 
     const json = r?.data;
     const items = Array.isArray(json?.items) ? json.items : [];
-    return {
+    const out = {
       ok: true,
       items,
       meta: {
@@ -129,9 +189,26 @@ export async function cseSearchSite({
         domain: domain || "",
         totalResults: safeInt(json?.searchInformation?.totalResults, 0),
         searchTime: json?.searchInformation?.searchTime,
-      },
+      }
     };
+
+    cseCacheSet(cacheKey, out);
+    return out;
   } catch (e) {
+    // 429 → cooldown (prevents quota burn + noisy logs)
+    if (is429(e) && FAE_CSE_COOLDOWN_MS > 0) {
+      const now2 = Date.now();
+      const nextUntil = now2 + FAE_CSE_COOLDOWN_MS;
+      const prevUntil = Number(CSE_STATE.disabledUntil || 0);
+      CSE_STATE.last429 = now2;
+      if (nextUntil > prevUntil) {
+        CSE_STATE.disabledUntil = nextUntil;
+        try {
+          console.warn('CSE:429 cooldown enabled', { until: new Date(nextUntil).toISOString() });
+        } catch {}
+      }
+    }
+
     return {
       ok: false,
       items: [],
