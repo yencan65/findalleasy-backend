@@ -3420,11 +3420,10 @@ export async function runAdapters(query, region = "TR", opts = {}) {
 
   const variant = String(engineVariant || "S30").toUpperCase();
 
-  
-
-  // Diagnostics collector must be defined early (fast paths use it)
+  // Diagnostics collector (must be defined before any early-return paths)
   const adapterDiag = [];
-const visionClean = Array.isArray(visionLabels)
+
+  const visionClean = Array.isArray(visionLabels)
     ? visionLabels.map((v) => String(v).toLowerCase().trim())
     : [];
 
