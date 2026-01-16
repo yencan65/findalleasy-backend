@@ -1550,6 +1550,15 @@ async function handleProduct(req, res) {
         }
       : null;
 
+    // Paid gating — SerpAPI vs free-only mode
+    const paidEnabled = String(process.env.PAID_PRODUCT_ADAPTERS_ENABLED || "").trim() === "1";
+    const headerSkipPaid = String(req.headers?.["x-fae-skip-paid"] || "").trim() === "1";
+    const paidParam = String(req.query?.paid ?? body?.paid ?? "").trim();
+    const skipPaidParam = String(req.query?.skipPaid ?? body?.skipPaid ?? "").trim();
+    const skipPaid = headerSkipPaid || paidParam === "0" || skipPaidParam === "1";
+    const allowPaid = paidEnabled && !skipPaid;
+    try { if (diag) diag.paid = { paidEnabled, skipPaid, allowPaid }; } catch {}
+
     try {
       res.setHeader("x-product-info-ver", "S22.11");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
@@ -1602,13 +1611,17 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // 2.2) Catalog verification (epey/cimri/akakce)
-      const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
-      if (catalog?.name) {
-        await upsertProductDoc(catalog, diag, "mongo_upsert_catalog");
-        const out = { ok: true, product: catalog, source: "catalog-verified" };
-        if (diag) out._diag = diag;
-        return safeJson(res, out);
+      // 2.2) Catalog verification (epey/cimri/akakce) — uses SerpAPI (paid)
+      if (allowPaid) {
+        const catalog = await resolveBarcodeViaCatalogSites(qr, localeShort, diag);
+        if (catalog?.name) {
+          await upsertProductDoc(catalog, diag, "mongo_upsert_catalog");
+          const out = { ok: true, product: catalog, source: "catalog-verified" };
+          if (diag) out._diag = diag;
+          return safeJson(res, out);
+        }
+      } else {
+        diag?.tries?.push?.({ step: "catalog_skipped_skipPaid" });
       }
 
       // 2.3) Local marketplaces engine (strict evidence)
@@ -1620,13 +1633,17 @@ async function handleProduct(req, res) {
         return safeJson(res, out);
       }
 
-      // 2.4) Google Shopping + immersive offers (+ google_product fallback)
-      const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
-      if (shopping?.name) {
-        await upsertProductDoc(shopping, diag, "mongo_upsert_shopping");
-        const out = { ok: true, product: shopping, source: "serpapi-shopping" };
-        if (diag) out._diag = diag;
-        return safeJson(res, out);
+      // 2.4) SerpAPI Shopping resolver (paid, last resort)
+      if (allowPaid) {
+        const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
+        if (shopping?.name) {
+          await upsertProductDoc(shopping, diag, "mongo_upsert_shopping");
+          const out = { ok: true, product: shopping, source: "serpapi-shopping" };
+          if (diag) out._diag = diag;
+          return safeJson(res, out);
+        }
+      } else {
+        diag?.tries?.push?.({ step: "shopping_skipped_skipPaid" });
       }
 
       // Barcode çözülemedi: fallback dön
