@@ -147,6 +147,17 @@ export async function httpGet(url, options = {}) {
         message: err.message,
       });
 
+
+
+      // HTTPCLIENT_NO_RETRY_4XX: 4xx (özellikle 429) tekrar denenmez — kota/log spam yakma
+      try {
+        const st = Number(lastError?.status || err?.status || 0);
+        if (st >= 400 && st < 500 && st !== 408) {
+          break;
+        }
+      } catch {
+        // ignore
+      }
       // Son denemeyse artık tekrar deneme
       if (attempt > retries) break;
     }
