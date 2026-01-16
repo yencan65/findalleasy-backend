@@ -8,9 +8,9 @@
 //  - Cache: 15dk (in-memory)
 // ============================================================
 
-import cheerio from "cheerio";
-import { cseSearchSite } from "./googleCseClient.js";
-import { getHtml } from "../core/fetcher.js";
+import * as cheerio from "cheerio";
+import { cseSearchSite, resolveCseKey, resolveCseCxForGroup } from "./googleCseClient.js";
+import { getHtml } from "./NetClient.js";
 
 const CACHE_TTL_MS = Number(process.env.LOCAL_BARCODE_CACHE_TTL_MS || 15 * 60 * 1000);
 const cache = new Map(); // key -> { ts, data }
@@ -434,7 +434,15 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
     const domain = providerDomain(provider);
     if (domain) {
       try {
-        const cse = await cseSearchSite(barcode, domain, {
+        const key = resolveCseKey();
+        const cx = resolveCseCxForGroup("PRODUCT");
+        if (!key || !cx) throw new Error("CSE_KEY_OR_CX_MISSING");
+
+        const cse = await cseSearchSite({
+          key,
+          cx,
+          q: barcode,
+          site: domain,
           num: maxCandidates,
           hl: "tr",
           gl: "TR",
@@ -509,14 +517,19 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
 
   const signal = opts?.signal;
   const providers = Array.isArray(opts?.providers) ? opts.providers : ["trendyol", "hepsiburada", "n11"];
-
-  const settled = await Promise.allSettled(
-    providers.map((p) => resolveOneProvider(String(p), code, signal, opts))
-  );
+  const maxMatchesGlobal = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 1;
 
   const out = [];
-  for (const s of settled) {
-    if (s.status === "fulfilled" && Array.isArray(s.value)) out.push(...s.value);
+  for (const p of providers) {
+    try {
+      const matches = await resolveOneProvider(String(p), code, signal, opts);
+      if (Array.isArray(matches)) out.push(...matches);
+    } catch {
+      // ignore
+    }
+
+    // early stop: yeterli match bulunduysa diğer provider'lara gitme
+    if (out.length >= Math.max(1, maxMatchesGlobal)) break;
   }
 
   const byUrl = new Map();
