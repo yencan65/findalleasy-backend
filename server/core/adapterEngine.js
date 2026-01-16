@@ -3420,7 +3420,11 @@ export async function runAdapters(query, region = "TR", opts = {}) {
 
   const variant = String(engineVariant || "S30").toUpperCase();
 
-  const visionClean = Array.isArray(visionLabels)
+  
+
+  // Diagnostics collector must be defined early (fast paths use it)
+  const adapterDiag = [];
+const visionClean = Array.isArray(visionLabels)
     ? visionLabels.map((v) => String(v).toLowerCase().trim())
     : [];
 
@@ -4061,7 +4065,6 @@ if (!opts.forceCategory && !preS40Locked && carRentalHit) {
   });
 
   const resultsBag = [];
-  const adapterDiag = [];
   const rlCtx = { tried: 0, denied: 0 };
 
   // ✅ gerçek completed metrikleri
