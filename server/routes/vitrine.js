@@ -1083,10 +1083,17 @@ async function handleVitrinCore(req, res) {
     const region = pick(qq.region, qb.region, "TR");
     const locale = pick(qq.locale, qq.lang, qb.locale, qb.lang, "tr");
     const category = pick(qq.category, qq.group, qb.category, qb.group, "product");
+    const source = pick(
+      qq.source,
+      qb.source,
+      req.headers["x-fae-source"],
+      req.headers["x-source"],
+      ""
+    );
 
     // downstream engine hep aynı yerden okusun
-    req.query = { ...qq, q: query, query, region, locale, category };
-    req.body = { ...qb, q: query, query, region, locale, category };
+    req.query = { ...qq, q: query, query, region, locale, category, source };
+    req.body = { ...qb, q: query, query, region, locale, category, source };
 
     const body = req.body || {};
     const rawQuery = body.query?.toString?.() ?? "";
@@ -1104,6 +1111,7 @@ async function handleVitrinCore(req, res) {
     const clientIp = getClientIp(req);
 
     const sessionId = safeSessionId(String(req.headers["x-session-id"] || body.sessionId || iam?.session || ""));
+    const sourceHint = String(body.source || req.headers["x-fae-source"] || req.headers["x-source"] || "").trim();
 
     const userId =
       userSafe !== "guest"
@@ -1222,6 +1230,7 @@ async function handleVitrinCore(req, res) {
               preferredType,
               clientIp,
               sessionId,
+              source: sourceHint,
             });
           }
         } catch {}
@@ -1230,6 +1239,7 @@ async function handleVitrinCore(req, res) {
           preferredType,
           clientIp,
           sessionId,
+          source: sourceHint,
         });
       })();
 
