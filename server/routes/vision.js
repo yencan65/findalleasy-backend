@@ -485,6 +485,60 @@ function buildVisionQuery(primaryText, lensOut) {
   return String(q || "").trim();
 }
 
+// ------------------------------------------------------------
+// Barcode extraction from OCR text (EAN/UPC)
+// ------------------------------------------------------------
+function eanChecksumOK(code) {
+  try {
+    const s = String(code || '').replace(/\D/g, '');
+    if (s.length === 13) {
+      let sum = 0;
+      for (let i = 0; i < 12; i++) {
+        const d = Number(s[i]);
+        sum += (i % 2 === 0) ? d : d * 3;
+      }
+      const check = (10 - (sum % 10)) % 10;
+      return check === Number(s[12]);
+    }
+    if (s.length === 8) {
+      let sum = 0;
+      for (let i = 0; i < 7; i++) {
+        const d = Number(s[i]);
+        sum += (i % 2 === 0) ? d * 3 : d;
+      }
+      const check = (10 - (sum % 10)) % 10;
+      return check === Number(s[7]);
+    }
+    return true; // diğer uzunluklar: checksum zorunlu değil
+  } catch {
+    return false;
+  }
+}
+
+function extractBarcodesFromText(text) {
+  try {
+    const t = String(text || '');
+    const found = new Set();
+    const re = /(\d{8,18})/g;
+    let m;
+    while ((m = re.exec(t)) && found.size < 10) {
+      const code = String(m[1] || '');
+      if (!/^(?:0+)$/g.test(code) && eanChecksumOK(code)) found.add(code);
+    }
+    // Öncelik: 13 -> 12 -> 8 -> diğerleri
+    const arr = Array.from(found);
+    arr.sort((a, b) => {
+      const wa = a.length === 13 ? 0 : a.length === 12 ? 1 : a.length === 8 ? 2 : 3;
+      const wb = b.length === 13 ? 0 : b.length === 12 ? 1 : b.length === 8 ? 2 : 3;
+      if (wa != wb) return wa - wb;
+      return b.length - a.length;
+    });
+    return arr;
+  } catch {
+    return [];
+  }
+}
+
 
 
 /* ============================================================
@@ -561,17 +615,42 @@ async function handleVision(req, res) {
       });
     }
 
-    // Keys
-    const cseKey = process.env.GOOGLE_API_KEY; // often used for CSE
-    const cvKey =
-      process.env.GOOGLE_CLOUD_VISION_KEY ||
-      process.env.GOOGLE_VISION_API_KEY ||
-      cseKey;
-    const enableGemini = String(process.env.VISION_ENABLE_GEMINI || "").trim() === "1";
-    const geminiKey = enableGemini
-      ? (process.env.GOOGLE_GEMINI_API_KEY || cseKey)
-      : null;
+    // Cloud Vision key (Render): GOOGLE_VISION_API_KEY
+    // Back-compat: GOOGLE_API_KEY de kullanılabilir (Vision API açık olmalı)
+    const visionKey = process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_API_KEY;
+
+    // Gemini ayrı tutulur; default OFF (kredi/usage yakmasın)
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+
     const serpKey = process.env.SERPAPI_KEY;
+
+    const allowGemini = (() => {
+      // Default: OFF. Opt-in via env or request.
+      try {
+        const v = String(process.env.VISION_ALLOW_GEMINI || "").trim().toLowerCase();
+        if (v === "1" || v === "true" || v === "yes") return true;
+      } catch {}
+
+      try {
+        const h = String(req?.headers?.["x-fae-allow-gemini"] || "").trim().toLowerCase();
+        if (h === "1" || h === "true" || h === "yes") return true;
+      } catch {}
+
+      try {
+        const qv = String(req?.query?.allowGemini || req?.query?.allow_gemini || "")
+          .trim()
+          .toLowerCase();
+        if (qv === "1" || qv === "true" || qv === "yes") return true;
+      } catch {}
+
+      try {
+        if (body?.allowGemini === true || body?.allow_gemini === true) return true;
+        const b = String(body?.allowGemini || body?.allow_gemini || "").trim().toLowerCase();
+        if (b === "1" || b === "true" || b === "yes") return true;
+      } catch {}
+
+      return false;
+    })();
 
     const allowSerpLens = (() => {
       // Default: OFF (burns credits). Opt-in via env or request.
@@ -602,13 +681,13 @@ async function handleVision(req, res) {
     })();
 
 
-    if (!cvKey && !(geminiKey) && !(serpKey && allowSerpLens)) {
+    if (!visionKey && !(geminiKey && allowGemini) && !(serpKey && allowSerpLens)) {
       return safeJson(
         res,
         {
           ok: false,
           error: "VISION_DISABLED",
-          detail: "GOOGLE_CLOUD_VISION_KEY/GOOGLE_VISION_API_KEY (or GOOGLE_API_KEY), GOOGLE_GEMINI_API_KEY, SERPAPI_KEY missing",
+          detail: "GOOGLE_VISION_API_KEY (or GOOGLE_API_KEY) missing",
         },
         200
       );
@@ -640,12 +719,10 @@ async function handleVision(req, res) {
 	    // 0) Cloud Vision (LABEL/TEXT) — önce dene.
 	    // Not: Cloud Vision API fiyatlandırması tier'lı; ilk 1000 unit/ay ücretsiz kota olabilir.
 	    // Bu katman: "Cloud API key" ile çalışır. Gemini anahtarı yanlışsa bile kurtarır.
-	    const barcodes = [];
-
-    if (cvKey) {
+	    if (visionKey) {
 	      try {
 	        const cvUrl =
-	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(cvKey);
+	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(visionKey);
 	
 	        const cvPayload = {
 	          requests: [
@@ -674,31 +751,22 @@ async function handleVision(req, res) {
 
 	        const ann = cvOut?.responses?.[0] || {};
 	
-	        // 1) OCR varsa barkod/digit öncelik, yoksa ilk satır
-        let q = "";
-        const ocr = String(ann?.textAnnotations?.[0]?.description || "").trim();
-        // Barcode candidates from OCR (EAN/UPC-like digit groups)
-        try {
-          const hits = (ocr.match(/\b\d{8,18}\b/g) || [])
-            .map((s) => String(s || "").trim())
-            .filter(Boolean);
-          for (const h of hits) {
-            if (!barcodes.includes(h)) barcodes.push(h);
-          }
-        } catch {}
+	        // 1) OCR text (tam metin)
+	        let q = "";
+	        const ocr = String(ann?.textAnnotations?.[0]?.description || "").trim();
+	        if (ocr) {
+	          // barcode yakalama için tam OCR'ı koru
+	          rawText = ocr;
+	          used = used ? used + "+cloud_vision" : "cloud_vision";
+	          // query builder için kısa bir satır da seç
+	          const firstLine = ocr
+	            .split(/\r?\n/)
+	            .map((s) => String(s || "").trim())
+	            .filter(Boolean)[0];
+	          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
+	        }
 
-        if (barcodes.length) {
-          q = barcodes[0];
-        }
-        if (!q && ocr) {
-          const firstLine = ocr
-            .split(/\r?\n/)
-            .map((s) => String(s || "").trim())
-            .filter(Boolean)[0];
-          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
-        }
-
-        // 2) Label fallback (ilk 2-3 etiket)
+	        // 2) Label fallback (ilk 2-3 etiket)
 	        if (!q) {
 	          const labels = Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations : [];
 	          const parts = labels
@@ -709,7 +777,7 @@ async function handleVision(req, res) {
 	          if (parts.length) q = parts.join(" ");
 	        }
 
-	        if (q) {
+	        if (q && (!rawText || !String(rawText).trim())) {
 	          rawText = q;
 	          used = used ? used + "+cloud_vision" : "cloud_vision";
 	        }
@@ -720,12 +788,12 @@ async function handleVision(req, res) {
 	    }
 
     // 1) Gemini
-	    if (geminiKey && (!rawText || !String(rawText).trim())) {
+	    if (allowGemini && geminiKey && (!rawText || !String(rawText).trim())) {
       used = "gemini";
       try {
         const url =
           "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-          geminiKey;
+          encodeURIComponent(geminiKey);
 
         const payload = {
           contents: [
@@ -806,6 +874,11 @@ async function handleVision(req, res) {
     // ✅ Daha doğru query: Lens shopping başlıklarını da kullan
     let query = buildVisionQuery(text, lensOut);
 
+    // ✅ Barkod varsa öncelik barkod (QR/barcode fotoğraflarında en doğru sinyal)
+    const barcodes = extractBarcodesFromText(text);
+    const barcode = barcodes?.[0] || "";
+    if (barcode) query = barcode;
+
     // Son çare: çok hafif fallback (ama "ürün" gibi saçma geneli ASLA dönme)
     if (!query && text) {
       const words = text
@@ -823,7 +896,7 @@ async function handleVision(req, res) {
         ok: false,
         error: "NO_MATCH",
         query: "",
-        barcode: barcodes?.[0] || "",
+        barcode: barcode || "",
         barcodes: Array.isArray(barcodes) ? barcodes : [],
         rawText: safeStr(text, 2000),
 	        raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
@@ -841,7 +914,7 @@ async function handleVision(req, res) {
     return safeJson(res, {
       ok: true,
       query,
-      barcode: barcodes?.[0] || "",
+      barcode: barcode || "",
       barcodes: Array.isArray(barcodes) ? barcodes : [],
       rawText: safeStr(text, 2000),
 	      raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
