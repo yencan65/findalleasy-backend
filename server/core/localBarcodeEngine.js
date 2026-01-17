@@ -354,10 +354,13 @@ function pageMatchesBarcode(html, $, barcode) {
 async function fetchHtml(url, signal, adapterName) {
   const r = await getHtml(url, {
     signal,
-    timeoutMs: 5500,
-    retries: 0,
+    timeoutMs: 9000,
+    retries: 1,
     maxRedirects: 3,
     adapterName,
+    // Barcode search is often blocked by Cloudflare/JS rendering.
+    // We allow the opt-in Jina proxy fallback at NetClient level.
+    allowJinaProxy: true,
   });
   return r.ok ? r.html : null;
 }
@@ -365,24 +368,46 @@ async function fetchHtml(url, signal, adapterName) {
 // ---------------------------------------------------------------------------
 // Provider-specific search URL builders
 // ---------------------------------------------------------------------------
-function providerSearchUrl(provider, barcode) {
+function providerSearchUrls(provider, barcode) {
   const q = encodeURIComponent(String(barcode));
-  if (provider === "akakce") return `https://www.akakce.com/arama/?q=${q}`;
-  if (provider === "cimri") return `https://www.cimri.com/arama?q=${q}`;
-  if (provider === "epey") return `https://www.epey.com/arama/?q=${q}`;
-  if (provider === "hepsiburada") return `https://www.hepsiburada.com/ara?q=${q}`;
-  if (provider === "trendyol") return `https://www.trendyol.com/sr?q=${q}`;
-  if (provider === "n11") return `https://www.n11.com/arama?q=${q}`;
-  return null;
+  if (provider === "hepsiburada") return [`https://www.hepsiburada.com/ara?q=${q}`];
+  if (provider === "trendyol") return [`https://www.trendyol.com/sr?q=${q}`];
+  if (provider === "n11") return [`https://www.n11.com/arama?q=${q}`];
+
+  // TR fiyat karsilastirma / katalog siteleri (free HTML)
+  // URL formatlari zamanla degisebiliyor; birkac alternatif deneriz.
+  if (provider === "akakce") {
+    return [
+      `https://www.akakce.com/arama/?q=${q}`,
+      `https://www.akakce.com/arama/?keyword=${q}`,
+    ];
+  }
+  if (provider === "cimri") {
+    return [
+      `https://www.cimri.com/arama?q=${q}`,
+      `https://www.cimri.com/arama?query=${q}`,
+      `https://www.cimri.com/arama?search=${q}`,
+    ];
+  }
+  if (provider === "epey") {
+    const raw = String(barcode);
+    return [
+      `https://www.epey.com/ara/${raw}/`,
+      `https://www.epey.com/ara/?q=${q}`,
+      `https://www.epey.com/ara/?search=${q}`,
+    ];
+  }
+
+  return [];
 }
 
 function providerDomain(provider) {
-  if (provider === "akakce") return "akakce.com";
-  if (provider === "cimri") return "cimri.com";
-  if (provider === "epey") return "epey.com";
   if (provider === "hepsiburada") return "hepsiburada.com";
   if (provider === "trendyol") return "trendyol.com";
   if (provider === "n11") return "n11.com";
+  if (provider === "akakce") return "akakce.com";
+  if (provider === "cimri") return "cimri.com";
+  if (provider === "epey") return "epey.com";
   return "";
 }
 
@@ -398,18 +423,15 @@ function isLikelyProductUrl(provider, url) {
   if (provider === "n11") {
     return low.includes("n11.com") && (low.includes("/urun/") || /-p-\d+/.test(low));
   }
+  // Katalog siteleri: arama URL'lerini ele, domain icinde kalan urun sayfalarini kabul et
   if (provider === "akakce") {
-    return low.includes("akakce.com") && !low.includes("/arama") && (low.endsWith(".html") || /\/p\//.test(low) || low.includes("-"));
+    return low.includes("akakce.com") && !low.includes("/arama") && (low.includes(".html") || low.includes("-"));
   }
   if (provider === "cimri") {
-    if (!low.includes("cimri.com")) return false;
-    if (low.includes("/arama")) return false;
-    return low.includes("/urun") || low.includes("-fiyat") || low.includes("/fiyat");
+    return low.includes("cimri.com") && !low.includes("/arama") && !low.includes("?q=");
   }
   if (provider === "epey") {
-    if (!low.includes("epey.com")) return false;
-    if (low.includes("/arama")) return false;
-    return low.includes("fiyati") || low.includes("fiyatlari") || low.includes("/urun");
+    return low.includes("epey.com") && !low.includes("/ara/") && !low.includes("?q=");
   }
   return false;
 }
@@ -432,23 +454,26 @@ function extractCandidateLinks(provider, baseUrl, html) {
 }
 
 async function resolveOneProvider(provider, barcode, signal, opts = {}) {
-  const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 4;
-  const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 1;
+  const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 7;
+  const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 2;
 
-  const searchUrl = providerSearchUrl(provider, barcode);
-  if (!searchUrl) return [];
-
-  const searchHtml = await fetchHtml(searchUrl, signal, `barcode-search:${provider}`);
-  if (!searchHtml) return [];
+  const searchUrls = providerSearchUrls(provider, barcode);
+  if (!Array.isArray(searchUrls) || searchUrls.length === 0) return [];
 
   let candidates = [];
+  let gotAnySearchHtml = false;
 
-  // 1) Provider arama sayfasından çekmeyi dene
-  if (!looksBlocked(searchHtml)) {
-    candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
+  // 1) Provider arama sayfasından çekmeyi dene (birkaç alternatif URL ile)
+  for (const searchUrl of searchUrls) {
+    const searchHtml = await fetchHtml(searchUrl, signal, `barcode-search:${provider}`);
+    if (!searchHtml) continue;
+    gotAnySearchHtml = true;
+    if (!looksBlocked(searchHtml)) {
+      candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
+      if (candidates.length) break;
+    }
   }
 
-  
   // 2) Anti-bot / boş sayfa ise CSE ile ücretsiz yedek
   // Default: OFF (Google CSE masrafını kilitlemek için)
   const enableCse = String(process.env.FAE_ENABLE_BARCODE_CSE || "").trim() === "1";
@@ -484,6 +509,9 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
       }
     }
   }
+
+  // Eğer hiç HTML bile alamadıysak (aşırı blok), erken çık.
+  if (!gotAnySearchHtml && !candidates.length) return [];
 
   if (!candidates.length) return [];
 
@@ -538,7 +566,15 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
   if (cached) return cached;
 
   const signal = opts?.signal;
-  const providers = Array.isArray(opts?.providers) ? opts.providers : ["akakce", "cimri", "epey", "trendyol", "hepsiburada", "n11"];
+  // Provider list override: opts.providers > env > default
+  const envProviders = String(process.env.FAE_LOCAL_BARCODE_PROVIDERS || "")
+    .split(",")
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  const providers = Array.isArray(opts?.providers)
+    ? opts.providers
+    : (envProviders.length ? envProviders : ["trendyol", "hepsiburada", "n11", "akakce", "cimri", "epey"]);
   const maxMatchesGlobal = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 1;
 
   const out = [];
