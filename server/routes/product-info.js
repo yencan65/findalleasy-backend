@@ -226,109 +226,6 @@ function providerProductWord(localeShort) {
   return "ürünü";
 }
 
-
-// ======================================================================
-// OpenFoodFacts resolver (FREE) — barcode -> basic identity
-//  - Not every GTIN exists here (mostly food). Still valuable as a fast name/image hint.
-//  - ZERO-BREAK: Only enriches identity; does not fabricate prices.
-// ======================================================================
-async function fetchJsonWithTimeout(url, timeoutMs = 4500) {
-  const AbortCtor = globalThis.AbortController || null;
-  if (!AbortCtor) {
-    const r = await fetch(url);
-    const j = await r.json().catch(() => null);
-    return { ok: r.ok, status: r.status, json: j };
-  }
-
-  const controller = new AbortCtor();
-  const t = setTimeout(() => {
-    try { controller.abort(); } catch {}
-  }, Number(timeoutMs || 4500));
-
-  try {
-    const r = await fetch(url, { signal: controller.signal });
-    const j = await r.json().catch(() => null);
-    return { ok: r.ok, status: r.status, json: j };
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function fetchOpenFoodFacts(barcode, diag) {
-  try {
-    const code = String(barcode || '').replace(/\s+/g, '').trim();
-    if (!/^\d{8,18}$/.test(code)) return null;
-
-    const endpoints = [
-      `https://tr.openfoodfacts.org/api/v0/product/${code}.json`,
-      `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
-    ];
-
-    for (const url of endpoints) {
-      try {
-        diag?.tries?.push?.({ step: 'openfoodfacts_fetch', url: safeStr(url, 120) });
-        const r = await fetchJsonWithTimeout(url, Number(process.env.OPENFOODFACTS_TIMEOUT_MS || 3800));
-        const j = r?.json;
-        if (!j || j.status !== 1 || !j.product) continue;
-
-        const pr = j.product || {};
-        const name = safeStr(
-          pr.product_name_tr || pr.product_name || pr.generic_name_tr || pr.generic_name || pr.abbreviated_product_name || '',
-          200
-        );
-
-        const brand = safeStr(
-          (Array.isArray(pr.brands_tags) && pr.brands_tags.length ? String(pr.brands_tags[0]).replace(/^\w\w:/, '') : pr.brands) || '',
-          120
-        );
-
-        const img = safeStr(
-          pr.image_front_url || pr.image_url || pr.image_small_url || pr.image_thumb_url || '',
-          2000
-        );
-
-        if (!name && !brand && !img) continue;
-
-        const title = cleanTitle(`${brand ? brand + ' ' : ''}${name || ''}`.trim()) || name || brand || code;
-
-        const out = {
-          name: title,
-          title: title,
-          description: safeStr(pr.quantity || pr.packaging_text || pr.categories || '', 240),
-          image: img,
-          brand: brand,
-          category: 'product',
-          region: 'TR',
-          qrCode: code,
-          provider: 'barcode',
-          source: 'openfoodfacts',
-          verifiedBarcode: true,
-          verifiedBy: 'openfoodfacts',
-          verifiedUrl: safeStr(pr.url || '', 2000),
-          offersTrusted: [],
-          offersOther: [],
-          offers: [],
-          bestOffer: null,
-          merchantUrl: '',
-          confidence: 'medium',
-          raw: { off: { url: safeStr(pr.url || '', 2000) } },
-        };
-
-        diag?.tries?.push?.({ step: 'openfoodfacts_hit', title: safeStr(out.title, 120) });
-        return out;
-      } catch (e) {
-        diag?.tries?.push?.({ step: 'openfoodfacts_error', error: String(e?.message || e) });
-      }
-    }
-
-    diag?.tries?.push?.({ step: 'openfoodfacts_miss' });
-    return null;
-  } catch (e) {
-    diag?.tries?.push?.({ step: 'openfoodfacts_fatal', error: String(e?.message || e) });
-    return null;
-  }
-}
-
 // ======================================================================
 // Provider detector + URL title
 // ======================================================================
@@ -1417,7 +1314,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
   try {
     hits = await searchLocalBarcodeEngine(code, {
       region: "TR",
-      maxCandidates: 4,
+      maxCandidates: 6,
       maxMatches: 1,
     });
   } catch (e) {
@@ -1454,6 +1351,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
     const { offersTrusted, offersOther } = splitOffersForVitrine(rawOffers);
     const bestOfferPick = pickBestOffer(offersTrusted);
 
+    const isVerified = !!h?.verifiedBarcode;
     const product = {
 
       name,
@@ -1466,7 +1364,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
       qrCode: code,
       provider: "barcode",
       source: "local-marketplace-engine",
-      verifiedBarcode: true,
+      verifiedBarcode: isVerified,
       verifiedBy: pickDomain(url) || "local",
       verifiedUrl: url || "",
       offersTrusted,
@@ -1476,7 +1374,7 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
         ? { merchant: bestOfferPick.merchant, url: bestOfferPick.url, price: bestOfferPick.price ?? null, delivery: bestOfferPick.delivery || "" }
         : null,
       merchantUrl: bestOfferPick?.url || "",
-      confidence: "high",
+      confidence: isVerified ? "high" : "medium",
       raw: h,
     };
 
@@ -1819,32 +1717,37 @@ async function handleProduct(req, res) {
 
       // Barcode çözülemedi: fallback dön
       if (allowPaid) markUnresolved(unresolvedKey);
-
-      const base = baseProduct && typeof baseProduct === 'object' ? baseProduct : null;
-      const baseTitle = safeStr(base?.title || base?.name || '', 200);
-      const fallbackTitle = baseTitle || qr;
+      const suggestedQuery = (() => {
+        try {
+          const t = cleanTitle(baseProduct?.title || baseProduct?.name || "");
+          if (!t) return "";
+          if (/^\d{8,18}$/.test(t)) return "";
+          if (t.length < 4) return "";
+          return t;
+        } catch {
+          return "";
+        }
+      })();
 
       const product = {
-        ...(base || {}),
-        name: fallbackTitle,
-        title: fallbackTitle,
+        name: qr,
+        title: qr,
         qrCode: qr,
-        provider: 'barcode',
-        source: 'barcode-unresolved',
-        identitySource: safeStr(base?.source || '', 80),
-        verifiedBarcode: !!base?.verifiedBarcode,
-        verifiedBy: safeStr(base?.verifiedBy || '', 120),
-        verifiedUrl: safeStr(base?.verifiedUrl || '', 2000),
+        provider: "barcode",
+        source: "barcode-unresolved",
+        verifiedBarcode: false,
+        verifiedBy: "",
         offersTrusted: [],
+
         offersOther: [],
+
         offers: [],
         bestOffer: null,
-        merchantUrl: '',
-        confidence: base ? (base.confidence || 'low') : 'low',
-        suggestedQuery: baseTitle,
+        merchantUrl: "",
+        confidence: "low",
+        suggestedQuery,
       };
-
-      const out = { ok: true, product, source: 'barcode-unresolved' };
+      const out = { ok: true, product, source: "barcode-unresolved" };
       if (diag) out._diag = diag;
       return safeJson(res, out);
     }
