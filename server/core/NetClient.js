@@ -159,7 +159,46 @@ export async function requestText(url, opts = {}) {
 
 export async function getHtml(url, opts = {}) {
   const r = await requestText(url, { ...opts, method: "GET" });
-  return r.ok ? { ...r, html: r.text } : { ...r, html: null };
+  if (r.ok) return { ...r, html: r.text };
+
+  // Optional: Jina AI proxy fallback (helps with Cloudflare/JS-heavy pages)
+  // Enable via:
+  //   - opts.allowJinaProxy=true (per-call)
+  //   - or env FAE_ENABLE_JINA_PROXY=1 (global)
+  const allowJina = opts?.allowJinaProxy === true || String(process.env.FAE_ENABLE_JINA_PROXY || "").trim() === "1";
+  if (!allowJina) return { ...r, html: null };
+
+  try {
+    const s = String(url || "").trim();
+    if (!s) return { ...r, html: null };
+
+    // r.jina.ai expects: https://r.jina.ai/http(s)://...
+    const proxyUrl = s.startsWith("https://")
+      ? `https://r.jina.ai/https://${s.slice("https://".length)}`
+      : s.startsWith("http://")
+        ? `https://r.jina.ai/http://${s.slice("http://".length)}`
+        : `https://r.jina.ai/${s}`;
+
+    const r2 = await requestText(proxyUrl, {
+      ...opts,
+      method: "GET",
+      // proxy tarafinda daha kisa timeout iyi (donmezse burada yakma)
+      timeoutMs: Number(opts.timeoutMs || DEFAULT_TIMEOUT),
+      retries: 0,
+      headers: {
+        ...(opts.headers || {}),
+        // Jina text proxy HTML degil plain text de donebilir; her turlu aliyoruz.
+        Accept: "text/html,text/plain;q=0.9,*/*;q=0.8",
+      },
+      adapterName: `${String(opts.adapterName || "netclient")}:jina`,
+    });
+
+    if (r2.ok) return { ...r2, html: r2.text, meta: { via: "jina" } };
+  } catch {
+    // ignore
+  }
+
+  return { ...r, html: null };
 }
 
 export default { requestText, getHtml };
