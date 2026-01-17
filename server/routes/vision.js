@@ -873,10 +873,9 @@ async function handleVision(req, res) {
 
     // ✅ Daha doğru query: Lens shopping başlıklarını da kullan
     let query = buildVisionQuery(text, lensOut);
-
     // ✅ Barkod varsa öncelik barkod (QR/barcode fotoğraflarında en doğru sinyal)
-    const barcodes = extractBarcodesFromText(text);
-    const barcode = barcodes?.[0] || "";
+    let barcodes = extractBarcodesFromText(text);
+    let barcode = barcodes?.[0] || "";
     if (barcode) query = barcode;
 
     // Son çare: çok hafif fallback (ama "ürün" gibi saçma geneli ASLA dönme)
@@ -889,7 +888,51 @@ async function handleVision(req, res) {
       if (words.length > 0) query = words.slice(0, 6).join(" ");
     }
 
-    // Eğer hala boş / generic ise: yanlış sonuç göstermek yerine NO_MATCH
+    
+
+    // ✅ Son çare (OPT-IN): Cloud Vision/Gemini sonucu boş veya çok generic ise SerpApi Lens dene
+    // Not: SerpApi Lens ücretli olabilir; default OFF. Sadece allowSerpLens ile açılır.
+    if ((!query || isGenericVisionQuery(query)) && serpKey && allowSerpLens && !lensOut) {
+      try {
+        const buf = Buffer.from(cleanBase64, "base64");
+        const id = putTempImage(buf, mimeType || "image/jpeg");
+        const imageUrl = `${buildPublicOrigin(req)}/api/vision/i/${id}`;
+
+        const lensUrl = new URL("https://serpapi.com/search.json");
+        lensUrl.searchParams.set("engine", "google_lens");
+        lensUrl.searchParams.set("url", imageUrl);
+        lensUrl.searchParams.set("api_key", serpKey);
+        lensUrl.searchParams.set("hl", hl);
+        lensUrl.searchParams.set("gl", gl);
+
+        const rr = await fetchWithTimeout(lensUrl.toString(), { method: "GET" }, 12_000);
+        lensOut = await rr.json().catch(() => null);
+        if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
+
+        const lensText = pickSerpLensText(lensOut);
+        if (lensText) {
+          const prev = String(rawText || "").trim();
+          rawText = prev ? prev + "\n" + lensText : lensText;
+        }
+
+        used = used ? used + "+serp_lens" : "serp_lens";
+
+        // Query'yi lens sinyaliyle yeniden kur
+        const text2 = String(rawText || "").trim();
+        query = buildVisionQuery(text2, lensOut);
+
+        const barcodes2 = extractBarcodesFromText(text2);
+        const barcode2 = (Array.isArray(barcodes2) ? barcodes2 : [])[0] || barcode;
+        if (barcode2) {
+          barcode = barcode2;
+          barcodes = Array.isArray(barcodes2) ? barcodes2 : barcodes;
+          query = barcode2;
+        }
+      } catch {
+        // Lens fail: aşağıdaki NO_MATCH guard devreye girer
+      }
+    }
+// Eğer hala boş / generic ise: yanlış sonuç göstermek yerine NO_MATCH
     if (!query || isGenericVisionQuery(query)) {
       const latencyMs = Date.now() - startedAt;
       return safeJson(res, {
