@@ -354,8 +354,8 @@ function pageMatchesBarcode(html, $, barcode) {
 async function fetchHtml(url, signal, adapterName) {
   const r = await getHtml(url, {
     signal,
-    timeoutMs: 9000,
-    retries: 1,
+    timeoutMs: 5500,
+    retries: 0,
     maxRedirects: 3,
     adapterName,
   });
@@ -367,6 +367,9 @@ async function fetchHtml(url, signal, adapterName) {
 // ---------------------------------------------------------------------------
 function providerSearchUrl(provider, barcode) {
   const q = encodeURIComponent(String(barcode));
+  if (provider === "akakce") return `https://www.akakce.com/arama/?q=${q}`;
+  if (provider === "cimri") return `https://www.cimri.com/arama?q=${q}`;
+  if (provider === "epey") return `https://www.epey.com/arama/?q=${q}`;
   if (provider === "hepsiburada") return `https://www.hepsiburada.com/ara?q=${q}`;
   if (provider === "trendyol") return `https://www.trendyol.com/sr?q=${q}`;
   if (provider === "n11") return `https://www.n11.com/arama?q=${q}`;
@@ -374,6 +377,9 @@ function providerSearchUrl(provider, barcode) {
 }
 
 function providerDomain(provider) {
+  if (provider === "akakce") return "akakce.com";
+  if (provider === "cimri") return "cimri.com";
+  if (provider === "epey") return "epey.com";
   if (provider === "hepsiburada") return "hepsiburada.com";
   if (provider === "trendyol") return "trendyol.com";
   if (provider === "n11") return "n11.com";
@@ -391,6 +397,19 @@ function isLikelyProductUrl(provider, url) {
   }
   if (provider === "n11") {
     return low.includes("n11.com") && (low.includes("/urun/") || /-p-\d+/.test(low));
+  }
+  if (provider === "akakce") {
+    return low.includes("akakce.com") && !low.includes("/arama") && (low.endsWith(".html") || /\/p\//.test(low) || low.includes("-"));
+  }
+  if (provider === "cimri") {
+    if (!low.includes("cimri.com")) return false;
+    if (low.includes("/arama")) return false;
+    return low.includes("/urun") || low.includes("-fiyat") || low.includes("/fiyat");
+  }
+  if (provider === "epey") {
+    if (!low.includes("epey.com")) return false;
+    if (low.includes("/arama")) return false;
+    return low.includes("fiyati") || low.includes("fiyatlari") || low.includes("/urun");
   }
   return false;
 }
@@ -413,8 +432,8 @@ function extractCandidateLinks(provider, baseUrl, html) {
 }
 
 async function resolveOneProvider(provider, barcode, signal, opts = {}) {
-  const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 7;
-  const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 2;
+  const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 4;
+  const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 1;
 
   const searchUrl = providerSearchUrl(provider, barcode);
   if (!searchUrl) return [];
@@ -519,7 +538,7 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
   if (cached) return cached;
 
   const signal = opts?.signal;
-  const providers = Array.isArray(opts?.providers) ? opts.providers : ["trendyol", "hepsiburada", "n11"];
+  const providers = Array.isArray(opts?.providers) ? opts.providers : ["akakce", "cimri", "epey", "trendyol", "hepsiburada", "n11"];
   const maxMatchesGlobal = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 1;
 
   const out = [];
