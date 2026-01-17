@@ -429,8 +429,11 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
     candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
   }
 
+  
   // 2) Anti-bot / boş sayfa ise CSE ile ücretsiz yedek
-  if (!candidates.length) {
+  // Default: OFF (Google CSE masrafını kilitlemek için)
+  const enableCse = String(process.env.FAE_ENABLE_BARCODE_CSE || "").trim() === "1";
+  if (enableCse && !candidates.length) {
     const domain = providerDomain(provider);
     if (domain) {
       try {
