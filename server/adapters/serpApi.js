@@ -261,6 +261,10 @@ function _isTimeout(e) {
 // MAIN — S200
 // ======================================================================
 export async function searchWithSerpApi(query, opts = {}) {
+  const _enabled = String(process.env.FAE_ENABLE_SERPAPI || "").trim() === "1";
+  if (!_enabled) {
+    return _mkRes(false, [], { disabled: true, gate: "FAE_ENABLE_SERPAPI" });
+  }
   const noRetry = Boolean(opts?.noRetry || opts?.barcode || opts?.intent?.type === "barcode");
   const t0 = Date.now();
   const q = safe(query, 260);
