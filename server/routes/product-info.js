@@ -106,6 +106,19 @@ function safeStr(v, max = 250) {
   return s.slice(0, max);
 }
 
+function parseBoolish(v, def = false) {
+  try {
+    if (v == null) return def;
+    if (typeof v === 'boolean') return v;
+    const s = String(v).trim().toLowerCase();
+    if (!s) return def;
+    return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'on';
+  } catch {
+    return def;
+  }
+}
+
+
 function safeJson(res, body, code = 200) {
   try {
     res.status(code).json(body);
@@ -251,6 +264,31 @@ function extractTitleFromUrl(url) {
 // ======================================================================
 const barcodeCache = new Map(); // key -> {ts, product}
 const BARCODE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Negative cache (barcode unresolved) — avoids repeated paid fallbacks on the same code
+const unresolvedCache = new Map(); // key -> ts
+const UNRESOLVED_TTL_MS = Number(process.env.BARCODE_UNRESOLVED_TTL_MS || 10 * 60 * 1000);
+
+function unresolvedHit(key) {
+  try {
+    const ts = unresolvedCache.get(key);
+    if (!ts) return false;
+    if (Date.now() - ts > UNRESOLVED_TTL_MS) {
+      unresolvedCache.delete(key);
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function markUnresolved(key) {
+  try {
+    unresolvedCache.set(key, Date.now());
+  } catch {}
+}
+
 
 function cacheGetBarcode(key) {
   const hit = barcodeCache.get(key);
@@ -1551,14 +1589,17 @@ async function handleProduct(req, res) {
       : null;
 
     // paid fallback gating: default OFF (barcode/camera should be free-first)
-    const allowPaid =
-      String(
-        req.query?.paid ??
-          body?.paid ??
-          (body?.allowPaid ? '1' : '0') ??
-          process.env.PRODUCT_INFO_ALLOW_PAID_DEFAULT ??
-          '0'
-      ) === '1';
+    const allowPaid = parseBoolish(
+      req?.query?.paid ??
+        req?.query?.allowPaid ??
+        req?.query?.allow_paid ??
+        body?.paid ??
+        body?.allowPaid ??
+        body?.allow_paid ??
+        process.env.PRODUCT_INFO_ALLOW_PAID_DEFAULT ??
+        '0',
+      false
+    );
 
     if (diag) diag.allowPaid = allowPaid;
 
@@ -1605,6 +1646,29 @@ async function handleProduct(req, res) {
 
     // 2) Barcode (8-18)
     if (/^\d{8,18}$/.test(qr)) {
+      const unresolvedKey = `${localeShort}:unresolved:${qr}`;
+      if (allowPaid && !force && unresolvedHit(unresolvedKey)) {
+        diag?.tries?.push?.({ step: 'barcode_unresolved_cache_hit' });
+        const product = {
+          name: qr,
+          title: qr,
+          qrCode: qr,
+          provider: 'barcode',
+          source: 'barcode-unresolved',
+          verifiedBarcode: false,
+          verifiedBy: '',
+          offersTrusted: [],
+          offersOther: [],
+          offers: [],
+          bestOffer: null,
+          merchantUrl: '',
+          confidence: 'low',
+        };
+        const out = { ok: true, product, source: 'barcode-unresolved', cached: true };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
       // 2.1) OpenFoodFacts (food) — isim/gorsel yardimci olur ama tek basina fiyat getirmez
       let baseProduct = null;
       const off = await fetchOpenFoodFacts(qr, diag);
@@ -1651,6 +1715,7 @@ async function handleProduct(req, res) {
       }
 
       // Barcode çözülemedi: fallback dön
+      if (allowPaid) markUnresolved(unresolvedKey);
       const product = {
         name: qr,
         title: qr,
