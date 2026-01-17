@@ -1,6 +1,7 @@
 // server.js (S35+ hardened, single-file)
 
 import "dotenv/config";
+import "./server/core/costGuards.js";
 import bcrypt from "bcryptjs";
 
 import express from "express";
