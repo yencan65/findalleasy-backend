@@ -229,6 +229,41 @@ function providerProductWord(localeShort) {
 }
 
 // ======================================================================
+// Unresolved barcode UX helpers (NO-JUNK policy)
+//  - If barcode cannot be resolved to a product identity (name/title),
+//    we explicitly ask the client to upload a front photo.
+//  - This prevents the UI from doing a generic search for the raw barcode
+//    which often produces irrelevant "çer-çöp" results.
+// ======================================================================
+function needsImageMsg(localeShort) {
+  const l = String(localeShort || "tr").toLowerCase();
+  if (l === "en") return "No data found for this barcode. Please upload a clear front photo of the product.";
+  if (l === "fr") return "Aucune donnée trouvée pour ce code-barres. Veuillez téléverser une photo nette de la face avant du produit.";
+  if (l === "ru") return "По этому штрихкоду данных не найдено. Пожалуйста, загрузите четкое фото лицевой стороны товара.";
+  if (l === "ar") return "لم يتم العثور على بيانات لهذا الرمز الشريطي. يرجى رفع صورة واضحة لواجهة المنتج.";
+  return "Bu barkod için veri bulunamadı. Lütfen ürünün ön yüz fotoğrafını net şekilde yükleyin.";
+}
+
+function makeUnresolvedResponseProduct(qr, suggestedQuery = "") {
+  return {
+    name: qr,
+    title: qr,
+    qrCode: qr,
+    provider: "barcode",
+    source: "barcode-unresolved",
+    verifiedBarcode: false,
+    verifiedBy: "",
+    offersTrusted: [],
+    offersOther: [],
+    offers: [],
+    bestOffer: null,
+    merchantUrl: "",
+    confidence: "low",
+    suggestedQuery: suggestedQuery || "",
+  };
+}
+
+// ======================================================================
 // Provider detector + URL title
 // ======================================================================
 function detectProviderFromUrl(url) {
@@ -1996,22 +2031,15 @@ async function handleProduct(req, res) {
       const unresolvedKey = `${localeShort}:unresolved:${qr}`;
       if (allowPaid && !force && unresolvedHit(unresolvedKey)) {
         diag?.tries?.push?.({ step: 'barcode_unresolved_cache_hit' });
-        const product = {
-          name: qr,
-          title: qr,
-          qrCode: qr,
-          provider: 'barcode',
+        const product = makeUnresolvedResponseProduct(qr, "");
+        const out = {
+          ok: true,
+          product,
           source: 'barcode-unresolved',
-          verifiedBarcode: false,
-          verifiedBy: '',
-          offersTrusted: [],
-          offersOther: [],
-          offers: [],
-          bestOffer: null,
-          merchantUrl: '',
-          confidence: 'low',
+          cached: true,
+          needsImage: true,
+          message: needsImageMsg(localeShort),
         };
-        const out = { ok: true, product, source: 'barcode-unresolved', cached: true };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
@@ -2105,25 +2133,15 @@ async function handleProduct(req, res) {
         }
       })();
 
-      const product = {
-        name: qr,
-        title: qr,
-        qrCode: qr,
-        provider: "barcode",
+      const product = makeUnresolvedResponseProduct(qr, suggestedQuery);
+      const needsImage = !String(suggestedQuery || "").trim();
+      const out = {
+        ok: true,
+        product,
         source: "barcode-unresolved",
-        verifiedBarcode: false,
-        verifiedBy: "",
-        offersTrusted: [],
-
-        offersOther: [],
-
-        offers: [],
-        bestOffer: null,
-        merchantUrl: "",
-        confidence: "low",
-        suggestedQuery,
+        needsImage,
+        message: needsImage ? needsImageMsg(localeShort) : "",
       };
-      const out = { ok: true, product, source: "barcode-unresolved" };
       if (diag) out._diag = diag;
       return safeJson(res, out);
     }

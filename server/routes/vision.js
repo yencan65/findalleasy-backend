@@ -622,7 +622,14 @@ async function handleVision(req, res) {
     // Gemini ayrı tutulur; default OFF (kredi/usage yakmasın)
     const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
-    const serpKey = process.env.SERPAPI_KEY;
+    // Align env lookup with serp adapter (people configure different names on Render)
+    const serpKey =
+      process.env.SERPAPI_KEY ||
+      process.env.SERPAPI_API_KEY ||
+      process.env.SERPAPI_APIKEY ||
+      process.env.SERP_API_KEY ||
+      process.env.SERPAPIKEY ||
+      "";
 
     const allowGemini = (() => {
       // Default: OFF. Opt-in via env or request.
