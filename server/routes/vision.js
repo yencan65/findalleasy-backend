@@ -93,13 +93,16 @@ function safeStr(v, max = 500) {
 }
 
 function buildPublicOrigin(req) {
+  // SerpApi Lens temp image URL'i dışarıdan çekiyor.
+  // Burada yanlışlıkla http üretirsek (proxy arkasında), Lens çoğu zaman resmi indiremez.
+  // Default: HTTPS. Sadece x-forwarded-proto açıkça http ise http kullan.
   const xfProto = safeStr(req.headers["x-forwarded-proto"] || "")
     .split(",")[0]
-    .trim();
-  const cfVisitor = safeStr(req.headers["cf-visitor"] || "");
-  let proto =
-    xfProto || (cfVisitor.includes('"https"') ? "https" : req.protocol || "https");
-  if (proto !== "https" && proto !== "http") proto = "https";
+    .trim()
+    .toLowerCase();
+
+  let proto = "https";
+  if (xfProto === "http" || xfProto === "https") proto = xfProto;
 
   const xfHost = safeStr(req.headers["x-forwarded-host"] || "")
     .split(",")[0]
@@ -519,7 +522,8 @@ function extractBarcodesFromText(text) {
   try {
     const t = String(text || '');
     const found = new Set();
-    const re = /(\d{8,18})/g;
+    // Word boundary ile EAN/UPC yakala (\b). Önceki sürümde yanlışlıkla backspace (\u0008) karakteri vardı.
+    const re = /\b(\d{8,18})\b/g;
     let m;
     while ((m = re.exec(t)) && found.size < 10) {
       const code = String(m[1] || '');
@@ -553,6 +557,17 @@ async function handleVision(req, res) {
     String(process.env.VISION_DEBUG || "") === "1" ||
     String(req.query?.diag || "") === "1";
 
+  // diag=1 ise hangi katman denendi / nerede patladı net görünsün diye.
+  const tries = [];
+  const tpush = (step, extra) => {
+    if (!debug) return;
+    try {
+      tries.push({ step, ...(extra || {}) });
+    } catch {
+      // ignore
+    }
+  };
+
   try {
     const rl = rateLimit(ip, 40, 60_000);
     if (!rl.allowed) {
@@ -564,6 +579,16 @@ async function handleVision(req, res) {
     }
 
     const body = safeBody(req);
+
+    tpush("body_parsed", {
+      contentType: safeStr(req.headers["content-type"] || "", 200),
+      bodyType: Buffer.isBuffer?.(req.body)
+        ? "Buffer"
+        : req.body instanceof Uint8Array
+        ? "Uint8Array"
+        : typeof req.body,
+      parsedKeys: isPlainObject(body) ? Object.keys(body).slice(0, 25) : null,
+    });
 
     // Tolerans: bazı client alan adını farklı yollayabilir
     const rawImage = body.imageBase64 || body.image || body.base64 || "";
@@ -687,6 +712,15 @@ async function handleVision(req, res) {
       return false;
     })();
 
+    tpush("providers", {
+      hasVisionKey: Boolean(visionKey),
+      allowGemini,
+      hasGeminiKey: Boolean(geminiKey),
+      allowSerpLens,
+      hasSerpKey: Boolean(serpKey),
+      publicOrigin: buildPublicOrigin(req),
+    });
+
 
     if (!visionKey && !(geminiKey && allowGemini) && !(serpKey && allowSerpLens)) {
       return safeJson(
@@ -715,6 +749,12 @@ async function handleVision(req, res) {
       return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
     }
 
+    tpush("image", {
+      mimeType,
+      base64Len: cleanBase64.length,
+      approxBytes: Math.floor((cleanBase64.length * 3) / 4),
+    });
+
     const { hl, gl } = pickHlGlFromLocale(body.locale || body.localeHint || "tr");
 
     let rawText = "";
@@ -728,6 +768,7 @@ async function handleVision(req, res) {
 	    // Bu katman: "Cloud API key" ile çalışır. Gemini anahtarı yanlışsa bile kurtarır.
 	    if (visionKey) {
 	      try {
+	        tpush("cloud_vision_start", { enabled: true });
 	        const cvUrl =
 	          "https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(visionKey);
 	
@@ -743,6 +784,7 @@ async function handleVision(req, res) {
 	          ],
 	        };
 	
+	        tpush("cloud_vision_request", { endpoint: "images:annotate", timeoutMs: 8000 });
 	        const rr = await fetchWithTimeout(
 	          cvUrl,
 	          {
@@ -752,11 +794,17 @@ async function handleVision(req, res) {
 	          },
 	          8_000
 	        );
+
+	        tpush("cloud_vision_http", { status: rr?.status });
 	
 	        cvOut = await rr.json().catch(() => null);
 	        if (!rr.ok) throw new Error("CLOUD_VISION_HTTP_ERROR " + rr.status);
 
 	        const ann = cvOut?.responses?.[0] || {};
+	        tpush("cloud_vision_parsed", {
+	          hasText: Boolean(ann?.textAnnotations?.[0]?.description),
+	          labelCount: Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations.length : 0,
+	        });
 	
 	        // 1) OCR text (tam metin)
 	        let q = "";
@@ -790,6 +838,7 @@ async function handleVision(req, res) {
 	        }
 	      } catch (err) {
 	        // Cloud Vision başarısızsa sessizce sonraki katmana geç
+	        tpush("cloud_vision_error", { message: safeStr(err?.message || err, 250) });
 	        cvOut = null;
 	      }
 	    }
@@ -853,6 +902,8 @@ async function handleVision(req, res) {
         const id = putTempImage(buf, mimeType || "image/jpeg");
         const imageUrl = `${buildPublicOrigin(req)}/api/vision/i/${id}`;
 
+        tpush("serp_lens_start", { imageUrl, hl, gl, timeoutMs: 12000 });
+
         const lensUrl = new URL("https://serpapi.com/search.json");
         lensUrl.searchParams.set("engine", "google_lens");
         lensUrl.searchParams.set("url", imageUrl);
@@ -865,6 +916,8 @@ async function handleVision(req, res) {
           { method: "GET" },
           12_000
         );
+
+        tpush("serp_lens_http", { status: rr?.status });
         lensOut = await rr.json().catch(() => null);
         if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
 
@@ -872,6 +925,7 @@ async function handleVision(req, res) {
         used = used ? used + "+serp_lens" : "serp_lens";
       } catch (err) {
         console.warn("❌ [vision] SerpApi Lens fail:", err?.message || err);
+        tpush("serp_lens_error", { message: safeStr(err?.message || err, 250) });
       }
     }
 
@@ -905,6 +959,8 @@ async function handleVision(req, res) {
         const id = putTempImage(buf, mimeType || "image/jpeg");
         const imageUrl = `${buildPublicOrigin(req)}/api/vision/i/${id}`;
 
+        tpush("serp_lens_retry_start", { imageUrl, hl, gl, timeoutMs: 12000 });
+
         const lensUrl = new URL("https://serpapi.com/search.json");
         lensUrl.searchParams.set("engine", "google_lens");
         lensUrl.searchParams.set("url", imageUrl);
@@ -913,6 +969,7 @@ async function handleVision(req, res) {
         lensUrl.searchParams.set("gl", gl);
 
         const rr = await fetchWithTimeout(lensUrl.toString(), { method: "GET" }, 12_000);
+        tpush("serp_lens_retry_http", { status: rr?.status });
         lensOut = await rr.json().catch(() => null);
         if (!rr.ok) throw new Error("SERPAPI_HTTP_ERROR " + rr.status);
 
@@ -935,8 +992,9 @@ async function handleVision(req, res) {
           barcodes = Array.isArray(barcodes2) ? barcodes2 : barcodes;
           query = barcode2;
         }
-      } catch {
+      } catch (err) {
         // Lens fail: aşağıdaki NO_MATCH guard devreye girer
+        tpush("serp_lens_retry_error", { message: safeStr(err?.message || err, 250) });
       }
     }
 // Eğer hala boş / generic ise: yanlış sonuç göstermek yerine NO_MATCH
@@ -950,6 +1008,7 @@ async function handleVision(req, res) {
         barcodes: Array.isArray(barcodes) ? barcodes : [],
         rawText: safeStr(text, 2000),
 	        raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
+        ...(debug ? { _diag: { tries } } : {}),
         meta: {
           ipHash: ip ? String(ip).slice(0, 8) : null,
           uaSnippet: ua,
@@ -968,6 +1027,7 @@ async function handleVision(req, res) {
       barcodes: Array.isArray(barcodes) ? barcodes : [],
       rawText: safeStr(text, 2000),
 	      raw: { cloud_vision: cvOut || null, gemini: gemOut || null, serp_lens: lensOut || null, primary: out },
+      ...(debug ? { _diag: { tries } } : {}),
       meta: {
         ipHash: ip ? String(ip).slice(0, 8) : null,
         uaSnippet: ua,
