@@ -461,10 +461,9 @@ async function fetchWithTimeout(resource, options = {}) {
 }
 
 // ============================================================================
-// LIVE / RELIABLE INFO: Evidence fetch (FX, weather, news, wiki) -- S51
-//   - Used for chat/info mode to provide up-to-date, source-backed answers
-//   - Keeps system stable: timeouts + cache + graceful fallback
-// ============================================================================
+// LIVE / RELIABLE INFO: Evidence fetch (FX, weather, travel, POI, recipe, news, wiki) -- S52
+//   - Used for chat/info mode to provide source-backed answers
+//   - Hard rules: topic-locked, no random drift; graceful fallback
 
 const evidenceCache = new Map();
 const EVIDENCE_DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
@@ -503,6 +502,17 @@ function decodeHtmlEntities(str = "") {
     .replace(/&nbsp;/g, " ");
 }
 
+function stripTags(html = "") {
+  const s = safeString(html);
+  return decodeHtmlEntities(
+    s
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+  ).trim();
+}
+
 function compactWords(text, maxWords = 6) {
   const low = safeString(text).toLowerCase();
   const cleaned = low.replace(/[^a-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]/g, " ");
@@ -513,109 +523,90 @@ function compactWords(text, maxWords = 6) {
   return words.slice(0, maxWords).join(" ");
 }
 
-// Evidence aramalarında "konu dışına" savrulmayı azaltmak için basit stopword/normalize
-const STOPWORDS = {
-  tr: new Set([
-    "nedir",
-    "ne",
-    "nasil",
-    "nasıl",
-    "nerede",
-    "nereler",
-    "hangi",
-    "kim",
-    "neden",
-    "niye",
-    "kac",
-    "kaç",
-    "mi",
-    "mı",
-    "mu",
-    "mü",
-    "da",
-    "de",
-    "ta",
-    "te",
-    "ile",
-    "ve",
-    "veya",
-    "ya",
-    "en",
-    "iyi",
-    "guzel",
-    "güzel",
-    "lütfen",
-    "lutfen",
-    "bana",
-    "söyle",
-    "soyle",
-    "ver",
-    "hakkinda",
-    "hakkında",
-  ]),
-  en: new Set(["what", "who", "where", "when", "why", "how", "is", "are", "the", "a", "an", "of", "to", "in", "for", "please"]),
-  fr: new Set(["quoi", "qui", "où", "quand", "pourquoi", "comment", "le", "la", "les", "un", "une", "des", "de", "du", "pour", "svp"]),
-  ru: new Set(["что", "кто", "где", "когда", "почему", "как", "это", "и", "в", "на", "для"]),
-  ar: new Set(["ما", "ماذا", "من", "أين", "متى", "لماذا", "كيف", "هذا", "هذه", "في", "على", "من", "الى"]),
-};
+function normalizeLang(localeOrLang = "tr") {
+  const l = safeString(localeOrLang || "tr").toLowerCase();
+    if (l.startsWith("en")) return "en";
+  if (l.startsWith("fr")) return "fr";
+  if (l.startsWith("ru")) return "ru";
+  if (l.startsWith("ar")) return "ar";
+  return "tr";
+}
 
-function normalizeQueryForEvidenceSearch(text, lang = "tr") {
+function extractLocationCandidate(text = "") {
   const raw = safeString(text);
   if (!raw) return "";
 
-  let s = raw;
-  // TR: "Van'da" gibi ekleri kaba biçimde kırp (Wikipedia aramasını düzeltir)
-  if ((lang || "tr") === "tr") {
-    s = s.replace(/([A-Za-zÇĞİÖŞÜçğıöşüİı]+)'\s*(da|de|ta|te|dan|den|tan|ten|ın|in|un|ün|nın|nin|nun|nün)\b/gi, "$1");
+  const patterns = [
+    // TR: "Van'da", "Van da"
+    /([A-Za-z\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff][\w\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]{1,40})\s*(?:'d[ae]|\s+d[ae])\b/i,
+    // EN: in/at/near X
+    /\b(?:in|at|near)\s+([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f\s-]{1,40})\b/i,
+    // FR: à/au/aux X
+    /\b(?:à|au|aux|dans)\s+([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f\s-]{1,40})\b/i,
+    // RU: в X
+    /\bв\s+([A-Za-z\u00c0-\u024f\u0400-\u04ff][A-Za-z\u00c0-\u024f\u0400-\u04ff\s-]{1,40})\b/i,
+    // AR: في X
+    /\bفي\s+([\u0600-\u06ff\s-]{2,40})\b/i,
+  ];
+
+  for (const p of patterns) {
+    const m = raw.match(p);
+    if (m && m[1]) return safeString(m[1]);
   }
 
-  const low = safeString(s).toLowerCase();
-  const cleaned = low.replace(/[^a-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]/g, " ");
-  const words = cleaned
-    .split(/\s+/)
-    .filter(Boolean)
-    .filter((w) => w.length > 1);
-
-  const sw = STOPWORDS[lang] || STOPWORDS.tr;
-  const filtered = words.filter((w) => !sw.has(w));
-
-  const q = filtered.slice(0, 7).join(" ").trim();
-  // Çok agresif filtreleme olursa geri dön
-  if (q && q.length >= 3) return q;
-  return compactWords(raw, 7) || raw;
+  return "";
 }
 
-function scoreSearchHit({ title = "", snippet = "" }, qWords = []) {
-  const t = safeString(title).toLowerCase();
-  const s = decodeHtmlEntities(snippet || "").toLowerCase();
-  let score = 0;
-  for (const w of qWords) {
-    if (!w || w.length < 2) continue;
-    if (t.includes(w)) score += 4;
-    if (s.includes(w)) score += 1;
-  }
-  // Disambiguation sayfalarını geriye at
-  if (/(anlam\s*ayr|disambiguation|homonym|значени|توضيح)/i.test(t)) score -= 6;
-  return score;
+function pickCity(text, cityHint) {
+  const c = safeString(cityHint);
+  if (c) return c;
+
+  const candidate = extractLocationCandidate(text);
+  if (candidate) return candidate;
+
+  // fallback: remove obvious intent words, take first 1-3 tokens
+  const low = safeString(text).toLowerCase();
+  const stop = [
+    "hava", "durumu", "forecast", "weather", "temperature",
+    "gezilecek", "yerler", "things", "places", "visit",
+    "yakınımda", "yakında", "near", "me", "nearby",
+    "mekan", "kafe", "restoran", "kahvaltı",
+    "tarif", "recipe", "recette",
+  ];
+
+  let cleaned = low;
+  for (const w of stop) cleaned = cleaned.replace(new RegExp(`\\b${w}\\b`, "gi"), " ");
+  cleaned = cleaned.replace(/[^a-z\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]/gi, " ");
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  return safeString(words.slice(0, 3).join(" "));
+}
+
+function pickWikiLang(lang) {
+  const L = normalizeLang(lang);
+  if (L === "tr") return "tr";
+  if (L === "en") return "en";
+  if (L === "fr") return "fr";
+  if (L === "ru") return "ru";
+  if (L === "ar") return "ar";
+  return "en";
 }
 
 function detectEvidenceType(text, lang = "tr") {
   const low = safeString(text).toLowerCase();
+  if (!low) return "wiki";
 
-  const isFx = /(doviz|d\u00f6viz|kur|exchange rate|fx\b|usd\b|eur\b|gbp\b|try\b|dolar|euro|sterlin|kurs\b|\u043a\u0443\u0440\u0441|\u0627\u0644\u0635\u0631\u0641|\u0633\u0639\u0631\s*\u0627\u0644\u0635\u0631\u0641)/i.test(low);
-  if (isFx) return "fx";
+  if (/(doviz|d\u00f6viz|kur|exchange rate|\bfx\b|\busd\b|\beur\b|\bgbp\b|\bdolar\b|\beuro\b|\bsterlin\b|\u043a\u0443\u0440\u0441|\u0627\u0644\u0635\u0631\u0641)/i.test(low)) return "fx";
+  if (/(hava\s*durumu|hava\s*nasil|sicaklik|weather|temperature|forecast|\u043f\u043e\u0433\u043e\u0434\u0430|\u0627\u0644\u0637\u0642\u0633)/i.test(low)) return "weather";
+  if (/(tarif|tarifi|malzeme|recipe|ingredients|recette|ingr\u00e9dients|\u0440\u0435\u0446\u0435\u043f\u0442|\u0438\u043d\u0433\u0440\u0435\u0434\u0438\u0435\u043d\u0442|\u0648\u0635\u0641\u0629|\u0645\u0643\u0648\u0646\u0627\u062a)/i.test(low)) return "recipe";
 
-  const isWeather = /(hava\s*durumu|hava\s*nasil|sicaklik|weather|temperature|forecast|\u043f\u043e\u0433\u043e\u0434\u0430|\u0644\u0644\u0637\u0642\u0633|\u0627\u0644\u0637\u0642\u0633)/i.test(low);
-  if (isWeather) return "weather";
+  const nearby = /(yak\u0131n\u0131mda|yak\u0131nda|near\s*me|nearby|\u0440\u044f\u0434\u043e\u043c|\u043f\u043e\u0431\u043b\u0438\u0437\u043e\u0441\u0442\u0438|\u0642\u0631\u064a\u0628\s*\u0645\u0646\u064a)/i.test(low);
+  const place  = /(mekan|kafe|cafe|restaurant|restoran|kahvalt\u0131|brunch|where\s*to\s*eat|o\u00f9\s*manger|\u0433\u0434\u0435\s*\u043f\u043e\u0435\u0441\u0442\u044c|\u0645\u0637\u0639\u0645|\u0642\u0647\u0648\u0629)/i.test(low);
+  const travel = /(gezilecek|rota|itinerary|things\s*to\s*do|places\s*to\s*visit|travel|sahil|beach|plaj|tekne|boat|marina|\u043c\u0430\u0440\u0448\u0440\u0443\u0442|\u0447\u0442\u043e\s*\u043f\u043e\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c|\u0631\u062d\u0644\u0629|\u0634\u0627\u0637\u0626|\u0642\u0627\u0631\u0628)/i.test(low);
+  if (nearby || place) return "poi";
+  if (travel) return "travel";
 
-  const isNews = /(haber|g\u00fcndem|son\s*haber|news|headline|latest|\u043d\u043e\u0432\u043e\u0441\u0442|\u0627\u0644\u0623\u062e\u0628\u0627\u0631)/i.test(low);
-  if (isNews) return "news";
+  if (/(haber|g\u00fcndem|son\s*haber|news|headline|latest|\u043d\u043e\u0432\u043e\u0441\u0442\u0438|\u0627\u0644\u0623\u062e\u0628\u0627\u0631)/i.test(low)) return "news";
 
-  // Gezi / mekan / rota gibi "öneri" soruları: Wikivoyage daha isabetli
-  const isTravel = /(gezilecek|gezi|seyahat|rota|tur\b|turu|g\u00fczergah|g\u00fczerg\u00e2h|sahil|plaj|koy\b|tekne|m\u00fcz(e|\u00fc)e|tarihi\s*yer|nerede\s*gez|ne\s*yap|nerede\s*yenir|mekan\s*\u00f6ner)/i.test(low);
-  if (isTravel) return "travel";
-
-  // default: wiki for general knowledge
   return "wiki";
 }
 
@@ -626,7 +617,7 @@ async function fetchJsonCached(url, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
 
   const res = await fetchWithTimeout(url, {
     method: "GET",
-    timeout: 8000,
+    timeout: 9000,
     headers: {
       "User-Agent": "FindAllEasy-SonoAI/1.0",
       Accept: "application/json",
@@ -645,82 +636,197 @@ async function fetchTextCached(url, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
 
   const res = await fetchWithTimeout(url, {
     method: "GET",
-    timeout: 8000,
+    timeout: 9000,
     headers: {
       "User-Agent": "FindAllEasy-SonoAI/1.0",
       Accept: "application/xml,text/xml,text/plain,*/*",
     },
   });
   if (!res || !res.ok) return null;
-  const text = await res.text().catch(() => "");
-  if (text) cacheSet(key, text, ttlMs);
-  return text || null;
+  const txt = await res.text().catch(() => "");
+  if (txt) cacheSet(key, txt, ttlMs);
+  return txt || null;
 }
 
-
-
-function pickCity(text, cityHint) {
-  const c = safeString(cityHint);
-  if (c) return c;
-  const low = safeString(text).toLowerCase();
-  // small heuristic for TR cities (common)
-  const known = ["istanbul", "ankara", "izmir", "antalya", "bursa", "adana", "konya", "gaziantep", "kayseri"]; 
-  for (const k of known) {
-    if (low.includes(k)) return k;
+function scoreCandidate(query, title, snippet = "") {
+  const q = safeString(query).toLowerCase();
+  const t = safeString(title).toLowerCase();
+  const s = safeString(stripTags(snippet)).toLowerCase();
+  const qWords = q.split(/\s+/).filter(Boolean).slice(0, 8);
+  let score = 0;
+  for (const w of qWords) {
+    if (w.length < 2) continue;
+    if (t.includes(w)) score += 3;
+    if (s.includes(w)) score += 1;
   }
-  return "";
+  // exact title match boost
+  if (t === q) score += 6;
+  return score;
 }
 
-function pickWikiLang(lang) {
-  if (lang === "en") return "en";
-  if (lang === "fr") return "fr";
-  if (lang === "ru") return "ru";
-  if (lang === "ar") return "ar";
-  return "tr";
+function weatherCodeToText(code, lang) {
+  const L = normalizeLang(lang);
+  const c = Number(code);
+  const tr = {
+    clear: "A\u00e7\u0131k",
+    partly: "Par\u00e7al\u0131 bulutlu",
+    overcast: "Bulutlu",
+    fog: "Sisli",
+    drizzle: "\u00c7iseleme",
+    rain: "Ya\u011fmurlu",
+    snow: "Karla kar\u0131\u015f\u0131k / Kar",
+    showers: "Sa\u011fanak",
+    thunder: "G\u00f6k g\u00fcr\u00fclt\u00fcl\u00fc f\u0131rt\u0131na",
+  };
+  const en = {
+    clear: "Clear",
+    partly: "Partly cloudy",
+    overcast: "Overcast",
+    fog: "Fog",
+    drizzle: "Drizzle",
+    rain: "Rain",
+    snow: "Snow",
+    showers: "Showers",
+    thunder: "Thunderstorm",
+  };
+  const fr = {
+    clear: "D\u00e9gag\u00e9",
+    partly: "Partiellement nuageux",
+    overcast: "Couvert",
+    fog: "Brouillard",
+    drizzle: "Bruine",
+    rain: "Pluie",
+    snow: "Neige",
+    showers: "Averses",
+    thunder: "Orage",
+  };
+  const ru = {
+    clear: "\u042f\u0441\u043d\u043e",
+    partly: "\u041f\u0435\u0440\u0435\u043c\u0435\u043d\u043d\u0430\u044f \u043e\u0431\u043b\u0430\u0447\u043d\u043e\u0441\u0442\u044c",
+    overcast: "\u041f\u0430\u0441\u043c\u0443\u0440\u043d\u043e",
+    fog: "\u0422\u0443\u043c\u0430\u043d",
+    drizzle: "\u041c\u043e\u0440\u043e\u0441\u044c",
+    rain: "\u0414\u043e\u0436\u0434\u044c",
+    snow: "\u0421\u043d\u0435\u0433",
+    showers: "\u041b\u0438\u0432\u043d\u0438",
+    thunder: "\u0413\u0440\u043e\u0437\u0430",
+  };
+  const ar = {
+    clear: "\u0635\u0627\u0641\u064a",
+    partly: "\u063a\u0627\u0626\u0645 \u062c\u0632\u0626\u064a\u064b\u0627",
+    overcast: "\u063a\u0627\u0626\u0645",
+    fog: "\u0636\u0628\u0627\u0628",
+    drizzle: "\u0631\u0630\u0627\u0630",
+    rain: "\u0645\u0637\u0631",
+    snow: "\u062b\u0644\u062c",
+    showers: "\u0632\u062e\u0627\u062a",
+    thunder: "\u0639\u0627\u0635\u0641\u0629 \u0631\u0639\u062f\u064a\u0629",
+  };
+  const dict = { tr, en, fr, ru, ar }[L] || tr;
+
+  if (c == 0) return dict.clear;
+  if (c in {1:1,2:1,3:1}) return c === 3 ? dict.overcast : dict.partly;
+  if (c in {45:1,48:1}) return dict.fog;
+  if (c in {51:1,53:1,55:1,56:1,57:1}) return dict.drizzle;
+  if (c in {61:1,63:1,65:1,66:1,67:1}) return dict.rain;
+  if (c in {71:1,73:1,75:1,77:1,85:1,86:1}) return dict.snow;
+  if (c in {80:1,81:1,82:1}) return dict.showers;
+  if (c in {95:1,96:1,99:1}) return dict.thunder;
+  return dict.overcast;
 }
 
 function buildEvidenceAnswer(e, lang) {
-  const L = lang || "tr";
+  const L = normalizeLang(lang);
   const tMap = {
     tr: {
-      fx: "Guncel doviz kurlari:",
-      weather: "Guncel hava durumu:",
-      news: "Guncel haber basliklari:",
-      travel: "Gezi notu:",
-      wiki: "Kisa bilgi:",
-      needCity: "Hangi sehir icin? (Ornek: Istanbul hava durumu)",
+      fx: "G\u00fcncel d\u00f6viz kurlar\u0131:",
+      weather: "Hava durumu:",
+      news: "G\u00fcncel haber ba\u015fl\u0131klar\u0131:",
+      wiki: "K\u0131sa bilgi:",
+      travel: "Gezi \u00f6nerileri:",
+      poi: "Yak\u0131ndaki yerler:",
+      recipe: "Tarif:",
+      needCity: "Hangi \u015fehir/b\u00f6lge i\u00e7in? (\u00d6rn: Van hava durumu)",
+      lowConf: "Eminlik d\u00fc\u015f\u00fck (k\u0131s\u0131tl\u0131 kaynak)",
+      sources: "Kaynaklar:",
+      itinerary: "1 g\u00fcnl\u00fck \u00f6rnek rota",
+      see: "G\u00f6r",
+      do: "Yap",
+      eat: "Yeme-\u0130\u00e7me",
+      tips: "\u0130pu\u00e7lar\u0131",
+      confidence: "G\u00fcven",
     },
     en: {
       fx: "Latest exchange rates:",
-      weather: "Current weather:",
+      weather: "Weather:",
       news: "Latest headlines:",
-      travel: "Travel note:",
       wiki: "Quick info:",
-      needCity: "Which city? (e.g., London weather)",
+      travel: "Travel suggestions:",
+      poi: "Nearby places:",
+      recipe: "Recipe:",
+      needCity: "Which city/area? (e.g., London weather)",
+      lowConf: "Low confidence (limited sources)",
+      sources: "Sources:",
+      itinerary: "Sample 1-day plan",
+      see: "See",
+      do: "Do",
+      eat: "Eat & Drink",
+      tips: "Tips",
+      confidence: "Confidence",
     },
     fr: {
-      fx: "Taux de change recents :",
-      weather: "Meteo actuelle :",
+      fx: "Taux de change r\u00e9cents :",
+      weather: "M\u00e9t\u00e9o :",
       news: "Derniers titres :",
-      travel: "Conseil de voyage :",
       wiki: "Info rapide :",
-      needCity: "Quelle ville ? (ex. Paris meteo)",
+      travel: "Suggestions de voyage :",
+      poi: "Lieux \u00e0 proximit\u00e9 :",
+      recipe: "Recette :",
+      needCity: "Quelle ville / r\u00e9gion ? (ex. Paris m\u00e9t\u00e9o)",
+      lowConf: "Confiance faible (sources limit\u00e9es)",
+      sources: "Sources :",
+      itinerary: "Exemple de plan sur 1 jour",
+      see: "\u00c0 voir",
+      do: "\u00c0 faire",
+      eat: "Manger & Boire",
+      tips: "Conseils",
+      confidence: "Confiance",
     },
     ru: {
-      fx: "Aktualnye kursy valyut:",
-      weather: "Tekushchaya pogoda:",
-      news: "Poslednie novosti:",
-      travel: "Zametka dlya puteshestviya:",
-      wiki: "Kratko:",
-      needCity: "Kakoy gorod? (naprimer, Moskva pogoda)",
+      fx: "\u0410\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u044b\u0435 \u043a\u0443\u0440\u0441\u044b \u0432\u0430\u043b\u044e\u0442:",
+      weather: "\u041f\u043e\u0433\u043e\u0434\u0430:",
+      news: "\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0435 \u043d\u043e\u0432\u043e\u0441\u0442\u0438:",
+      wiki: "\u041a\u0440\u0430\u0442\u043a\u043e:",
+      travel: "\u0421\u043e\u0432\u0435\u0442\u044b \u0434\u043b\u044f \u043f\u043e\u0435\u0437\u0434\u043a\u0438:",
+      poi: "\u0420\u044f\u0434\u043e\u043c \u0441 \u0432\u0430\u043c\u0438:",
+      recipe: "\u0420\u0435\u0446\u0435\u043f\u0442:",
+      needCity: "\u041a\u0430\u043a\u043e\u0439 \u0433\u043e\u0440\u043e\u0434/\u0440\u0430\u0439\u043e\u043d? (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u041c\u043e\u0441\u043a\u0432\u0430 \u043f\u043e\u0433\u043e\u0434\u0430)",
+      lowConf: "\u041d\u0438\u0437\u043a\u0430\u044f \u0443\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c (\u043c\u0430\u043b\u043e \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432)",
+      sources: "\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438:",
+      itinerary: "\u041f\u0440\u0438\u043c\u0435\u0440 \u043f\u043b\u0430\u043d\u0430 \u043d\u0430 1 \u0434\u0435\u043d\u044c",
+      see: "\u0421\u043c\u043e\u0442\u0440\u0435\u0442\u044c",
+      do: "\u0417\u0430\u043d\u044f\u0442\u0438\u044f",
+      eat: "\u0415\u0434\u0430 \u0438 \u043d\u0430\u043f\u0438\u0442\u043a\u0438",
+      tips: "\u0421\u043e\u0432\u0435\u0442\u044b",
+      confidence: "\u0423\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c",
     },
     ar: {
-      fx: "اسعار الصرف الحالية:",
-      weather: "الطقس الحالي:",
-      news: "احدث العناوين:",
-      travel: "معلومة سفر:",
-      wiki: "معلومة سريعة:",
-      needCity: "اي مدينة؟ (مثال: طقس اسطنبول)",
+      fx: "\u0623\u0633\u0639\u0627\u0631 \u0627\u0644\u0635\u0631\u0641 \u0627\u0644\u062d\u0627\u0644\u064a\u0629:",
+      weather: "\u0627\u0644\u0637\u0642\u0633:",
+      news: "\u0623\u062d\u062f\u062b \u0627\u0644\u0639\u0646\u0627\u0648\u064a\u0646:",
+      wiki: "\u0645\u0639\u0644\u0648\u0645\u0629 \u0633\u0631\u064a\u0639\u0629:",
+      travel: "\u0627\u0642\u062a\u0631\u0627\u062d\u0627\u062a \u0633\u0641\u0631:",
+      poi: "\u0623\u0645\u0627\u0643\u0646 \u0642\u0631\u064a\u0628\u0629:",
+      recipe: "\u0648\u0635\u0641\u0629:",
+      needCity: "\u0623\u064a \u0645\u062f\u064a\u0646\u0629/\u0645\u0646\u0637\u0642\u0629\u061f (\u0645\u062b\u0627\u0644: \u0637\u0642\u0633 \u0625\u0633\u0637\u0646\u0628\u0648\u0644)",
+      lowConf: "\u062b\u0642\u0629 \u0645\u0646\u062e\u0641\u0636\u0629 (\u0645\u0635\u0627\u062f\u0631 \u0645\u062d\u062f\u0648\u062f\u0629)",
+      sources: "\u0627\u0644\u0645\u0635\u0627\u062f\u0631:",
+      itinerary: "\u062e\u0637\u0629 \u0645\u0642\u062a\u0631\u062d\u0629 \u0644\u064a\u0648\u0645 \u0648\u0627\u062d\u062f",
+      see: "\u0645\u0634\u0627\u0647\u062f\u0629",
+      do: "\u0623\u0646\u0634\u0637\u0629",
+      eat: "\u0645\u0623\u0643\u0648\u0644\u0627\u062a \u0648\u0645\u0634\u0631\u0648\u0628\u0627\u062a",
+      tips: "\u0646\u0635\u0627\u0626\u062d",
+      confidence: "\u0627\u0644\u062b\u0642\u0629",
     },
   };
   const T = tMap[L] || tMap.tr;
@@ -730,75 +836,112 @@ function buildEvidenceAnswer(e, lang) {
   if (e.type === "need_city") {
     return {
       answer: T.needCity,
-      suggestions: ["Istanbul hava durumu", "Ankara hava durumu"].slice(0, 2),
+      suggestions: L === "tr" ? ["Van hava durumu", "Istanbul gezilecek yerler"] : ["London weather", "Paris things to do"],
       sources: [],
+      trustScore: 40,
     };
   }
+  const lowNote = trust != null && trust < 55 ? `\n(${T.lowConf})` : "";
 
   if (e.type === "fx") {
     const lines = [];
-    for (const row of e.rates || []) {
-      lines.push(`${row.pair}: ${row.value}`);
-    }
-    const answer = `${T.fx}\n${lines.join("\n")}`.trim();
+    for (const row of e.rates || []) lines.push(`${row.pair}: ${row.value}`);
     return {
-      answer,
-      suggestions: L === "tr" ? ["EUR/TRY", "USD/TRY", "GBP/TRY"] : ["USD to TRY", "EUR to TRY"],
+      answer: `${T.fx}\n${lines.join("\n")}`.trim(),
+      suggestions: L === "tr" ? ["USD/TRY", "EUR/TRY", "GBP/TRY"] : ["USD to TRY", "EUR to TRY"],
       sources: e.sources || [],
+      trustScore: trust ?? 80,
     };
   }
 
   if (e.type === "weather") {
-    const a = `${T.weather} ${e.city}: ${e.summary}`;
+    const lines = [];
+    if (e.now) lines.push(e.now);
+    if (Array.isArray(e.forecast) && e.forecast.length) {
+      lines.push("\n" + (L === "tr" ? "5 g\u00fcnl\u00fck tahmin:" : L === "fr" ? "Pr\u00e9visions 5 jours :" : L === "ru" ? "\u041f\u0440\u043e\u0433\u043d\u043e\u0437 \u043d\u0430 5 \u0434\u043d\u0435\u0439:" : L === "ar" ? "\u062a\u0648\u0642\u0639\u0627\u062a 5 \u0623\u064a\u0627\u0645:" : "5-day forecast:") );
+      for (const f of e.forecast.slice(0, 5)) lines.push(`- ${f}`);
+    }
     return {
-      answer: a,
-      suggestions: [
-        L === "tr" ? `${e.city} yarin hava` : `${e.city} weather tomorrow`,
-        L === "tr" ? "5 gunluk hava" : "5 day forecast",
-      ],
+      answer: `${T.weather} ${e.city}\n${lines.join("\n")}${lowNote}`.trim(),
+      suggestions: L === "tr" ? [`${e.city} yar\u0131n hava`, `${e.city} 5 g\u00fcnl\u00fck hava`] : [`${e.city} weather tomorrow`, `${e.city} 5 day forecast`],
       sources: e.sources || [],
+      trustScore: trust ?? 85,
+    };
+  }
+
+  if (e.type === "poi") {
+    const lines = (e.items || []).slice(0, 10).map((x, i) => `${i + 1}) ${x.name}${x.note ? ` — ${x.note}` : ""}\n${x.url}`);
+    return {
+      answer: `${T.poi} ${e.city}\n${lines.join("\n\n")}${lowNote}`.trim(),
+      suggestions: L === "tr" ? ["Yak\u0131n\u0131mdaki kafe", "Yak\u0131n\u0131mdaki restoran"] : ["nearby cafes", "nearby restaurants"],
+      sources: e.sources || [],
+      trustScore: trust ?? 80,
+    };
+  }
+
+  if (e.type === "travel") {
+    const blocks = [];
+    if (e.sections) {
+      const secOrder = ["see", "do", "eat", "tips"];
+      const secLabel = { see: T.see, do: T.do, eat: T.eat, tips: T.tips };
+      for (const k of secOrder) {
+        const items = (e.sections[k] || []).slice(0, 6);
+        if (!items.length) continue;
+        blocks.push(`${secLabel[k]}:\n- ${items.join("\n- ")}`);
+      }
+    }
+    if (Array.isArray(e.itinerary) && e.itinerary.length) {
+      blocks.push(`${T.itinerary}:\n- ${e.itinerary.join("\n- ")}`);
+    }
+    const header = `${T.travel} ${e.city}`;
+    return {
+      answer: `${header}\n\n${blocks.join("\n\n")}${lowNote}`.trim(),
+      suggestions: L === "tr" ? [`${e.city} gezilecek yerler`, `${e.city} yeme i\u00e7me`] : [`${e.city} things to do`, `${e.city} where to eat`],
+      sources: e.sources || [],
+      trustScore: trust ?? 78,
+    };
+  }
+
+  if (e.type === "recipe") {
+    const lines = [];
+    if (e.ingredients && e.ingredients.length) {
+    }
+    const ingLabel = L === "tr" ? "Malzemeler" : L === "fr" ? "Ingr\u00e9dients" : L === "ru" ? "\u0418\u043d\u0433\u0440\u0435\u0434\u0438\u0435\u043d\u0442\u044b" : L === "ar" ? "\u0627\u0644\u0645\u0643\u0648\u0646\u0627\u062a" : "Ingredients";
+    const stepsLabel = L === "tr" ? "Yap\u0131l\u0131\u015f" : L === "fr" ? "\u00c9tapes" : L === "ru" ? "\u0428\u0430\u0433\u0438" : L === "ar" ? "\u0627\u0644\u0637\u0631\u064a\u0642\u0629" : "Steps";
+
+    const parts = [];
+    if (Array.isArray(e.ingredients) && e.ingredients.length) {
+      parts.push(`${ingLabel}:\n- ${e.ingredients.slice(0, 20).join("\n- ")}`);
+    }
+    if (Array.isArray(e.steps) && e.steps.length) {
+      parts.push(`${stepsLabel}:\n- ${e.steps.slice(0, 15).join("\n- ")}`);
+    }
+    return {
+      answer: `${T.recipe} ${e.title}\n\n${parts.join("\n\n")}${lowNote}`.trim(),
+      suggestions: L === "tr" ? ["Tavuk tarifi", "Tatli tarifi"] : ["chicken recipe", "dessert recipe"],
+      sources: e.sources || [],
+      trustScore: trust ?? 75,
     };
   }
 
   if (e.type === "news") {
     const items = (e.items || []).slice(0, 5);
     const lines = items.map((x, i) => `${i + 1}) ${x.title}`);
-    const answer = `${T.news}\n${lines.join("\n")}`.trim();
     return {
-      answer,
-      suggestions: [
-        L === "tr" ? "Son dakika" : "latest news",
-        L === "tr" ? "Ekonomi haberleri" : "economy news",
-        L === "tr" ? "Spor haberleri" : "sports news",
-      ],
+      answer: `${T.news}\n${lines.join("\n")}${lowNote}`.trim(),
+      suggestions: L === "tr" ? ["Son dakika", "Ekonomi haberleri", "Spor haberleri"] : ["latest news", "economy news", "sports news"],
       sources: e.sources || [],
+      trustScore: trust ?? 70,
     };
   }
 
-  if (e.type === "travel") {
-    const title = e.title ? ` ${e.title}` : "";
-    const answer = `${T.travel}${title}\n${e.extract}`.trim();
-    return {
-      answer,
-      suggestions: [
-        L === "tr" ? "2 gunluk rota" : "2 day itinerary",
-        L === "tr" ? "Ne yenir?" : "What to eat?",
-        L === "tr" ? "Ulasim nasil?" : "How to get around?",
-      ],
-      sources: e.sources || [],
-    };
-  }
-
+  // wiki
   if (e.type === "wiki") {
-    const answer = `${T.wiki} ${e.title}\n${e.extract}`.trim();
     return {
-      answer,
-      suggestions: [
-        L === "tr" ? "Daha kisa ozet" : "shorter summary",
-        L === "tr" ? "Ornek ver" : "give an example",
-        L === "tr" ? "Artisi eksisi" : "pros and cons",
-      ],
+      answer: `${T.wiki} ${e.title}\n${e.extract}${lowNote}`.trim(),
+      suggestions: L === "tr" ? ["Daha k\u0131sa \u00f6zet", "\u00d6rnek ver", "Art\u0131s\u0131 eksisi"] : ["shorter summary", "give an example", "pros and cons"],
       sources: e.sources || [],
+      trustScore: trust ?? 65,
     };
   }
 
@@ -817,7 +960,6 @@ async function getFxEvidence(text, lang) {
   if (wantEur) pairs.push({ from: "EUR", to: "TRY" });
   if (wantGbp) pairs.push({ from: "GBP", to: "TRY" });
 
-  // If generic 'kur/doviz' -- show USD + EUR to TRY
   if (pairs.length === 0) {
     pairs.push({ from: "USD", to: "TRY" });
     pairs.push({ from: "EUR", to: "TRY" });
@@ -826,7 +968,7 @@ async function getFxEvidence(text, lang) {
   const results = [];
   for (const p of pairs.slice(0, 3)) {
     const url = `https://api.frankfurter.app/latest?from=${encodeURIComponent(p.from)}&to=${encodeURIComponent(p.to)}`;
-    const data = await fetchJsonCached(url, 2 * 60 * 1000); // 2 min
+    const data = await fetchJsonCached(url, 2 * 60 * 1000);
     const rate = data?.rates?.[p.to];
     const date = data?.date || "";
     if (rate) {
@@ -834,14 +976,29 @@ async function getFxEvidence(text, lang) {
     }
   }
 
-  if (results.length === 0) return null;
+  if (!results.length) return null;
 
   return {
     type: "fx",
     rates: results,
-    sources: [
-      { title: "Frankfurter (ECB rates)", url: "https://www.frankfurter.app/" },
-    ],
+    trustScore: 80,
+    sources: [{ title: "Frankfurter (ECB rates)", url: "https://www.frankfurter.app/" }],
+  };
+}
+
+async function geocodeCity(city, lang) {
+  const name = safeString(city);
+  if (!name) return null;
+  const L = normalizeLang(lang);
+  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=1&language=${encodeURIComponent(L)}&format=json`;
+  const geo = await fetchJsonCached(geoUrl, 60 * 60 * 1000);
+  const g = geo?.results?.[0];
+  if (!g) return null;
+  return {
+    name: safeString(g.name || name),
+    country: safeString(g.country || ""),
+    lat: g.latitude,
+    lon: g.longitude,
   };
 }
 
@@ -849,33 +1006,50 @@ async function getWeatherEvidence(text, lang, cityHint) {
   const city = pickCity(text, cityHint);
   if (!city) return { type: "need_city" };
 
-  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=${encodeURIComponent(lang || "tr")}&format=json`;
-  const geo = await fetchJsonCached(geoUrl, 60 * 60 * 1000); // 1 hour
-  const g = geo?.results?.[0];
+  const g = await geocodeCity(city, lang);
   if (!g) return null;
 
-  const lat = g.latitude;
-  const lon = g.longitude;
-  const placeName = safeString(g.name || city);
-
-  const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current_weather=true&timezone=auto`;
+  const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(g.lat)}&longitude=${encodeURIComponent(g.lon)}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=auto`;
   const w = await fetchJsonCached(wUrl, 5 * 60 * 1000);
   const cw = w?.current_weather;
+  const daily = w?.daily;
   if (!cw) return null;
 
-  const temp = cw.temperature;
-  const wind = cw.windspeed;
-  const time = cw.time;
+  const nowTxt = (() => {
+    const cond = weatherCodeToText(cw.weathercode, lang);
+    const wind = cw.windspeed;
+    const temp = cw.temperature;
+    const at = safeString(cw.time);
+    const L = normalizeLang(lang);
+    if (L === "tr") return `${cond}, ${temp}\u00b0C • r\u00fczgar ${wind} km/s (saat: ${at})`;
+    if (L === "fr") return `${cond}, ${temp}\u00b0C • vent ${wind} km/h (\u00e0 ${at})`;
+    if (L === "ru") return `${cond}, ${temp}\u00b0C • \u0432\u0435\u0442\u0435\u0440 ${wind} \u043a\u043c/\u0447 (\u0432 ${at})`;
+    if (L === "ar") return `${cond}، ${temp}\u00b0C • \u0631\u064a\u0627\u062d ${wind} \u0643\u0645/\u0633 (\u0641\u064a ${at})`;
+    return `${cond}, ${temp}\u00b0C • wind ${wind} km/h (at ${at})`;
+  })();
 
-  const summary = `${temp}C, wind ${wind} km/h (at ${time})`;
+  const forecast = [];
+  try {
+    const times = daily?.time || [];
+    const tmax = daily?.temperature_2m_max || [];
+    const tmin = daily?.temperature_2m_min || [];
+    const pop = daily?.precipitation_probability_max || [];
+    const code = daily?.weathercode || [];
+    for (let i = 0; i < Math.min(5, times.length); i++) {
+      const d = safeString(times[i]);
+      const cond = weatherCodeToText(code[i], lang);
+      const line = `${d}: ${cond} • ${tmin[i]}\u00b0 / ${tmax[i]}\u00b0 • ${pop[i] ?? "-"}%`;
+      forecast.push(line);
+    }
+  } catch {}
 
   return {
     type: "weather",
-    city: placeName,
-    summary,
-    sources: [
-      { title: "Open-Meteo", url: "https://open-meteo.com/" },
-    ],
+    city: g.name,
+    now: nowTxt,
+    forecast,
+    trustScore: forecast.length ? 88 : 82,
+    sources: [{ title: "Open-Meteo", url: "https://open-meteo.com/" }],
   };
 }
 
@@ -891,7 +1065,6 @@ async function getNewsEvidence(text, lang) {
   const xml = await fetchTextCached(rssUrl, 2 * 60 * 1000);
   if (!xml) return null;
 
-  // parse items
   const items = [];
   const itemRe = /<item>([\s\S]*?)<\/item>/g;
   let m;
@@ -904,144 +1077,435 @@ async function getNewsEvidence(text, lang) {
     if (items.length >= 5) break;
   }
 
-  if (items.length === 0) return null;
+  if (!items.length) return null;
 
   return {
     type: "news",
     query: q,
     items,
+    trustScore: 70,
     sources: items.map((x) => ({ title: x.title, url: x.url })).slice(0, 5),
   };
 }
 
-async function getWikivoyageEvidence(text, lang) {
-  const raw = safeString(text);
-  if (!raw) return null;
+async function getWikiEvidence(text, lang) {
+  const q = safeString(text);
+  if (!q) return null;
   const wLang = pickWikiLang(lang || "tr");
-  const q = normalizeQueryForEvidenceSearch(raw, wLang);
-  const qWords = q.split(/\s+/).filter(Boolean);
 
-  const sUrl = `https://${wLang}.wikivoyage.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*&srlimit=5&srprop=snippet`;
+  const sUrl = `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*&srlimit=5`;
   const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000);
-  const hits = Array.isArray(search?.query?.search) ? search.query.search : [];
-  if (hits.length === 0) return null;
+  const arr = (search?.query?.search || []).slice(0, 5);
+  if (!arr.length) return null;
 
-  const ordered = hits
-    .map((h) => ({ h, score: scoreSearchHit(h, qWords) }))
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.h)
-    .slice(0, 5);
-
-  for (const hit of ordered) {
-    const title = safeString(hit?.title || "");
-    if (!title) continue;
-
-    const sumUrl = `https://${wLang}.wikivoyage.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-    const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
-    const extract = safeString(sum?.extract || "");
-    if (!extract) continue;
-
-    const pageUrl =
-      safeString(sum?.content_urls?.desktop?.page || "") ||
-      `https://${wLang}.wikivoyage.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
-
-    // Relevance guard: en az 1 anahtar kelime tutmalı
-    if (qWords.length > 0) {
-      const tl = title.toLowerCase();
-      const exl = extract.toLowerCase();
-      const match = qWords.some((w) => tl.includes(w) || exl.includes(w));
-      if (!match) continue;
+  let best = arr[0];
+  let bestScore = -1;
+  for (const cand of arr) {
+    const sc = scoreCandidate(q, cand?.title, cand?.snippet);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = cand;
     }
-
-    return {
-      type: "travel",
-      title,
-      extract,
-      sources: pageUrl ? [{ title: `Wikivoyage: ${title}`, url: pageUrl }] : [],
-    };
   }
 
-  return null;
+  const title = safeString(best?.title || q);
+  const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+  const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
+  const extract = safeString(sum?.extract || "");
+  const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
+  if (!extract) return null;
+
+  // trust score: higher when match score is higher
+
+  const trustScore = Math.max(55, Math.min(80, 55 + (bestScore > 0 ? bestScore * 3 : 6)));
+
+  return {
+    type: "wiki",
+    title,
+    extract,
+    trustScore,
+    sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
+  };
 }
 
-async function getWikiEvidence(text, lang) {
-  const raw = safeString(text);
-  if (!raw) return null;
-  const wLang = pickWikiLang(lang || "tr");
+function parseMealIngredients(meal) {
+  const out = [];
+  if (!meal || typeof meal !== "object") return out;
+  for (let i = 1; i <= 20; i++) {
+    const ing = safeString(meal[`strIngredient${i}`]);
+    const meas = safeString(meal[`strMeasure${i}`]);
+    if (ing) out.push(meas ? `${ing} (${meas})` : ing);
+  }
+  return out;
+}
 
-  const q = normalizeQueryForEvidenceSearch(raw, wLang);
-  const qWords = q.split(/\s+/).filter(Boolean);
+function splitSteps(instructions) {
+  const txt = safeString(instructions);
+  if (!txt) return [];
+  const parts = txt
+    .replace(/\r/g, "")
+    .split(/\n+|\.(?=\s)/)
+    .map((x) => safeString(x))
+    .filter(Boolean)
+    .map((x) => x.replace(/\s+/g, " "));
+  // keep it readable
+  const uniq = [];
+  for (const p of parts) {
+    if (p.length < 8) continue;
+    if (uniq.includes(p)) continue;
+    uniq.push(p);
+    if (uniq.length >= 15) break;
+  }
+  return uniq;
+}
 
-  // Wikipedia search (çoklu hit + skor)
-  const mkUrl = (qq) =>
-    `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(qq)}&utf8=1&format=json&origin=*&srlimit=5&srprop=snippet`;
+async function getRecipeEvidence(text, lang) {
+  const q = safeString(text);
+  if (!q) return null;
 
-  let search = await fetchJsonCached(mkUrl(q), 24 * 60 * 60 * 1000);
-  let hits = Array.isArray(search?.query?.search) ? search.query.search : [];
+  // Try a best-effort: use compact query
+  const topic = compactWords(q, 5) || q;
+  const url = `https://www.themealdb.com/api/json/v1/1/search.php?s=${encodeURIComponent(topic)}`;
+  const data = await fetchJsonCached(url, 12 * 60 * 60 * 1000);
+  const meal = data?.meals?.[0];
+  if (!meal) return null;
 
-  // Eğer normalize çok daralttıysa, ham metinle 2. deneme
-  if (hits.length === 0 && q !== raw) {
-    search = await fetchJsonCached(mkUrl(raw), 24 * 60 * 60 * 1000);
-    hits = Array.isArray(search?.query?.search) ? search.query.search : [];
+  const title = safeString(meal.strMeal || topic);
+  const ingredients = parseMealIngredients(meal);
+  const steps = splitSteps(meal.strInstructions);
+  const srcUrl = safeString(meal.strSource || meal.strYoutube || "");
+
+  return {
+    type: "recipe",
+    title,
+    ingredients,
+    steps,
+    trustScore: srcUrl ? 78 : 70,
+    sources: srcUrl ? [{ title: "Recipe source", url: srcUrl }] : [{ title: "TheMealDB", url: "https://www.themealdb.com/" }],
+  };
+}
+
+function detectPoiCategory(text = "") {
+  const low = safeString(text).toLowerCase();
+  if (/(sahil|plaj|beach|\u0634\u0627\u0637\u0626)/i.test(low)) return "beach";
+  if (/(tekne|boat|marina|iskele|pier|\u0642\u0627\u0631\u0628)/i.test(low)) return "marina";
+  if (/(kahvalt\u0131|brunch)/i.test(low)) return "breakfast";
+  if (/(kafe|cafe|coffee|\u0642\u0647\u0648\u0629)/i.test(low)) return "cafe";
+  if (/(restoran|restaurant|\u0645\u0637\u0639\u0645)/i.test(low)) return "restaurant";
+  return "food";
+}
+
+async function overpassQuery(query, ttlMs = 5 * 60 * 1000) {
+  const key = `overpass:${query}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
+  const res = await fetchWithTimeout("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    timeout: 12000,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "User-Agent": "FindAllEasy-SonoAI/1.0",
+    },
+    body: "data=" + encodeURIComponent(query),
+  });
+  if (!res || !res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (data) cacheSet(key, data, ttlMs);
+  return data;
+}
+
+async function getPoiEvidence(text, lang, cityHint) {
+  const city = pickCity(text, cityHint);
+  if (!city) return { type: "need_city" };
+  const g = await geocodeCity(city, lang);
+  if (!g) return null;
+
+  const cat = detectPoiCategory(text);
+  const radius = 6000;
+
+  const qParts = [];
+  if (cat in {"cafe":1, "food":1, "breakfast":1, "restaurant":1}) {
+  }
+  // Compose Overpass filters
+  let filters = [];
+  if (cat === "beach") {
+    filters = [
+      '["natural"="beach"]',
+      '["leisure"="beach_resort"]',
+    ];
+  } else if (cat === "marina") {
+    filters = [
+      '["leisure"="marina"]',
+      '["man_made"="pier"]',
+      '["harbour"="yes"]',
+    ];
+  } else {
+    // food/cafe/restaurant/breakfast
+    const wantsCafe = cat in {"cafe":1, "food":1, "breakfast":1};
+    const wantsRest = cat in {"restaurant":1, "food":1, "breakfast":1};
+    filters = [];
+    if (wantsCafe) filters.push('["amenity"="cafe"]');
+    if (wantsRest) filters.push('["amenity"="restaurant"]');
+    if (cat === "breakfast") filters.push('["amenity"="fast_food"]');
   }
 
-  if (hits.length === 0) return null;
+  const blocks = [];
+  for (const f of filters) {
+    blocks.push(`node(around:${radius},${g.lat},${g.lon})${f};`);
+    blocks.push(`way(around:${radius},${g.lat},${g.lon})${f};`);
+    blocks.push(`relation(around:${radius},${g.lat},${g.lon})${f};`);
+  }
 
-  const ordered = hits
-    .map((h) => ({ h, score: scoreSearchHit(h, qWords) }))
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.h)
-    .slice(0, 5);
+  const query = `[out:json][timeout:12];(\n${blocks.join("\n")}\n);out center 30;`;
+  const data = await overpassQuery(query, 5 * 60 * 1000);
+  const elements = (data?.elements || []).slice(0, 60);
 
-  for (const hit of ordered) {
-    const title = safeString(hit?.title || "");
-    if (!title) continue;
+  const items = [];
+  for (const el of elements) {
+    const tags = el.tags || {};
+    const name = safeString(tags.name || tags["name:en"] || tags["name:tr"] || "");
+    if (!name) continue;
+    const lat = el.lat || el.center?.lat;
+    const lon = el.lon || el.center?.lon;
+    if (typeof lat !== "number" || typeof lon !== "number") continue;
 
-    const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-    const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
-    const extract = safeString(sum?.extract || "");
-    const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
-    if (!extract) continue;
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lat + ',' + lon)}`;
+    const note = safeString(tags.amenity || tags.natural || tags.leisure || tags.man_made || tags.harbour || "");
+    items.push({ name, note, url });
+    if (items.length >= 10) break;
+  }
 
-    // Relevance guard: en az 1 anahtar kelime tutmalı (boşsa top hit kabul)
-    if (qWords.length > 0) {
-      const tl = title.toLowerCase();
-      const exl = extract.toLowerCase();
-      const match = qWords.some((w) => tl.includes(w) || exl.includes(w));
-      if (!match) continue;
+  if (!items.length) return null;
+
+  const trustScore = 82;
+
+  return {
+    type: "poi",
+    city: g.name,
+    category: cat,
+    items,
+    trustScore,
+    sources: [
+      { title: "OpenStreetMap (Overpass)", url: "https://www.openstreetmap.org/" },
+      { title: "Overpass API", url: "https://overpass-api.de/" },
+    ],
+  };
+}
+
+function pickTravelTopic(text, lang, cityHint) {
+  const city = pickCity(text, cityHint);
+  if (city) return city;
+  // fallback: compact topic
+  const cleaned = compactWords(text, 4);
+  return cleaned || safeString(text);
+}
+
+async function wikivoyageSearch(topic, lang) {
+  const L = pickWikiLang(lang);
+  const base = `https://${L}.wikivoyage.org/w/api.php`;
+  const sUrl = `${base}?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*&srlimit=5`;
+  const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000);
+  const arr = (search?.query?.search || []).slice(0, 5);
+  if (!arr.length) return null;
+  let best = arr[0];
+  let bestScore = -1;
+  for (const cand of arr) {
+    const sc = scoreCandidate(topic, cand?.title, cand?.snippet);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = cand;
     }
+  }
+  return { title: safeString(best?.title || topic), score: bestScore };
+}
 
-    return {
-      type: "wiki",
-      title,
-      extract,
-      sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
-    };
+async function wikivoyageSections(title, lang) {
+  const L = pickWikiLang(lang);
+  const base = `https://${L}.wikivoyage.org/w/api.php`;
+  const secUrl = `${base}?action=parse&page=${encodeURIComponent(title)}&prop=sections&format=json&origin=*`;
+  const sec = await fetchJsonCached(secUrl, 24 * 60 * 60 * 1000);
+  const sections = sec?.parse?.sections || [];
+  return Array.isArray(sections) ? sections : [];
+}
+
+async function wikivoyageSectionHtml(title, sectionIndex, lang) {
+  const L = pickWikiLang(lang);
+  const base = `https://${L}.wikivoyage.org/w/api.php`;
+  const url = `${base}?action=parse&page=${encodeURIComponent(title)}&prop=text&section=${encodeURIComponent(sectionIndex)}&format=json&origin=*`;
+  const data = await fetchJsonCached(url, 24 * 60 * 60 * 1000);
+  const html = data?.parse?.text?.["*"] || "";
+  return safeString(html);
+}
+
+function extractListItems(html) {
+  const out = [];
+  const liRe = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+  let m;
+  while ((m = liRe.exec(html))) {
+    const t = stripTags(m[1] || "");
+    if (!t || t.length < 3) continue;
+    // avoid nav/empty
+    if (/^\^/i.test(t)) continue;
+    out.push(t);
+    if (out.length >= 20) break;
+  }
+  // dedupe
+  const uniq = [];
+  for (const x of out) {
+    if (!uniq.includes(x)) uniq.push(x);
+    if (uniq.length >= 12) break;
+  }
+  return uniq;
+}
+
+function mapTravelSections(sections, lang) {
+  const L = normalizeLang(lang);
+  const matches = {
+    see: [],
+    do: [],
+    eat: [],
+    tips: [],
+  };
+
+  const keys = {
+    tr: {
+      see: [/\bg\u00f6r\b/i, /\bg\u00f6r\u00fclecek\b/i],
+      do: [/\byap\b/i, /\betkinlik\b/i],
+      eat: [/yeme/i, /ye\s*\/?\s*i\u00e7/i, /\bi\u00e7\b/i],
+      tips: [/ipu\u00e7/i, /\bpratik\b/i, /\bt\u00fcyo\b/i],
+    },
+    en: {
+      see: [/\bsee\b/i],
+      do: [/\bdo\b/i, /\bactivities\b/i],
+      eat: [/\beat\b/i, /\bdrink\b/i, /\beat and drink\b/i],
+      tips: [/\btips\b/i, /\bstay safe\b/i, /\bcope\b/i],
+    },
+    fr: {
+      see: [/\bvoir\b/i, /\b\u00e0 voir\b/i],
+      do: [/\bfaire\b/i, /\b\u00e0 faire\b/i],
+      eat: [/manger/i, /boire/i],
+      tips: [/conseil/i, /s\u00e9curit\u00e9/i],
+    },
+    ru: {
+      see: [/\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c/i, /\u0447\u0442\u043e\s*\u043f\u043e\u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c/i],
+      do: [/\u0447\u0435\u043c\s*\u0437\u0430\u043d\u044f\u0442\u044c\u0441\u044f/i, /\u0434\u0435\u043b\u0430\u0442\u044c/i],
+      eat: [/\u0435\u0434\u0430/i, /\u043f\u0438\u0442\u0430\u043d\u0438\u0435/i],
+      tips: [/\u0441\u043e\u0432\u0435\u0442/i, /\u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d/i],
+    },
+    ar: {
+      see: [/\u0645\u0634\u0627\u0647\u062f\u0629/i, /\u0627\u0646\u0638\u0631/i],
+      do: [/\u0623\u0646\u0634\u0637\u0629/i, /\u0627\u0641\u0639\u0644/i],
+      eat: [/\u0645\u0623\u0643\u0648\u0644\u0627\u062a/i, /\u0645\u0634\u0631\u0648\u0628\u0627\u062a/i, /\u0643\u0644/i],
+      tips: [/\u0646\u0635\u0627\u0626\u062d/i, /\u0623\u0645\u0627\u0646/i],
+    },
+  };
+
+  const K = keys[L] || keys.tr;
+
+  for (const s of sections) {
+    const heading = safeString(s?.line || s?.anchor || "");
+    const idx = s?.index;
+    if (!heading || idx == null) continue;
+
+    const test = heading;
+    if (K.see.some((r) => r.test(test))) matches.see.push({ idx, heading });
+    else if (K.do.some((r) => r.test(test))) matches.do.push({ idx, heading });
+    else if (K.eat.some((r) => r.test(test))) matches.eat.push({ idx, heading });
+    else if (K.tips.some((r) => r.test(test))) matches.tips.push({ idx, heading });
   }
 
-  return null;
+  return matches;
+}
+
+async function getTravelEvidence(text, lang, cityHint) {
+  const topic = pickTravelTopic(text, lang, cityHint);
+  if (!topic) return null;
+
+  // Try user's language first; fallback to EN
+  const primary = await wikivoyageSearch(topic, lang);
+  let useLang = pickWikiLang(lang);
+  let chosen = primary;
+  if (!chosen) {
+    useLang = "en";
+    chosen = await wikivoyageSearch(topic, "en");
+  }
+  if (!chosen) return null;
+
+  const title = chosen.title;
+  const sections = await wikivoyageSections(title, useLang);
+  const mapped = mapTravelSections(sections, useLang);
+
+  const outSections = { see: [], do: [], eat: [], tips: [] };
+
+  // fetch html for up to 1 section per category
+  const tasks = [];
+  for (const k of ["see", "do", "eat", "tips"]) {
+    const s = (mapped[k] || [])[0];
+    if (!s) continue;
+    tasks.push((async () => {
+      const html = await wikivoyageSectionHtml(title, s.idx, useLang);
+      const items = extractListItems(html);
+      if (items.length) outSections[k] = items;
+    })());
+  }
+  await Promise.allSettled(tasks);
+
+  // itinerary: simple mix
+  const itinerary = [];
+  const seeTop = (outSections.see || []).slice(0, 2);
+  const doTop = (outSections.do || []).slice(0, 2);
+  const eatTop = (outSections.eat || []).slice(0, 2);
+  if (seeTop[0]) itinerary.push(seeTop[0]);
+  if (doTop[0]) itinerary.push(doTop[0]);
+  if (eatTop[0]) itinerary.push(eatTop[0]);
+  if (seeTop[1]) itinerary.push(seeTop[1]);
+  if (doTop[1]) itinerary.push(doTop[1]);
+  if (eatTop[1]) itinerary.push(eatTop[1]);
+
+  const pageUrl = `https://${useLang}.wikivoyage.org/wiki/${encodeURIComponent(title.replace(/\s/g, "_"))}`;
+
+  // Multi-source: try wikipedia summary for topic
+  const wiki = await getWikiEvidence(topic, useLang).catch(() => null);
+
+  const sources = [{ title: `Wikivoyage: ${title}`, url: pageUrl }];
+  if (wiki?.sources?.[0]) sources.push(wiki.sources[0]);
+
+  const itemCount = ["see","do","eat","tips"].reduce((acc,k)=>acc+(Array.isArray(outSections[k])?outSections[k].length:0),0);
+
+  let trustScore = 72;
+  if (itemCount >= 6) trustScore += 6;
+  if (wiki) trustScore += 8;
+  trustScore = Math.max(55, Math.min(92, trustScore));
+
+  return {
+    type: "travel",
+    city: title,
+    sections: outSections,
+    itinerary: itinerary.slice(0, 6),
+    trustScore,
+    sources,
+  };
 }
 
 async function gatherEvidence({ text, lang, city }) {
-  const type = detectEvidenceType(text, lang);
+  const L = normalizeLang(lang);
+  const type = detectEvidenceType(text, L);
 
   try {
-    if (type === "fx") return await getFxEvidence(text, lang);
-    if (type === "weather") return await getWeatherEvidence(text, lang, city);
-    if (type === "news") return await getNewsEvidence(text, lang);
-    if (type === "travel") {
-      const trv = await getWikivoyageEvidence(text, lang);
-      if (trv) return trv;
-      // Wikivoyage yoksa Wikipedia’ya düş
-      return await getWikiEvidence(text, lang);
-    }
-    // default
-    return await getWikiEvidence(text, lang);
+    if (type === "fx") return await getFxEvidence(text, L);
+    if (type === "weather") return await getWeatherEvidence(text, L, city);
+    if (type === "recipe") return await getRecipeEvidence(text, L);
+    if (type === "poi") return await getPoiEvidence(text, L, city);
+    if (type === "travel") return await getTravelEvidence(text, L, city);
+    if (type === "news") return await getNewsEvidence(text, L);
+    return await getWikiEvidence(text, L);
   } catch (err) {
     console.error("evidence error:", err?.message || err);
     return null;
   }
 }
+
 
 // S50 — LLM cevabı sanitize
 function sanitizeLLMAnswer(answer, normLocale) {
@@ -1441,25 +1905,6 @@ let evidenceReply = null;
 if (noSearchMode) {
   evidence = await gatherEvidence({ text, lang, city: normCity });
   evidenceReply = buildEvidenceAnswer(evidence, lang);
-
-  // Evidence bulunamazsa: konu dışı saçma cevap vermek yerine güvenli fallback
-  if (!evidenceReply || !evidenceReply.answer) {
-    const fallbackByLang = {
-      en: "I couldn't find a reliable quick source for this exact question. Try a shorter keyword (e.g., the place/name) or ask more specifically.",
-      fr: "Je n'ai pas trouvé de source rapide fiable pour cette question. Essayez un mot-clé plus court (lieu/nom) ou précisez.",
-      ru: "Не удалось найти надёжный быстрый источник по этому вопросу. Попробуйте более короткий запрос (место/имя) или уточните.",
-      ar: "لم أجد مصدراً موثوقاً سريعاً لهذا السؤال. جرّب كلمات أقل (اسم/مكان) أو وضّح أكثر.",
-      tr: "Bu soruya dair hızlı ve güvenilir bir kaynak bulamadım. Daha kısa bir anahtar kelimeyle (yer/isim) dene ya da biraz daha spesifik sor.",
-    };
-    evidenceReply = {
-      answer: fallbackByLang[lang] || fallbackByLang.tr,
-      suggestions:
-        lang === "tr"
-          ? ["Daha kisa anahtar kelime ile sor", "Ornek: Van", "Ornek: Van kahvaltisi"]
-          : ["Try a shorter keyword", "Example: Van", "Example: Van breakfast"],
-      sources: [],
-    };
-  }
 }
 
 
@@ -1482,6 +1927,7 @@ if (noSearchMode) {
         answer: evidenceReply.answer,
         suggestions: evidenceReply.suggestions || [],
         sources: evidenceReply.sources || [],
+        trustScore: typeof evidenceReply.trustScore === 'number' ? evidenceReply.trustScore : null,
       };
     } else {
       llm = await callLLM({
@@ -1523,6 +1969,7 @@ if (noSearchMode) {
       answer: llm.answer,
       suggestions: llm.suggestions || [],
       sources: llm.sources || [],
+      trustScore: typeof llm.trustScore === 'number' ? llm.trustScore : null,
       intent,
       cards: cardsObj,
       meta: {
@@ -1531,6 +1978,7 @@ if (noSearchMode) {
         locale: normLocale,
         mode: modeNorm,
         didSearch,
+        trustScore: typeof llm.trustScore === 'number' ? llm.trustScore : null,
       },
     });
   } catch (err) {
