@@ -841,7 +841,21 @@ function buildEvidenceAnswer(e, lang) {
       trustScore: 40,
     };
   }
-  const lowNote = trust != null && trust < 55 ? `\n(${T.lowConf})` : "";
+  
+
+  // --- S52 HOTFIX: prevent "ReferenceError: trust is not defined"
+  // Not: trustScore hic tanimli olmasa bile typeof guvenli.
+  // e parametresi evidence objesidir.
+  const trust = (() => {
+    const v = (typeof trustScore === "number"
+      ? trustScore
+      : (typeof e?.trustScore === "number" ? e.trustScore : undefined));
+
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.min(100, Math.round(n)));
+  })();
+const lowNote = trust != null && trust < 55 ? `\n(${T.lowConf})` : "";
 
   if (e.type === "fx") {
     const lines = [];
