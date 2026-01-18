@@ -513,6 +513,92 @@ function compactWords(text, maxWords = 6) {
   return words.slice(0, maxWords).join(" ");
 }
 
+// Evidence aramalarında "konu dışına" savrulmayı azaltmak için basit stopword/normalize
+const STOPWORDS = {
+  tr: new Set([
+    "nedir",
+    "ne",
+    "nasil",
+    "nasıl",
+    "nerede",
+    "nereler",
+    "hangi",
+    "kim",
+    "neden",
+    "niye",
+    "kac",
+    "kaç",
+    "mi",
+    "mı",
+    "mu",
+    "mü",
+    "da",
+    "de",
+    "ta",
+    "te",
+    "ile",
+    "ve",
+    "veya",
+    "ya",
+    "en",
+    "iyi",
+    "guzel",
+    "güzel",
+    "lütfen",
+    "lutfen",
+    "bana",
+    "söyle",
+    "soyle",
+    "ver",
+    "hakkinda",
+    "hakkında",
+  ]),
+  en: new Set(["what", "who", "where", "when", "why", "how", "is", "are", "the", "a", "an", "of", "to", "in", "for", "please"]),
+  fr: new Set(["quoi", "qui", "où", "quand", "pourquoi", "comment", "le", "la", "les", "un", "une", "des", "de", "du", "pour", "svp"]),
+  ru: new Set(["что", "кто", "где", "когда", "почему", "как", "это", "и", "в", "на", "для"]),
+  ar: new Set(["ما", "ماذا", "من", "أين", "متى", "لماذا", "كيف", "هذا", "هذه", "في", "على", "من", "الى"]),
+};
+
+function normalizeQueryForEvidenceSearch(text, lang = "tr") {
+  const raw = safeString(text);
+  if (!raw) return "";
+
+  let s = raw;
+  // TR: "Van'da" gibi ekleri kaba biçimde kırp (Wikipedia aramasını düzeltir)
+  if ((lang || "tr") === "tr") {
+    s = s.replace(/([A-Za-zÇĞİÖŞÜçğıöşüİı]+)'\s*(da|de|ta|te|dan|den|tan|ten|ın|in|un|ün|nın|nin|nun|nün)\b/gi, "$1");
+  }
+
+  const low = safeString(s).toLowerCase();
+  const cleaned = low.replace(/[^a-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]/g, " ");
+  const words = cleaned
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((w) => w.length > 1);
+
+  const sw = STOPWORDS[lang] || STOPWORDS.tr;
+  const filtered = words.filter((w) => !sw.has(w));
+
+  const q = filtered.slice(0, 7).join(" ").trim();
+  // Çok agresif filtreleme olursa geri dön
+  if (q && q.length >= 3) return q;
+  return compactWords(raw, 7) || raw;
+}
+
+function scoreSearchHit({ title = "", snippet = "" }, qWords = []) {
+  const t = safeString(title).toLowerCase();
+  const s = decodeHtmlEntities(snippet || "").toLowerCase();
+  let score = 0;
+  for (const w of qWords) {
+    if (!w || w.length < 2) continue;
+    if (t.includes(w)) score += 4;
+    if (s.includes(w)) score += 1;
+  }
+  // Disambiguation sayfalarını geriye at
+  if (/(anlam\s*ayr|disambiguation|homonym|значени|توضيح)/i.test(t)) score -= 6;
+  return score;
+}
+
 function detectEvidenceType(text, lang = "tr") {
   const low = safeString(text).toLowerCase();
 
@@ -524,6 +610,10 @@ function detectEvidenceType(text, lang = "tr") {
 
   const isNews = /(haber|g\u00fcndem|son\s*haber|news|headline|latest|\u043d\u043e\u0432\u043e\u0441\u0442|\u0627\u0644\u0623\u062e\u0628\u0627\u0631)/i.test(low);
   if (isNews) return "news";
+
+  // Gezi / mekan / rota gibi "öneri" soruları: Wikivoyage daha isabetli
+  const isTravel = /(gezilecek|gezi|seyahat|rota|tur\b|turu|g\u00fczergah|g\u00fczerg\u00e2h|sahil|plaj|koy\b|tekne|m\u00fcz(e|\u00fc)e|tarihi\s*yer|nerede\s*gez|ne\s*yap|nerede\s*yenir|mekan\s*\u00f6ner)/i.test(low);
+  if (isTravel) return "travel";
 
   // default: wiki for general knowledge
   return "wiki";
@@ -596,6 +686,7 @@ function buildEvidenceAnswer(e, lang) {
       fx: "Guncel doviz kurlari:",
       weather: "Guncel hava durumu:",
       news: "Guncel haber basliklari:",
+      travel: "Gezi notu:",
       wiki: "Kisa bilgi:",
       needCity: "Hangi sehir icin? (Ornek: Istanbul hava durumu)",
     },
@@ -603,6 +694,7 @@ function buildEvidenceAnswer(e, lang) {
       fx: "Latest exchange rates:",
       weather: "Current weather:",
       news: "Latest headlines:",
+      travel: "Travel note:",
       wiki: "Quick info:",
       needCity: "Which city? (e.g., London weather)",
     },
@@ -610,6 +702,7 @@ function buildEvidenceAnswer(e, lang) {
       fx: "Taux de change recents :",
       weather: "Meteo actuelle :",
       news: "Derniers titres :",
+      travel: "Conseil de voyage :",
       wiki: "Info rapide :",
       needCity: "Quelle ville ? (ex. Paris meteo)",
     },
@@ -617,6 +710,7 @@ function buildEvidenceAnswer(e, lang) {
       fx: "Aktualnye kursy valyut:",
       weather: "Tekushchaya pogoda:",
       news: "Poslednie novosti:",
+      travel: "Zametka dlya puteshestviya:",
       wiki: "Kratko:",
       needCity: "Kakoy gorod? (naprimer, Moskva pogoda)",
     },
@@ -624,6 +718,7 @@ function buildEvidenceAnswer(e, lang) {
       fx: "اسعار الصرف الحالية:",
       weather: "الطقس الحالي:",
       news: "احدث العناوين:",
+      travel: "معلومة سفر:",
       wiki: "معلومة سريعة:",
       needCity: "اي مدينة؟ (مثال: طقس اسطنبول)",
     },
@@ -675,6 +770,20 @@ function buildEvidenceAnswer(e, lang) {
         L === "tr" ? "Son dakika" : "latest news",
         L === "tr" ? "Ekonomi haberleri" : "economy news",
         L === "tr" ? "Spor haberleri" : "sports news",
+      ],
+      sources: e.sources || [],
+    };
+  }
+
+  if (e.type === "travel") {
+    const title = e.title ? ` ${e.title}` : "";
+    const answer = `${T.travel}${title}\n${e.extract}`.trim();
+    return {
+      answer,
+      suggestions: [
+        L === "tr" ? "2 gunluk rota" : "2 day itinerary",
+        L === "tr" ? "Ne yenir?" : "What to eat?",
+        L === "tr" ? "Ulasim nasil?" : "How to get around?",
       ],
       sources: e.sources || [],
     };
@@ -805,30 +914,112 @@ async function getNewsEvidence(text, lang) {
   };
 }
 
+async function getWikivoyageEvidence(text, lang) {
+  const raw = safeString(text);
+  if (!raw) return null;
+  const wLang = pickWikiLang(lang || "tr");
+  const q = normalizeQueryForEvidenceSearch(raw, wLang);
+  const qWords = q.split(/\s+/).filter(Boolean);
+
+  const sUrl = `https://${wLang}.wikivoyage.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*&srlimit=5&srprop=snippet`;
+  const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000);
+  const hits = Array.isArray(search?.query?.search) ? search.query.search : [];
+  if (hits.length === 0) return null;
+
+  const ordered = hits
+    .map((h) => ({ h, score: scoreSearchHit(h, qWords) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.h)
+    .slice(0, 5);
+
+  for (const hit of ordered) {
+    const title = safeString(hit?.title || "");
+    if (!title) continue;
+
+    const sumUrl = `https://${wLang}.wikivoyage.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
+    const extract = safeString(sum?.extract || "");
+    if (!extract) continue;
+
+    const pageUrl =
+      safeString(sum?.content_urls?.desktop?.page || "") ||
+      `https://${wLang}.wikivoyage.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
+
+    // Relevance guard: en az 1 anahtar kelime tutmalı
+    if (qWords.length > 0) {
+      const tl = title.toLowerCase();
+      const exl = extract.toLowerCase();
+      const match = qWords.some((w) => tl.includes(w) || exl.includes(w));
+      if (!match) continue;
+    }
+
+    return {
+      type: "travel",
+      title,
+      extract,
+      sources: pageUrl ? [{ title: `Wikivoyage: ${title}`, url: pageUrl }] : [],
+    };
+  }
+
+  return null;
+}
+
 async function getWikiEvidence(text, lang) {
-  const q = safeString(text);
-  if (!q) return null;
+  const raw = safeString(text);
+  if (!raw) return null;
   const wLang = pickWikiLang(lang || "tr");
 
-  // Wikipedia search
-  const sUrl = `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*`;
-  const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000); // cache 1 day
-  const top = search?.query?.search?.[0];
-  const title = safeString(top?.title || q);
+  const q = normalizeQueryForEvidenceSearch(raw, wLang);
+  const qWords = q.split(/\s+/).filter(Boolean);
 
-  const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-  const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
-  const extract = safeString(sum?.extract || "");
-  const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
+  // Wikipedia search (çoklu hit + skor)
+  const mkUrl = (qq) =>
+    `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(qq)}&utf8=1&format=json&origin=*&srlimit=5&srprop=snippet`;
 
-  if (!extract) return null;
+  let search = await fetchJsonCached(mkUrl(q), 24 * 60 * 60 * 1000);
+  let hits = Array.isArray(search?.query?.search) ? search.query.search : [];
 
-  return {
-    type: "wiki",
-    title,
-    extract,
-    sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
-  };
+  // Eğer normalize çok daralttıysa, ham metinle 2. deneme
+  if (hits.length === 0 && q !== raw) {
+    search = await fetchJsonCached(mkUrl(raw), 24 * 60 * 60 * 1000);
+    hits = Array.isArray(search?.query?.search) ? search.query.search : [];
+  }
+
+  if (hits.length === 0) return null;
+
+  const ordered = hits
+    .map((h) => ({ h, score: scoreSearchHit(h, qWords) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.h)
+    .slice(0, 5);
+
+  for (const hit of ordered) {
+    const title = safeString(hit?.title || "");
+    if (!title) continue;
+
+    const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
+    const extract = safeString(sum?.extract || "");
+    const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
+    if (!extract) continue;
+
+    // Relevance guard: en az 1 anahtar kelime tutmalı (boşsa top hit kabul)
+    if (qWords.length > 0) {
+      const tl = title.toLowerCase();
+      const exl = extract.toLowerCase();
+      const match = qWords.some((w) => tl.includes(w) || exl.includes(w));
+      if (!match) continue;
+    }
+
+    return {
+      type: "wiki",
+      title,
+      extract,
+      sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
+    };
+  }
+
+  return null;
 }
 
 async function gatherEvidence({ text, lang, city }) {
@@ -838,6 +1029,12 @@ async function gatherEvidence({ text, lang, city }) {
     if (type === "fx") return await getFxEvidence(text, lang);
     if (type === "weather") return await getWeatherEvidence(text, lang, city);
     if (type === "news") return await getNewsEvidence(text, lang);
+    if (type === "travel") {
+      const trv = await getWikivoyageEvidence(text, lang);
+      if (trv) return trv;
+      // Wikivoyage yoksa Wikipedia’ya düş
+      return await getWikiEvidence(text, lang);
+    }
     // default
     return await getWikiEvidence(text, lang);
   } catch (err) {
@@ -1244,6 +1441,25 @@ let evidenceReply = null;
 if (noSearchMode) {
   evidence = await gatherEvidence({ text, lang, city: normCity });
   evidenceReply = buildEvidenceAnswer(evidence, lang);
+
+  // Evidence bulunamazsa: konu dışı saçma cevap vermek yerine güvenli fallback
+  if (!evidenceReply || !evidenceReply.answer) {
+    const fallbackByLang = {
+      en: "I couldn't find a reliable quick source for this exact question. Try a shorter keyword (e.g., the place/name) or ask more specifically.",
+      fr: "Je n'ai pas trouvé de source rapide fiable pour cette question. Essayez un mot-clé plus court (lieu/nom) ou précisez.",
+      ru: "Не удалось найти надёжный быстрый источник по этому вопросу. Попробуйте более короткий запрос (место/имя) или уточните.",
+      ar: "لم أجد مصدراً موثوقاً سريعاً لهذا السؤال. جرّب كلمات أقل (اسم/مكان) أو وضّح أكثر.",
+      tr: "Bu soruya dair hızlı ve güvenilir bir kaynak bulamadım. Daha kısa bir anahtar kelimeyle (yer/isim) dene ya da biraz daha spesifik sor.",
+    };
+    evidenceReply = {
+      answer: fallbackByLang[lang] || fallbackByLang.tr,
+      suggestions:
+        lang === "tr"
+          ? ["Daha kisa anahtar kelime ile sor", "Ornek: Van", "Ornek: Van kahvaltisi"]
+          : ["Try a shorter keyword", "Example: Van", "Example: Van breakfast"],
+      sources: [],
+    };
+  }
 }
 
 
