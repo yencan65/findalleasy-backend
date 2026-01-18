@@ -234,25 +234,10 @@ const allowedOrigins = [
   ]),
 ];
 
-// ✅ Preview/staging hosts support (Render/Vercel/Netlify/Cloudflare Pages)
-// These are frontends only; API is still api.findalleasy.com.
-const allowedOriginRegexes = [
-  /^https?:\/\/([a-z0-9-]+\.)*findalleasy\.com$/i,
-  /^https?:\/\/[a-z0-9-]+\.onrender\.com$/i,
-  /^https?:\/\/[a-z0-9-]+\.vercel\.app$/i,
-  /^https?:\/\/[a-z0-9-]+\.netlify\.app$/i,
-  /^https?:\/\/[a-z0-9-]+\.pages\.dev$/i,
-];
-
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-
-    // Allow common preview domains
-    try {
-      if (allowedOriginRegexes.some((re) => re.test(origin))) return callback(null, true);
-    } catch {}
 
     console.warn("🚫 CORS REDDEDİLDİ:", origin);
     return callback(null, false);
@@ -1758,11 +1743,16 @@ async function main() {
       const isApi = url.startsWith("/api") || url.startsWith("/metrics");
       if (!isApi) return next(err);
 
-      const status = Number(err?.status || err?.statusCode || 500);
+      const statusRaw = Number(err?.status || err?.statusCode || 500);
+      // product-info: barcode/kamera akisi PowerShell ve frontend'de 5xx ile patlamasin
+      // (zaten route icinde try/catch var; buraya dusuyorsa beklenmedik bir hata vardir)
+      const isProductInfo = url.startsWith("/api/product-info") || url.startsWith("/api/productInfo");
+      const status = isProductInfo ? 200 : statusRaw;
+
       return res.status(status).json({
         ok: false,
         error: "API_ERROR",
-        status,
+        status: statusRaw,
         message: String(err?.message || "unknown"),
       });
     } catch {
