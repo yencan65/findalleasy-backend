@@ -4035,6 +4035,41 @@ if (!opts.forceCategory && !preS40Locked && carRentalHit) {
     return true;
   });
 
+  // ===========================================================
+  // PAID ADAPTERS KILL-SWITCH (SERP / GOOGLE SHOPPING)
+  // - Default: OFF (normal vitrin behavior preserved)
+  // - Opt-in for FREE-FIRST flows (barcode/product-info)
+  // ===========================================================
+  const __disablePaidAdapters = !!(
+    opts && (
+      opts.disablePaidAdapters ||
+      opts.noPaidAdapters ||
+      opts.freeOnly ||
+      opts.disablePaid ||
+      opts.skipPaidAdapters
+    )
+  );
+
+  if (__disablePaidAdapters && Array.isArray(adapters) && adapters.length) {
+    const banned = new Set(["serpapi", "googleshopping", "google_shopping"]);
+
+    adapters = adapters.filter((ad) => {
+      try {
+        const pk = String(ad?.providerKey || ad?.provider || ad?.name || "")
+          .toLowerCase()
+          .trim();
+        const nm = String(ad?.name || ad?.adapterKey || "")
+          .toLowerCase()
+          .trim();
+
+        if (banned.has(pk)) return false;
+        if (pk.includes("serpapi") || pk.includes("googleshopping")) return false;
+        if (nm.includes("serpapi") || nm.includes("googleshopping") || nm.includes("googleShoppingAdapter".toLowerCase())) return false;
+      } catch {}
+      return true;
+    });
+  }
+
   if (mainCategory === "estate") {
     adapters = estateCategoryBrain(q, adapters);
   }
@@ -4134,9 +4169,11 @@ flat = s100_enforceCategoryAndVertical(flat, mainCategory, q);
 // =========================================================
 // COVERAGE FLOOR — SADECE product/fashion + gerçekten lazımsa
 // =========================================================
+const __skipCoverageFloor = !!(opts && (opts.skipCoverageFloor || opts.noCoverageFloor || opts.disableCoverageFloor));
 const COVERAGE_MIN = 8;
 
 if (
+  !__skipCoverageFloor &&
   (mainCategory === "product" || mainCategory === "fashion") &&
   Array.isArray(flat) &&
   flat.length < COVERAGE_MIN

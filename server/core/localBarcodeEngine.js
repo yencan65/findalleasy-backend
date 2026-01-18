@@ -530,8 +530,10 @@ async function resolveOneProvider(provider, barcode, signal, opts = {}) {
       const image = extractImage($);
       const priceNum = extractPriceHeuristic($, provider);
 
-      // fiyat zorunlu (ürün)
-      if (!priceNum) continue;
+      const allowNoPrice = !!opts?.allowNoPrice;
+      // fiyat normalde zorunlu (ürün). Ama bazı sayfalarda fiyat JS ile geliyor.
+      // Barkod kanıtı + başlık varsa, allowNoPrice ile identity döndürebiliriz.
+      if (!priceNum && !allowNoPrice) continue;
 
       matches.push({
         provider,
@@ -561,7 +563,8 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
   if (!/^\d{8,18}$/.test(code)) return [];
 
   const region = String(opts?.region || "TR").toUpperCase();
-  const cacheKey = `${region}:${code}`;
+  const allowNoPrice = !!opts?.allowNoPrice;
+  const cacheKey = `${region}:${code}:${allowNoPrice ? 1 : 0}`;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 

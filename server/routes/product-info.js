@@ -21,6 +21,8 @@ import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
 import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
+import { runVitrineS40 } from "../core/adapterEngine.js";
+
 import { getHtml } from "../core/NetClient.js";
 
 const router = express.Router();
@@ -1387,6 +1389,228 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
   return null;
 }
 
+
+
+// ======================================================================
+// OFFICIAL (AFFILIATE / ADAPTER ENGINE) BARCODE RESOLVE — FREE-ONLY
+//  - Uses textual identity (from OpenFoodFacts or local identity) then runs S40
+//  - Paid adapters (Serp/GoogleShopping) and coverage-floor are disabled here.
+//  - Strict relevance filter to avoid unrelated junk results.
+// ======================================================================
+function hasLetters(s) {
+  return /[a-zA-ZÀ-ɏЀ-ӿ؀-ۿışğüöçİŞĞÜÖÇ]/.test(String(s || ""));
+}
+
+function tokenizeLoose(s) {
+  const raw = String(s || "")
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[^a-z0-9À-ɏЀ-ӿ؀-ۿışğüöçİŞĞÜÖÇ\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!raw) return [];
+
+  const stop = new Set([
+    "ve","ile","icin","için","the","and","for","with","de","da","la","le","un","une","des","du","et","en","of"
+  ]);
+
+  return raw
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t && t.length >= 2 && !stop.has(t));
+}
+
+function overlapScoreTokens(aTokens, bTokens) {
+  try {
+    if (!aTokens?.length || !bTokens?.length) return 0;
+    const a = new Set(aTokens);
+    const b = new Set(bTokens);
+    let hit = 0;
+    for (const t of a) if (b.has(t)) hit++;
+    const denom = Math.max(1, Math.min(a.size, b.size));
+    return hit / denom;
+  } catch {
+    return 0;
+  }
+}
+
+function pickItemOriginDomain(it) {
+  try {
+    const originUrl = it?.originUrl || it?.raw?.originUrl || it?.raw?.origin || "";
+    const u0 = originUrl || it?.url || it?.affiliateUrl || "";
+    const u = normalizeOutboundUrl(String(u0 || ""));
+    const d = pickDomain(u);
+    return d || "";
+  } catch {
+    return "";
+  }
+}
+
+function offersFromVitrineItems(items, titleHint) {
+  const qTokens = tokenizeLoose(titleHint);
+  const strict = qTokens.length >= 2;
+
+  const out = [];
+
+  for (const it of Array.isArray(items) ? items : []) {
+    if (!it) continue;
+
+    const title = cleanTitle(it?.title || it?.name || "");
+    const url0 = it?.affiliateUrl || it?.url || "";
+    const url = normalizeOutboundUrl(String(url0 || ""));
+    if (!url) continue;
+
+    const originDomain = pickItemOriginDomain(it);
+    const domain = originDomain || pickDomain(url);
+
+    const price = parsePriceAny(it?.finalUserPrice ?? it?.price ?? it?.finalPrice ?? it?.raw?.price ?? null);
+    if (!(typeof price === "number" && price > 0)) continue;
+
+    // strict relevance: drop unrelated results
+    if (strict && title) {
+      const tTokens = tokenizeLoose(title);
+      const sc = overlapScoreTokens(qTokens, tTokens);
+      if (sc < 0.34) continue;
+    }
+
+    const provider = findProviderByDomain(domain);
+    const merchant = provider?.names?.[0] || domain || it?.providerKey || it?.provider || "shop";
+
+    out.push({
+      merchant,
+      merchantKey: provider?.key || domain || merchant,
+      url,
+      title: title || cleanTitle(titleHint) || "",
+      image: safeStr(it?.image || it?.img || it?.thumbnail || it?.raw?.image || "", 2000) || "",
+      price,
+      currency: safeStr(it?.currency || it?.raw?.currency || "TRY", 10),
+      delivery: "",
+      domain,
+      rank: merchantRank(domain),
+      raw: it,
+    });
+  }
+
+  return out;
+}
+
+async function resolveBarcodeIdentityViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
+  const code = String(barcode || "").trim();
+  if (!/^\d{8,18}$/.test(code)) return null;
+
+  diag?.tries?.push?.({ step: "local_identity_start", barcode: code });
+
+  try {
+    const hits = await searchLocalBarcodeEngine(code, {
+      region: "TR",
+      maxCandidates: 5,
+      maxMatches: 1,
+      allowNoPrice: true,
+    });
+
+    const h = Array.isArray(hits) ? hits[0] : null;
+    if (!h) {
+      diag?.tries?.push?.({ step: "local_identity_empty" });
+      return null;
+    }
+
+    const name = cleanTitle(h?.title || h?.name || "") || code;
+    const url = normalizeOutboundUrl(safeStr(h?.url || h?.link || "", 2000) || "");
+
+    diag?.tries?.push?.({ step: "local_identity_pick", url: url ? safeStr(url, 160) : null });
+
+    return {
+      name,
+      title: name,
+      image: safeStr(h?.image || "", 2000) || "",
+      qrCode: code,
+      provider: "barcode",
+      source: "local-marketplace-identity",
+      verifiedBarcode: !!h?.verifiedBarcode,
+      verifiedBy: pickDomain(url) || "local",
+      verifiedUrl: url || "",
+      raw: h,
+    };
+  } catch (e) {
+    diag?.tries?.push?.({ step: "local_identity_error", error: String(e?.message || e) });
+    return null;
+  }
+}
+
+async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort = "tr", diag, verifiedHint = false) {
+  const code = String(barcode || "").trim();
+  const hint = cleanTitle(titleHint || "");
+
+  if (!/^\d{8,18}$/.test(code)) return null;
+  if (!hint || !hasLetters(hint)) return null;
+
+  const cacheKey = `${localeShort}:official:${code}`;
+  const cached = cacheGetBarcode(cacheKey);
+  if (cached) return cached;
+
+  diag?.tries?.push?.({ step: "official_s40_start", q: safeStr(hint, 140) });
+
+  let data = null;
+  try {
+    data = await runVitrineS40(hint, {
+      region: "TR",
+      categoryHint: "product",
+      source: "barcode",
+      disablePaidAdapters: true,
+      skipCoverageFloor: true,
+    });
+  } catch (e) {
+    diag?.tries?.push?.({ step: "official_s40_error", error: String(e?.message || e) });
+    data = null;
+  }
+
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : [
+        ...(Array.isArray(data?.best) ? data.best : []),
+        ...(Array.isArray(data?.smart) ? data.smart : []),
+        ...(Array.isArray(data?.others) ? data.others : []),
+      ];
+
+  const offersAll = offersFromVitrineItems(items, hint);
+  const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
+
+  diag?.tries?.push?.({ step: "official_s40_done", offersAll: offersAll.length, offersTrusted: offersTrusted.length, offersOther: offersOther.length });
+
+  if (!offersTrusted.length) return null;
+
+  const bestOfferPick = pickBestOffer(offersTrusted);
+
+  const product = {
+      name: hint,
+      title: hint,
+      description: "",
+      image: safeStr(items?.[0]?.image || items?.[0]?.img || items?.[0]?.thumbnail || "", 2000) || "",
+      brand: "",
+      category: "product",
+      region: "TR",
+      qrCode: code,
+      provider: "barcode",
+      source: "official-affiliate-s40",
+      verifiedBarcode: !!verifiedHint,
+      verifiedBy: verifiedHint ? "barcode-identity" : "",
+      verifiedUrl: "",
+      offersTrusted,
+      offersOther,
+      offers: offersTrusted,
+      bestOffer: bestOfferPick
+        ? { merchant: bestOfferPick.merchant, url: bestOfferPick.url, price: bestOfferPick.price ?? null, delivery: bestOfferPick.delivery || "" }
+        : null,
+      merchantUrl: bestOfferPick?.url || "",
+      confidence: verifiedHint ? "high" : "medium",
+      raw: { adapter: data, hint },
+  };
+
+  cacheSetBarcode(cacheKey, product);
+  return product;
+}
+
 // ======================================================================
 // Catalog snippet verify fallback (STRICT MODE)
 //  - Snippet tek başına “verified” yapmaz. Sadece URL bulup probe ile kanıt arar.
@@ -1519,40 +1743,64 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
     const image = safeStr(best?.image || best?.thumbnail || raw?.thumbnail || "");
     const currency = safeStr(best?.currency || raw?.currency || "");
     const priceRaw = best?.price ?? raw?.price ?? null;
-    const price = typeof priceRaw === "number" && priceRaw > 0 ? priceRaw : null;
+    const price = parsePriceAny(priceRaw);
 
-    const offer0 = url
+    const urlNorm = normalizeOutboundUrl(url);
+    const domain0 = urlNorm ? canonicalHost(pickDomain(urlNorm)) : "";
+    const provider0 = domain0 ? findProviderByDomain(domain0) : null;
+    const merchantName = provider0 ? (provider0.names?.[0] || domain0) : (domain0 || "shopping");
+    const offer0 = urlNorm
       ? {
+          merchant: merchantName,
+          merchantKey: domain0 || merchantName,
+          url: urlNorm,
           title: title || code,
-          url,
+          image: image || "",
           price,
-          currency: currency || null,
-          source: "serpapi",
+          currency: currency || (price ? "TRY" : null),
+          delivery: "",
+          domain: domain0 || undefined,
+          rank: provider0 ? provider0.score : merchantRank(domain0),
+          provider: "serpapi",
+          providerKey: "serpapi",
         }
       : null;
 
     const offersAll = offer0 ? [offer0] : [];
     const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
 
-    const out = {
-      ok: true,
+    const bestOffer = pickBestOffer(offersTrusted);
+    const merchantUrl = bestOffer?.url || offer0?.url || "";
+
+    // NOTE: This resolver MUST return a product-like object (same shape as other resolvers),
+    // because the main handler expects `.name` / `.title` at the top-level.
+    const product = {
+      name: title || code,
+      title: title || code,
+      description: "",
+      image: image || "",
+      brand: "",
+      category: "product",
+      region,
+      qrCode: code,
+      provider: "barcode",
       source: "serpapi-shopping-single",
       verifiedBarcode: false,
       verifiedBy: "serpapi:shopping_single",
-      confidence: offersTrusted.length ? "medium" : "low",
-      product: {
-        name: title || code,
-        title: title || code,
-        image: image || "",
-        barcode: code,
-        merchantUrl: url || "",
-        offersTrusted,
-        offersOther,
-      },
+      verifiedUrl: merchantUrl || "",
+      offersTrusted,
+      offersOther,
+      offers: offersTrusted,
+      bestOffer: bestOffer
+        ? { merchant: bestOffer.merchant, url: bestOffer.url, price: bestOffer.price ?? null, delivery: bestOffer.delivery || "" }
+        : null,
+      merchantUrl: merchantUrl || "",
+      confidence: (offersTrusted.length || offersOther.length) ? "medium" : "low",
+      raw: best,
     };
 
-    cacheSetBarcode(cacheKey, out, 60_000);
-    return out;
+    cacheSetBarcode(cacheKey, product, 60_000);
+    return product;
   } catch (e) {
     diag?.tries?.push?.({ step: "shopping_error", q, err: String(e?.message || e) });
     return null;
@@ -1778,6 +2026,36 @@ async function handleProduct(req, res) {
         } catch {}
       }
 
+      // 2.15) Official affiliate/adapters (FREE-only) — önce bunu dene
+      //     (Serp/GoogleShopping yok, coverage-floor yok)
+      let identity = null;
+      try {
+        const hinted = cleanTitle(baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || "");
+        if (hinted) identity = { name: hinted, title: hinted, image: baseProduct?.image || "", verifiedBarcode: !!baseProduct?.verifiedBarcode };
+      } catch {}
+
+      if (!identity?.name) {
+        const idLocal = await resolveBarcodeIdentityViaLocalMarketplaces(qr, localeShort, diag);
+        if (idLocal?.name) identity = idLocal;
+      }
+
+      const hintName = cleanTitle(identity?.title || identity?.name || "");
+      const verifiedHint = !!(identity?.verifiedBarcode);
+      const official = await resolveBarcodeViaOfficialVitrine(hintName, qr, localeShort, diag, verifiedHint);
+      if (official?.offersTrusted?.length) {
+        const merged = {
+          ...official,
+          // prefer identity image when official lacks
+          image: official.image || identity?.image || baseProduct?.image || "",
+          verifiedBarcode: !!verifiedHint,
+          verifiedBy: verifiedHint ? (identity?.verifiedBy || identity?.identitySource || "barcode-identity") : "",
+        };
+        await upsertProductDoc(merged, diag, "mongo_upsert_official_s40");
+        const out = { ok: true, product: merged, source: "official-affiliate-s40" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
       // 2.2) Local marketplaces engine (FREE, strict evidence + price required)
       const local = await resolveBarcodeViaLocalMarketplaces(qr, localeShort, diag);
       if (local?.name) {
@@ -1925,31 +2203,5 @@ router.post("/product", handleProduct);
 router.post("/product-info", handleProduct);
 router.get("/product", handleProduct);
 router.get("/product-info", handleProduct);
-
-// ======================================================================
-// ✅ LAST-RESORT ERROR SHIELD
-// - Express bazen handler try/catch disinda (middleware/import) hata atarsa
-//   global API error shield 500 dondurebilir. Barcode/kamera akisini bozmasin.
-// - Bu kalkan: /api/product-info altindaki tum hatalari 200 + ok:false'a indirir.
-// ======================================================================
-router.use((err, req, res, next) => {
-  try {
-    console.error("🚨 product-info ROUTER ERROR:", err);
-    return safeJson(
-      res,
-      {
-        ok: false,
-        error: "PRODUCT_INFO_ROUTER_ERROR",
-        detail: String(err?.message || err || "unknown"),
-      },
-      200
-    );
-  } catch (e) {
-    try {
-      return res.status(200).json({ ok: false, error: "PRODUCT_INFO_ROUTER_ERROR" });
-    } catch {}
-    return next(err);
-  }
-});
 
 export default router;
