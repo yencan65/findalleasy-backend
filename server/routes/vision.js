@@ -970,10 +970,11 @@ async function handleVision(req, res) {
     });
   } catch (e) {
     console.error("❌ [vision] genel hata:", e);
+    // IMPORTANT: do not return 500; frontend treats as hard failure.
     return safeJson(
       res,
-      { ok: false, error: "Vision API error", detail: e?.message },
-      500
+      { ok: false, error: "VISION_ERROR", detail: String(e?.message || e) },
+      200
     );
   }
 }

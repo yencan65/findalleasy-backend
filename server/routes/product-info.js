@@ -1562,6 +1562,104 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
 // ======================================================================
 // MAIN HANDLER
 // ======================================================================
+
+
+// ============================================================
+//  OpenFoodFacts helper (FREE) — identity/name/image only
+//  IMPORTANT: must NEVER crash the route (no 500).
+// ============================================================
+async function fetchJsonWithTimeout(url, timeoutMs = 6500) {
+  const controller = typeof AbortController !== "undefined" ? AbortController : null;
+  const c = controller ? new controller() : null;
+  const timer = setTimeout(() => {
+    try { c?.abort?.(); } catch {}
+  }, timeoutMs);
+
+  try {
+    const r = await fetch(url, {
+      method: "GET",
+      headers: {
+        "user-agent": "findalleasy/1.0 (+https://findalleasy.com)",
+        "accept": "application/json,text/plain,*/*",
+      },
+      signal: c?.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j
+  } catch {
+    return null;
+  } finally {
+    try { clearTimeout(timer); } catch {}
+  }
+}
+
+async function fetchOpenFoodFacts(qr, diag) {
+  const code = sanitizeQR(qr);
+  if (!code) return null;
+
+  const urls = [
+    `https://tr.openfoodfacts.org/api/v0/product/${code}.json`,
+    `https://world.openfoodfacts.org/api/v0/product/${code}.json`,
+    `https://world.openproductsfacts.org/api/v0/product/${code}.json`,
+    `https://world.openbeautyfacts.org/api/v0/product/${code}.json`,
+  ];
+
+  for (const url of urls) {
+    try {
+      diag?.tries?.push?.({ step: "openfoodfacts_fetch", url });
+      const j = await fetchJsonWithTimeout(url, 6500);
+      const ok = j && (j.status === 1 || j.status === "1") && j.product;
+      if (!ok) continue;
+
+      const pr = j.product || {};
+      const title = (
+        safeStr(pr.product_name_tr, 200) ||
+        safeStr(pr.product_name, 200) ||
+        safeStr(pr.abbreviated_product_name, 200) ||
+        safeStr(pr.generic_name_tr, 200) ||
+        safeStr(pr.generic_name, 200) ||
+        safeStr(pr.brands, 200) ||
+        code
+      ).trim();
+
+      const image =
+        safeStr(pr.image_front_url, 400) ||
+        safeStr(pr.image_url, 400) ||
+        safeStr(pr.image_front_small_url, 400) ||
+        "";
+
+      const baseProduct = {
+        name: title,
+        title,
+        qrCode: code,
+        provider: "barcode",
+        source: "openfoodfacts",
+        identitySource: "openfoodfacts",
+        verifiedBarcode: true,
+        verifiedBy: "openfoodfacts",
+        verifiedUrl: url,
+        image,
+        offersTrusted: [],
+        offersOther: [],
+        offers: [],
+        bestOffer: null,
+        merchantUrl: "",
+        confidence: "medium",
+        suggestedQuery: title && title !== code ? title : "",
+      };
+
+      diag?.tries?.push?.({ step: "openfoodfacts_hit", title });
+      return baseProduct;
+    } catch (e) {
+      // never throw
+      diag?.tries?.push?.({ step: "openfoodfacts_error", error: String(e?.message || e) });
+    }
+  }
+
+  diag?.tries?.push?.({ step: "openfoodfacts_miss" });
+  return null;
+}
 async function handleProduct(req, res) {
   try {
     const body = pickBody(req);
@@ -1815,7 +1913,8 @@ async function handleProduct(req, res) {
     return safeJson(res, out);
   } catch (err) {
     console.error("🚨 product-info ERROR:", err);
-    return safeJson(res, { ok: false, error: "SERVER_ERROR" }, 500);
+    // IMPORTANT: do not return 500 here. Keep frontend stable.
+    return safeJson(res, { ok: false, error: "SERVER_ERROR", detail: String(err?.message || err) }, 200);
   }
 }
 
