@@ -460,6 +460,392 @@ async function fetchWithTimeout(resource, options = {}) {
   });
 }
 
+// ============================================================================
+// LIVE / RELIABLE INFO: Evidence fetch (FX, weather, news, wiki) -- S51
+//   - Used for chat/info mode to provide up-to-date, source-backed answers
+//   - Keeps system stable: timeouts + cache + graceful fallback
+// ============================================================================
+
+const evidenceCache = new Map();
+const EVIDENCE_DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
+
+function cacheGet(key) {
+  try {
+    const v = evidenceCache.get(key);
+    if (!v) return null;
+    if (v.exp && Date.now() > v.exp) {
+      evidenceCache.delete(key);
+      return null;
+    }
+    return v.val;
+  } catch {
+    return null;
+  }
+}
+
+function cacheSet(key, val, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
+  try {
+    evidenceCache.set(key, {
+      val,
+      exp: Date.now() + Number(ttlMs || EVIDENCE_DEFAULT_TTL_MS),
+    });
+  } catch {}
+}
+
+function decodeHtmlEntities(str = "") {
+  const s = safeString(str);
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+function compactWords(text, maxWords = 6) {
+  const low = safeString(text).toLowerCase();
+  const cleaned = low.replace(/[^a-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]/g, " ");
+  const words = cleaned
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((w) => w.length > 1);
+  return words.slice(0, maxWords).join(" ");
+}
+
+function detectEvidenceType(text, lang = "tr") {
+  const low = safeString(text).toLowerCase();
+
+  const isFx = /(doviz|d\u00f6viz|kur|exchange rate|fx\b|usd\b|eur\b|gbp\b|try\b|dolar|euro|sterlin|kurs\b|\u043a\u0443\u0440\u0441|\u0627\u0644\u0635\u0631\u0641|\u0633\u0639\u0631\s*\u0627\u0644\u0635\u0631\u0641)/i.test(low);
+  if (isFx) return "fx";
+
+  const isWeather = /(hava\s*durumu|hava\s*nasil|sicaklik|weather|temperature|forecast|\u043f\u043e\u0433\u043e\u0434\u0430|\u0644\u0644\u0637\u0642\u0633|\u0627\u0644\u0637\u0642\u0633)/i.test(low);
+  if (isWeather) return "weather";
+
+  const isNews = /(haber|g\u00fcndem|son\s*haber|news|headline|latest|\u043d\u043e\u0432\u043e\u0441\u0442|\u0627\u0644\u0623\u062e\u0628\u0627\u0631)/i.test(low);
+  if (isNews) return "news";
+
+  // default: wiki for general knowledge
+  return "wiki";
+}
+
+async function fetchJsonCached(url, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
+  const key = `json:${url}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    timeout: 8000,
+    headers: {
+      "User-Agent": "FindAllEasy-SonoAI/1.0",
+      Accept: "application/json",
+    },
+  });
+  if (!res || !res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (data) cacheSet(key, data, ttlMs);
+  return data;
+}
+
+async function fetchTextCached(url, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
+  const key = `text:${url}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    timeout: 8000,
+    headers: {
+      "User-Agent": "FindAllEasy-SonoAI/1.0",
+      Accept: "application/xml,text/xml,text/plain,*/*",
+    },
+  });
+  if (!res || !res.ok) return null;
+  const text = await res.text().catch(() => "");
+  if (text) cacheSet(key, text, ttlMs);
+  return text || null;
+}
+
+
+
+function pickCity(text, cityHint) {
+  const c = safeString(cityHint);
+  if (c) return c;
+  const low = safeString(text).toLowerCase();
+  // small heuristic for TR cities (common)
+  const known = ["istanbul", "ankara", "izmir", "antalya", "bursa", "adana", "konya", "gaziantep", "kayseri"]; 
+  for (const k of known) {
+    if (low.includes(k)) return k;
+  }
+  return "";
+}
+
+function pickWikiLang(lang) {
+  if (lang === "en") return "en";
+  if (lang === "fr") return "fr";
+  if (lang === "ru") return "ru";
+  if (lang === "ar") return "ar";
+  return "tr";
+}
+
+function buildEvidenceAnswer(e, lang) {
+  const L = lang || "tr";
+  const tMap = {
+    tr: {
+      fx: "Guncel doviz kurlari:",
+      weather: "Guncel hava durumu:",
+      news: "Guncel haber basliklari:",
+      wiki: "Kisa bilgi:",
+      needCity: "Hangi sehir icin? (Ornek: Istanbul hava durumu)",
+    },
+    en: {
+      fx: "Latest exchange rates:",
+      weather: "Current weather:",
+      news: "Latest headlines:",
+      wiki: "Quick info:",
+      needCity: "Which city? (e.g., London weather)",
+    },
+    fr: {
+      fx: "Taux de change recents :",
+      weather: "Meteo actuelle :",
+      news: "Derniers titres :",
+      wiki: "Info rapide :",
+      needCity: "Quelle ville ? (ex. Paris meteo)",
+    },
+    ru: {
+      fx: "Aktualnye kursy valyut:",
+      weather: "Tekushchaya pogoda:",
+      news: "Poslednie novosti:",
+      wiki: "Kratko:",
+      needCity: "Kakoy gorod? (naprimer, Moskva pogoda)",
+    },
+    ar: {
+      fx: "اسعار الصرف الحالية:",
+      weather: "الطقس الحالي:",
+      news: "احدث العناوين:",
+      wiki: "معلومة سريعة:",
+      needCity: "اي مدينة؟ (مثال: طقس اسطنبول)",
+    },
+  };
+  const T = tMap[L] || tMap.tr;
+
+  if (!e) return null;
+
+  if (e.type === "need_city") {
+    return {
+      answer: T.needCity,
+      suggestions: ["Istanbul hava durumu", "Ankara hava durumu"].slice(0, 2),
+      sources: [],
+    };
+  }
+
+  if (e.type === "fx") {
+    const lines = [];
+    for (const row of e.rates || []) {
+      lines.push(`${row.pair}: ${row.value}`);
+    }
+    const answer = `${T.fx}\n${lines.join("\n")}`.trim();
+    return {
+      answer,
+      suggestions: L === "tr" ? ["EUR/TRY", "USD/TRY", "GBP/TRY"] : ["USD to TRY", "EUR to TRY"],
+      sources: e.sources || [],
+    };
+  }
+
+  if (e.type === "weather") {
+    const a = `${T.weather} ${e.city}: ${e.summary}`;
+    return {
+      answer: a,
+      suggestions: [
+        L === "tr" ? `${e.city} yarin hava` : `${e.city} weather tomorrow`,
+        L === "tr" ? "5 gunluk hava" : "5 day forecast",
+      ],
+      sources: e.sources || [],
+    };
+  }
+
+  if (e.type === "news") {
+    const items = (e.items || []).slice(0, 5);
+    const lines = items.map((x, i) => `${i + 1}) ${x.title}`);
+    const answer = `${T.news}\n${lines.join("\n")}`.trim();
+    return {
+      answer,
+      suggestions: [
+        L === "tr" ? "Son dakika" : "latest news",
+        L === "tr" ? "Ekonomi haberleri" : "economy news",
+        L === "tr" ? "Spor haberleri" : "sports news",
+      ],
+      sources: e.sources || [],
+    };
+  }
+
+  if (e.type === "wiki") {
+    const answer = `${T.wiki} ${e.title}\n${e.extract}`.trim();
+    return {
+      answer,
+      suggestions: [
+        L === "tr" ? "Daha kisa ozet" : "shorter summary",
+        L === "tr" ? "Ornek ver" : "give an example",
+        L === "tr" ? "Artisi eksisi" : "pros and cons",
+      ],
+      sources: e.sources || [],
+    };
+  }
+
+  return null;
+}
+
+async function getFxEvidence(text, lang) {
+  const low = safeString(text).toLowerCase();
+
+  const wantUsd = /(\busd\b|dolar)/i.test(low);
+  const wantEur = /(\beur\b|euro)/i.test(low);
+  const wantGbp = /(\bgbp\b|sterlin|pound)/i.test(low);
+
+  const pairs = [];
+  if (wantUsd) pairs.push({ from: "USD", to: "TRY" });
+  if (wantEur) pairs.push({ from: "EUR", to: "TRY" });
+  if (wantGbp) pairs.push({ from: "GBP", to: "TRY" });
+
+  // If generic 'kur/doviz' -- show USD + EUR to TRY
+  if (pairs.length === 0) {
+    pairs.push({ from: "USD", to: "TRY" });
+    pairs.push({ from: "EUR", to: "TRY" });
+  }
+
+  const results = [];
+  for (const p of pairs.slice(0, 3)) {
+    const url = `https://api.frankfurter.app/latest?from=${encodeURIComponent(p.from)}&to=${encodeURIComponent(p.to)}`;
+    const data = await fetchJsonCached(url, 2 * 60 * 1000); // 2 min
+    const rate = data?.rates?.[p.to];
+    const date = data?.date || "";
+    if (rate) {
+      results.push({ pair: `${p.from}/${p.to}`, value: `${Number(rate).toFixed(4)} (${date})` });
+    }
+  }
+
+  if (results.length === 0) return null;
+
+  return {
+    type: "fx",
+    rates: results,
+    sources: [
+      { title: "Frankfurter (ECB rates)", url: "https://www.frankfurter.app/" },
+    ],
+  };
+}
+
+async function getWeatherEvidence(text, lang, cityHint) {
+  const city = pickCity(text, cityHint);
+  if (!city) return { type: "need_city" };
+
+  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=${encodeURIComponent(lang || "tr")}&format=json`;
+  const geo = await fetchJsonCached(geoUrl, 60 * 60 * 1000); // 1 hour
+  const g = geo?.results?.[0];
+  if (!g) return null;
+
+  const lat = g.latitude;
+  const lon = g.longitude;
+  const placeName = safeString(g.name || city);
+
+  const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&current_weather=true&timezone=auto`;
+  const w = await fetchJsonCached(wUrl, 5 * 60 * 1000);
+  const cw = w?.current_weather;
+  if (!cw) return null;
+
+  const temp = cw.temperature;
+  const wind = cw.windspeed;
+  const time = cw.time;
+
+  const summary = `${temp}C, wind ${wind} km/h (at ${time})`;
+
+  return {
+    type: "weather",
+    city: placeName,
+    summary,
+    sources: [
+      { title: "Open-Meteo", url: "https://open-meteo.com/" },
+    ],
+  };
+}
+
+async function getNewsEvidence(text, lang) {
+  const q = compactWords(text, 6) || safeString(text);
+  if (!q) return null;
+
+  const hl = lang === "tr" ? "tr" : lang;
+  const gl = lang === "tr" ? "TR" : "US";
+  const ceid = lang === "tr" ? "TR:tr" : "US:en";
+
+  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=${encodeURIComponent(hl)}&gl=${encodeURIComponent(gl)}&ceid=${encodeURIComponent(ceid)}`;
+  const xml = await fetchTextCached(rssUrl, 2 * 60 * 1000);
+  if (!xml) return null;
+
+  // parse items
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = itemRe.exec(xml))) {
+    const block = m[1] || "";
+    const title = decodeHtmlEntities((block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || block.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || "");
+    const link = decodeHtmlEntities((block.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || "");
+    const pubDate = decodeHtmlEntities((block.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || "");
+    if (title && link) items.push({ title: safeString(title), url: safeString(link), date: safeString(pubDate) });
+    if (items.length >= 5) break;
+  }
+
+  if (items.length === 0) return null;
+
+  return {
+    type: "news",
+    query: q,
+    items,
+    sources: items.map((x) => ({ title: x.title, url: x.url })).slice(0, 5),
+  };
+}
+
+async function getWikiEvidence(text, lang) {
+  const q = safeString(text);
+  if (!q) return null;
+  const wLang = pickWikiLang(lang || "tr");
+
+  // Wikipedia search
+  const sUrl = `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*`;
+  const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000); // cache 1 day
+  const top = search?.query?.search?.[0];
+  const title = safeString(top?.title || q);
+
+  const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+  const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
+  const extract = safeString(sum?.extract || "");
+  const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
+
+  if (!extract) return null;
+
+  return {
+    type: "wiki",
+    title,
+    extract,
+    sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
+  };
+}
+
+async function gatherEvidence({ text, lang, city }) {
+  const type = detectEvidenceType(text, lang);
+
+  try {
+    if (type === "fx") return await getFxEvidence(text, lang);
+    if (type === "weather") return await getWeatherEvidence(text, lang, city);
+    if (type === "news") return await getNewsEvidence(text, lang);
+    // default
+    return await getWikiEvidence(text, lang);
+  } catch (err) {
+    console.error("evidence error:", err?.message || err);
+    return null;
+  }
+}
+
 // S50 — LLM cevabı sanitize
 function sanitizeLLMAnswer(answer, normLocale) {
   let txt = clampText(answer, MAX_LLM_ANSWER_LENGTH);
@@ -852,6 +1238,14 @@ const cardsObj = didSearch
   ? buildVitrineCards(text, rawResults)
   : { best: null, aiSmart: [], others: [] };
 
+let evidence = null;
+let evidenceReply = null;
+
+if (noSearchMode) {
+  evidence = await gatherEvidence({ text, lang, city: normCity });
+  evidenceReply = buildEvidenceAnswer(evidence, lang);
+}
+
 
     await updateUserMemory(userId, ip, {
       clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
@@ -864,15 +1258,26 @@ const cardsObj = didSearch
 
     const memorySnapshot = await getUserMemory(userId, ip);
 
-    const llm = await callLLM({
-      message: text,
-      locale: normLocale,
-      intent,
-      region: normRegion,
-      city: normCity,
-      persona,
-      memorySnapshot,
-    });
+    let llm;
+
+    if (noSearchMode && evidenceReply && evidenceReply.answer) {
+      llm = {
+        provider: "evidence",
+        answer: evidenceReply.answer,
+        suggestions: evidenceReply.suggestions || [],
+        sources: evidenceReply.sources || [],
+      };
+    } else {
+      llm = await callLLM({
+        message: text,
+        locale: normLocale,
+        intent,
+        region: normRegion,
+        city: normCity,
+        persona,
+        memorySnapshot,
+      });
+    }
 
     const latencyMs = Date.now() - startedAt;
 
@@ -901,6 +1306,7 @@ const cardsObj = didSearch
       persona,
       answer: llm.answer,
       suggestions: llm.suggestions || [],
+      sources: llm.sources || [],
       intent,
       cards: cardsObj,
       meta: {
