@@ -120,9 +120,10 @@ try {
         locale,
         clientIp: req.ip,
         sessionId: String(body.sessionId ?? body.sid ?? ""),
+        source: String(body.source ?? body.querySource ?? ""),
       });
     }
-    return await buildDynamicVitrin(q, region, userId, { locale, clientIp: req.ip });
+    return await buildDynamicVitrin(q, region, userId, { locale, clientIp: req.ip, source: String(body.source ?? body.querySource ?? "") });
   })();
 
   const timeoutPromise = new Promise((_, reject) =>
