@@ -252,7 +252,15 @@ app.options(/.*/, cors(corsOptions));
 // =============================================================================
 // Middleware
 // =============================================================================
-app.use(helmet({ crossOriginResourcePolicy: false }));
+// NOTE: Default Helmet CSP can block WebWorker/WASM (e.g. ZXing/Tesseract on the frontend)
+// which breaks camera OCR/barcode flows. We disable CSP here and rely on CORS + app-level controls.
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+    crossOriginEmbedderPolicy: false,
+    contentSecurityPolicy: false,
+  })
+);
 
 // ✅ VISION BODY GUARANTEE:
 // /api/vision için body'yi RAW olarak yakala (stream bir kere okunur; sonra json parser boşa düşmesin)

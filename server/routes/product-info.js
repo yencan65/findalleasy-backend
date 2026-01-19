@@ -245,9 +245,13 @@ function needsImageMsg(localeShort) {
 }
 
 function makeUnresolvedResponseProduct(qr, suggestedQuery = "") {
+  const sq = String(suggestedQuery || "").trim();
+  // UI'da sadece barkod numarası yerine (varsa) anlamlı başlık göster.
+  // Barkod yine qrCode alanında saklanır.
+  const display = sq && !/^\d{8,18}$/.test(sq) ? sq.slice(0, 180) : String(qr || "");
   return {
-    name: qr,
-    title: qr,
+    name: display,
+    title: display,
     qrCode: qr,
     provider: "barcode",
     source: "barcode-unresolved",
@@ -259,7 +263,7 @@ function makeUnresolvedResponseProduct(qr, suggestedQuery = "") {
     bestOffer: null,
     merchantUrl: "",
     confidence: "low",
-    suggestedQuery: suggestedQuery || "",
+    suggestedQuery: sq || "",
   };
 }
 
@@ -1715,7 +1719,7 @@ async function verifyViaCatalogSnippet(barcode, diag, titleHint = "") {
 // ======================================================================
 // SerpAPI Shopping resolver (barcode -> product identity + offers)
 // ======================================================================
-async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) {
+async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag, titleHint = "") {
   const code = String(barcode || "").trim();
   if (!/^\d{8,18}$/.test(code)) return null;
 
@@ -1726,7 +1730,10 @@ async function resolveBarcodeViaSerpShopping(barcode, localeShort = "tr", diag) 
   const { hl, gl, region } = localePack(localeShort);
 
   // ✅ Tek request disiplini: tek query + tek Serp çağrısı (noRetry) + immersive yok.
-  const q = code;
+  // Barkod tek başına Shopping'de sık boş dönebiliyor. (GTIN/EAN olarak aratmak daha iyi.)
+  // Eğer elimizde isim ipucu varsa (OpenFoodFacts vb.) tek sorguda birleştir.
+  const hint = String(titleHint || "").trim();
+  const q = hint ? `${hint} ${code}` : `EAN ${code}`;
 
   try {
     diag?.tries?.push?.({ step: "shopping_serpapi_single", q });
@@ -2107,7 +2114,7 @@ async function handleProduct(req, res) {
         }
 
         // Google Shopping + immersive offers (+ google_product fallback)
-        const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag);
+        const shopping = await resolveBarcodeViaSerpShopping(qr, localeShort, diag, hintName);
         if (shopping?.name) {
           const merged = baseProduct ? { ...shopping, name: shopping.name || baseProduct.name, title: shopping.title || baseProduct.title, image: shopping.image || baseProduct.image } : shopping;
           await upsertProductDoc(merged, diag, "mongo_upsert_shopping");
