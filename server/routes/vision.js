@@ -94,7 +94,16 @@ function safeStr(v, max = 500) {
 
 function buildPublicOrigin(req) {
   // SerpApi Lens temp image URL'i dışarıdan çekiyor.
-  // Burada yanlışlıkla http üretirsek (proxy arkasında), Lens çoğu zaman resmi indiremez.
+  // Eğer host yanlış/kapalı bir origin'e giderse Lens resmi indiremez ve 'NO_MATCH' olur.
+  // Bu yüzden ENV override destekliyoruz.
+  const envOriginRaw = safeStr(process.env.VISION_PUBLIC_ORIGIN || process.env.PUBLIC_ORIGIN || "");
+  if (envOriginRaw) {
+    const cleaned = String(envOriginRaw).trim().replace(/\/$/, "");
+    // 'api.findalleasy.com' gibi şemasız gelirse https varsay.
+    if (/^https?:\/\//i.test(cleaned)) return cleaned;
+    return `https://${cleaned}`;
+  }
+
   // Default: HTTPS. Sadece x-forwarded-proto açıkça http ise http kullan.
   const xfProto = safeStr(req.headers["x-forwarded-proto"] || "")
     .split(",")[0]
@@ -777,9 +786,11 @@ async function handleVision(req, res) {
 	            {
 	              image: { content: cleanBase64 },
 	              features: [
-	                { type: "LABEL_DETECTION", maxResults: 6 },
-	                { type: "TEXT_DETECTION", maxResults: 3 },
-	              ],
+                { type: "TEXT_DETECTION", maxResults: 3 },
+                { type: "WEB_DETECTION", maxResults: 6 },
+                { type: "LOGO_DETECTION", maxResults: 3 },
+                { type: "LABEL_DETECTION", maxResults: 6 },
+              ],
 	            },
 	          ],
 	        };
@@ -804,6 +815,9 @@ async function handleVision(req, res) {
 	        tpush("cloud_vision_parsed", {
 	          hasText: Boolean(ann?.textAnnotations?.[0]?.description),
 	          labelCount: Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations.length : 0,
+	          webEntityCount: Array.isArray(ann?.webDetection?.webEntities) ? ann.webDetection.webEntities.length : 0,
+	          bestGuessCount: Array.isArray(ann?.webDetection?.bestGuessLabels) ? ann.webDetection.bestGuessLabels.length : 0,
+	          logoCount: Array.isArray(ann?.logoAnnotations) ? ann.logoAnnotations.length : 0,
 	        });
 	
 	        // 1) OCR text (tam metin)
@@ -820,6 +834,38 @@ async function handleVision(req, res) {
 	            .filter(Boolean)[0];
 	          if (firstLine && firstLine.length >= 3 && firstLine.length <= 80) q = firstLine;
 	        }
+
+
+	        // 2) Web detection + logo detection (ürün/marka/model için en iyi sinyal)
+	        try {
+	          const web = ann?.webDetection || {};
+	          const bestGuess = Array.isArray(web?.bestGuessLabels) ? web.bestGuessLabels : [];
+	          const webEntities = Array.isArray(web?.webEntities) ? web.webEntities : [];
+	          const logos = Array.isArray(ann?.logoAnnotations) ? ann.logoAnnotations : [];
+
+	          const parts = [];
+	          if (bestGuess?.[0]?.label) parts.push(String(bestGuess[0].label || "").trim());
+	          for (const w of webEntities) {
+	            if (parts.length >= 3) break;
+	            if ((w?.score ?? 0) < 0.45) continue;
+	            const d = String(w?.description || "").trim();
+	            if (d) parts.push(d);
+	          }
+	          for (const lg of logos) {
+	            if (parts.length >= 4) break;
+	            if ((lg?.score ?? 0) < 0.4) continue;
+	            const d = String(lg?.description || "").trim();
+	            if (d) parts.push(d);
+	          }
+
+	          const webHint = parts.filter(Boolean).join(" ").trim();
+	          if (webHint) {
+	            // rawText'ı zenginleştir; buildVisionQuery daha iyi arama sorgusu çıkarır
+	            rawText = rawText ? `${webHint}
+${rawText}` : webHint;
+	            if (!q) q = webHint;
+	          }
+	        } catch {}
 
 	        // 2) Label fallback (ilk 2-3 etiket)
 	        if (!q) {
