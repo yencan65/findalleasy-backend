@@ -12,8 +12,12 @@
 import express from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
+import FreeVisionService from "../services/freeVisionService.js";
 
 const router = express.Router();
+
+// Free vision (no paid credits): Tesseract OCR + optional Cloud Vision if key exists.
+const freeVisionService = new FreeVisionService();
 
 /* ============================================================
    S31 — SERPAPI LENS FALLBACK + TEMP IMAGE URL
@@ -558,6 +562,131 @@ function extractBarcodesFromText(text) {
    VISION HANDLER
    ============================================================ */
 
+// ----------------------------------------------------------------------
+// FREE VISION HANDLER (NO PAID CREDITS)
+// POST /api/vision/free
+// - Uses Tesseract OCR (server-side) + optional Cloud Vision (if key exists)
+// - NEVER calls SerpApi Lens and NEVER calls Gemini.
+// ----------------------------------------------------------------------
+async function handleVisionFree(req, res) {
+  const startedAt = Date.now();
+  const ip = getIP(req);
+  const ua = getUA(req);
+  const debug =
+    String(process.env.VISION_DEBUG || "") === "1" ||
+    String(req.query?.diag || "") === "1";
+
+  const tries = [];
+  const tpush = (step, extra) => {
+    if (!debug) return;
+    try {
+      tries.push({ step, ...(extra || {}) });
+    } catch {
+      // ignore
+    }
+  };
+
+  try {
+    const rl = rateLimit(ip, 45, 60_000);
+    if (!rl.allowed) {
+      return safeJson(
+        res,
+        { ok: false, throttled: true, retryAfterMs: rl.retryMs },
+        429
+      );
+    }
+
+    const body = safeBody(req);
+    const rawImage = body.imageBase64 || body.image || body.base64 || "";
+    if (!rawImage) {
+      return safeJson(res, { ok: false, error: "imageBase64 eksik" }, 400);
+    }
+
+    const mimeType = detectMimeType(rawImage);
+    const base64Part = String(rawImage).includes(",")
+      ? String(rawImage).split(",")[1]
+      : String(rawImage);
+    let cleanBase64 = safeBase64(base64Part);
+    cleanBase64 = clampBase64Size(cleanBase64, 15 * 1024 * 1024);
+    if (!cleanBase64) {
+      return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
+    }
+    if (!cleanBase64 || cleanBase64.length < 50) {
+      return safeJson(res, { ok: false, error: "BASE64_INVALID" }, 400);
+    }
+
+    const visionKey = process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_API_KEY;
+    const useGoogleVision = Boolean(visionKey) && String(body?.useGoogleVision ?? "").toLowerCase() !== "0";
+
+    tpush("free_providers", { useGoogleVision, hasVisionKey: Boolean(visionKey) });
+
+    const buf = Buffer.from(cleanBase64, "base64");
+    tpush("free_image", { mimeType, bytes: buf.length });
+
+    // Process
+    const freeOut = await freeVisionService.processImage(buf, { useGoogleVision });
+    const rawText = String(freeOut?.text || "").trim();
+    const keywords = Array.isArray(freeOut?.keywords) ? freeOut.keywords : [];
+
+    // Extract barcodes from rawText (tesseract often catches digits)
+    const barcodes = extractBarcodesFromText(rawText);
+    const barcode = barcodes?.[0] || "";
+
+    let query = "";
+    if (barcode) query = barcode;
+    else if (keywords.length) query = keywords.slice(0, 3).join(" ");
+    else query = extractSearchQuery(rawText);
+
+    query = safeStr(query, 140);
+
+    // Guard: no generic junk
+    if (!query || isGenericVisionQuery(query)) {
+      const latencyMs = Date.now() - startedAt;
+      return safeJson(
+        res,
+        {
+          ok: false,
+          error: "NO_MATCH",
+          query: "",
+          barcode,
+          barcodes: Array.isArray(barcodes) ? barcodes : [],
+          rawText: safeStr(rawText, 2000),
+          raw: { free_vision: freeOut || null },
+          ...(debug ? { _diag: { tries } } : {}),
+          meta: {
+            ipHash: ip ? String(ip).slice(0, 8) : null,
+            uaSnippet: ua,
+            latencyMs,
+            used: "free_vision",
+            services: freeOut?.services || [],
+          },
+        },
+        200
+      );
+    }
+
+    const latencyMs = Date.now() - startedAt;
+    return safeJson(res, {
+      ok: true,
+      query,
+      barcode,
+      barcodes: Array.isArray(barcodes) ? barcodes : [],
+      rawText: safeStr(rawText, 2000),
+      raw: { free_vision: freeOut || null },
+      ...(debug ? { _diag: { tries } } : {}),
+      meta: {
+        ipHash: ip ? String(ip).slice(0, 8) : null,
+        uaSnippet: ua,
+        latencyMs,
+        used: "free_vision",
+        services: freeOut?.services || [],
+      },
+    });
+  } catch (e) {
+    return safeJson(res, { ok: false, error: "PROCESSING_ERROR", detail: e?.message }, 500);
+  }
+}
+
 async function handleVision(req, res) {
   const startedAt = Date.now();
   const ip = getIP(req);
@@ -1092,6 +1221,7 @@ ${rawText}` : webHint;
 }
 
 // Backward-compatible
+router.post("/free", handleVisionFree);
 router.post("/", handleVision);
 router.post("/vision", handleVision);
 
