@@ -596,15 +596,29 @@ function detectEvidenceType(text, lang = "tr") {
   if (!low) return "wiki";
 
   // 1) High-priority utility intents
-  if (/(doviz|döviz|kur|exchange rate|\bfx\b|\busd\b|\beur\b|\bgbp\b|\bdolar\b|\beuro\b|\bsterlin\b|курс|الصرف)/i.test(low)) return "fx";
+  // Note: In Turkish, "kur" is ambiguous (kurallar/kurulum/kur...) so FX detection must be strict.
+  const hasRuleWord = /(kural|kurallar|kuralları|rules)/i.test(low);
+  const hasSportWord = /(\bspor\b|futbol|basketbol|voleybol|uefa|fifa|şampiyonlar\s*ligi|champions\s*league|premier\s*league|la\s*liga|serie\s*a|bundesliga|\bnba\b|\bmaç\b|fikstür|puan\s*durumu|transfer)/i.test(low);
+
+  // Sports rules questions should go to Wikipedia-style explanations, not FX or headlines.
+  if (hasSportWord && hasRuleWord) return "wiki";
+
+  if (
+    !hasRuleWord &&
+    /(doviz|döviz|exchange\s*rate|\bfx\b|\busd\b|\beur\b|\bgbp\b|\bdolar\b|\beuro\b|\bsterlin\b|usd\/try|eur\/try|gbp\/try|döviz\s*kuru|doviz\s*kuru|dolar\s*kuru|euro\s*kuru|sterlin\s*kuru|курс|الصرف)/i.test(low)
+  ) return "fx";
   if (/(hava\s*durumu|hava\s*nasil|sicaklik|weather|temperature|forecast|погода|الطقس)/i.test(low)) return "weather";
   if (/(tarif|tarifi|malzeme|recipe|ingredients|recette|ingrédients|рецепт|ингредиент|وصفة|مكونات)/i.test(low)) return "recipe";
 
-  // 2) Economy / macro indicators
-  if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b)/i.test(low)) return "econ";
 
-  // 3) Sports (route to sports headlines)
-  if (/(\bspor\b|futbol|basketbol|voleybol|uefa|fifa|şampiyonlar\s*ligi|champions\s*league|premier\s*league|la\s*liga|serie\s*a|bundesliga|\bnba\b|\bmaç\b|fikstür|puan\s*durumu|transfer)/i.test(low)) return "sports";
+  // 1b) Simple science / constants (avoid wrong Wikipedia hits)
+  if (/(kaynar|donar|erir|kaynama\s*noktası|donma\s*noktası|erime\s*noktası|boiling\s*point|freezing\s*point|melting\s*point|kaç\s*derece|\b°\s*c\b|\bdeg(?:ree)?\b)/i.test(low)) return "science";
+
+  // 2) Economy / macro indicators (also common commodities keywords)
+  if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b|altın|gold|xau|ons\s*altın|gram\s*altın)/i.test(low)) return "econ";
+
+  // 3) Sports (headlines / fixtures)
+  if (hasSportWord) return "sports";
 
   // 4) Scholarly / evidence-based / medical-ish requests
   if (/(pubmed|\bdoi\b|crossref|randomi[sz]ed|meta[-\s]*analiz|systematic\s*review|peer\s*reviewed|hakemli|makale|araştırma|çalışma|clinical\s*trial|psikoloji|psikiyatr|hastalık|tedavi|belirti|ilaç|tıp|medical)/i.test(low)) return "scholar";
@@ -763,6 +777,7 @@ function buildEvidenceAnswer(e, lang) {
       travel: "Gezi \u00f6nerileri:",
       poi: "Yak\u0131ndaki yerler:",
       recipe: "Tarif:",
+      science: "Bilim bilgisi:",
       fact: "K\u0131sa ger\u00e7ek:",
       econ: "Ekonomi:",
       sports: "Spor:",
@@ -788,6 +803,7 @@ function buildEvidenceAnswer(e, lang) {
       travel: "Travel suggestions:",
       poi: "Nearby places:",
       recipe: "Recipe:",
+      science: "Science:",
       fact: "Fact:",
       econ: "Economy:",
       sports: "Sports:",
@@ -813,6 +829,7 @@ function buildEvidenceAnswer(e, lang) {
       travel: "Suggestions de voyage :",
       poi: "Lieux \u00e0 proximit\u00e9 :",
       recipe: "Recette :",
+      science: "Science :",
       fact: "Fait :",
       econ: "\u00c9conomie :",
       sports: "Sport :",
@@ -838,6 +855,7 @@ function buildEvidenceAnswer(e, lang) {
       travel: "\u0421\u043e\u0432\u0435\u0442\u044b \u0434\u043b\u044f \u043f\u043e\u0435\u0437\u0434\u043a\u0438:",
       poi: "\u0420\u044f\u0434\u043e\u043c \u0441 \u0432\u0430\u043c\u0438:",
       recipe: "\u0420\u0435\u0446\u0435\u043f\u0442:",
+      science: "\u041d\u0430\u0443\u043a\u0430:",
       fact: "\u0424\u0430\u043a\u0442:",
       econ: "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u043a\u0430:",
       sports: "\u0421\u043f\u043e\u0440\u0442:",
@@ -863,6 +881,7 @@ function buildEvidenceAnswer(e, lang) {
       travel: "\u0627\u0642\u062a\u0631\u0627\u062d\u0627\u062a \u0633\u0641\u0631:",
       poi: "\u0623\u0645\u0627\u0643\u0646 \u0642\u0631\u064a\u0628\u0629:",
       recipe: "\u0648\u0635\u0641\u0629:",
+      science: "\u0645\u0639\u0644\u0648\u0645\u0629 \u0639\u0644\u0645\u064a\u0629:",
       fact: "\u062d\u0642\u064a\u0642\u0629:",
       econ: "\u0627\u0642\u062a\u0635\u0627\u062f:",
       sports: "\u0631\u064a\u0627\u0636\u0629:",
@@ -1078,6 +1097,18 @@ function buildEvidenceAnswer(e, lang) {
     };
   }
 
+
+
+  if (e.type === "science") {
+    return {
+      answer: `${T.science} ${e.title}
+${e.extract}${lowNote}`.trim(),
+      suggestions: L === "tr" ? ["Su kaç derecede kaynar?", "Su kaç derecede donar?"] : ["water boiling point", "water freezing point"],
+      sources: e.sources || [],
+      trustScore: trust ?? 90,
+    };
+  }
+
   // wiki
   if (e.type === "wiki") {
     return {
@@ -1231,9 +1262,11 @@ async function getNewsEvidence(text, lang) {
   };
 }
 
+
 async function getWikiEvidence(text, lang) {
-  const q = safeString(text);
-  if (!q) return null;
+  const q0 = safeString(text);
+  if (!q0) return null;
+  const q = stripQuestionNoise(q0) || q0;
   const wLang = pickWikiLang(lang || "tr");
 
   const sUrl = `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&utf8=1&format=json&origin=*&srlimit=5`;
@@ -1251,7 +1284,19 @@ async function getWikiEvidence(text, lang) {
     }
   }
 
-  const title = safeString(best?.title || q);
+  // Reject weak matches (avoid confident nonsense)
+  if (!best || bestScore < 2) return null;
+
+  const bestTitle = safeString(best?.title || "");
+  const titleLow = bestTitle.toLowerCase();
+  const stop = new Set(["nedir","ne","kim","kaç","kac","hangi","nasıl","nasil","mi","mı","mu","mü","ve","ile","ya","ya da","what","how","who","which","is","are"]);
+  const sig = q.toLowerCase().split(/\s+/g).map((w) => w.trim()).filter((w) => w.length >= 4 && !stop.has(w));
+  if (sig.length && !sig.some((w) => titleLow.includes(w))) {
+    // If none of the significant query words appear in title, treat as mismatch.
+    return null;
+  }
+
+  const title = safeString(bestTitle || q0);
   const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
   const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
   const extract = safeString(sum?.extract || "");
@@ -1259,7 +1304,6 @@ async function getWikiEvidence(text, lang) {
   if (!extract) return null;
 
   // trust score: higher when match score is higher
-
   const trustScore = Math.max(55, Math.min(80, 55 + (bestScore > 0 ? bestScore * 3 : 6)));
 
   return {
@@ -1278,6 +1322,44 @@ async function getWikiEvidence(text, lang) {
 // ============================================================================
 
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
+
+// Small deterministic overrides for very common entities (helps when search/disambiguation fails)
+const ENTITY_OVERRIDES = new Map([
+  ['turkiye', 'Q43'], ['türkiye', 'Q43'], ['turkey', 'Q43'],
+  ['ankara', 'Q3640'], ['istanbul', 'Q406'], ['bodrum', 'Q130779'],
+  ['fransa', 'Q142'], ['france', 'Q142'],
+  ['almanya', 'Q183'], ['germany', 'Q183'],
+  ['abd', 'Q30'], ['amerika', 'Q30'], ['united states', 'Q30'], ['usa', 'Q30'],
+]);
+
+function normalizeEntityKey(s='') {
+  const low = safeString(s).toLowerCase();
+  // remove diacritics and punctuation, keep letters/numbers/spaces
+  const noDiac = low.normalize('NFD').replace(/\p{M}+/gu, '');
+  return noDiac.replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function lookupEntityOverride(hint='') {
+  const k = normalizeEntityKey(hint);
+  return ENTITY_OVERRIDES.get(k) || null;
+}
+
+async function wikidataGetEntityByWikiTitle(title, lang) {
+  const wLang = wikilangForWikidata(lang);
+  const t = safeString(title).trim();
+  if (!t) return null;
+  const url = `${WIKIDATA_API}?action=wbgetentities&sites=${wLang}wiki&titles=${encodeURIComponent(t)}&format=json&origin=*`;
+  const data = await fetchJsonCached(url, 30 * 24 * 60 * 60 * 1000);
+  const entities = data?.entities || {};
+  for (const [id, ent] of Object.entries(entities)) {
+    if (!id || id === '-1' || !ent) continue;
+    const label = safeString(ent?.labels?.[wLang]?.value || ent?.labels?.en?.value || '');
+    const desc = safeString(ent?.descriptions?.[wLang]?.value || ent?.descriptions?.en?.value || '');
+    return { id, label: label || t, description: desc };
+  }
+  return null;
+}
+
 
 // 30+ property map (country/city/person). Keep it small-but-useful.
 const FACT_PROPERTIES = [
@@ -1312,8 +1394,10 @@ const FACT_PROPERTIES = [
     kw: ["resmi site", "resmi web", "official website", "site officiel", "официальный сайт", "الموقع الرسمي"] },
 
   // Leadership
+  { key: "mayor", pid: "P6", valueType: "item", labels: { tr: "Belediye başkanı", en: "Mayor", fr: "Maire", ru: "Мэр", ar: "رئيس البلدية" },
+    kw: ["belediye başkanı", "belediye baskani", "mayor", "maire", "мэр", "رئيس البلدية"] },
   { key: "head_of_state", pid: "P35", valueType: "item", labels: { tr: "Devlet başkanı", en: "Head of state", fr: "Chef d'État", ru: "Глава государства", ar: "رئيس الدولة" },
-    kw: ["devlet başkanı", "başkan", "cumhurbaşkanı", "head of state", "chef d'état", "глава государства", "رئيس الدولة"] },
+    kw: ["devlet başkanı", "cumhurbaşkanı", "head of state", "chef d'état", "глава государства", "رئيس الدولة"] },
   { key: "head_of_government", pid: "P6", valueType: "item", labels: { tr: "Hükümet başkanı", en: "Head of government", fr: "Chef du gouvernement", ru: "Глава правительства", ar: "رئيس الحكومة" },
     kw: ["başbakan", "hükümet başkanı", "head of government", "глава правительства", "رئيس الحكومة"] },
 
@@ -1372,25 +1456,112 @@ function pickFactProperty(text) {
   return null;
 }
 
+
 function guessEntityHint(text, prop) {
-  const low = stripQuestionNoise(text);
-  if (!low) return "";
+  const low0 = stripQuestionNoise(text);
+  if (!low0) return "";
+
   const kill = [];
   if (prop?.kw) kill.push(...prop.kw);
-  // also remove some generic words
-  kill.push("ülke", "şehir", "city", "country", "devlet", "insan", "kişisi", "kişi", "person");
-  let out = low;
-  for (const w of kill) {
+
+  // Extra generic words that often pollute entity hints
+  kill.push("ülke", "şehir", "belediye", "ilçe", "district", "municipality", "country", "city", "state", "devlet", "insan", "kişi", "person");
+
+  let out = low0;
+  const escapeRe = (s) => safeString(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  for (const w0 of kill) {
+    const w = safeString(w0).toLowerCase().trim();
     if (!w) continue;
-    out = out.replace(new RegExp(`\\b${w.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "gi"), " ");
+
+    if (w.includes(" ")) {
+      const parts = w.split(/\s+/g).filter(Boolean);
+      if (!parts.length) continue;
+      const last = parts.pop();
+      const body = parts.map(escapeRe).join("\\s+");
+      const lastEsc = escapeRe(last);
+      const re = body
+        ? new RegExp(`\\b${body}\\s+${lastEsc}\\p{L}*\\b`, "giu")
+        : new RegExp(`\\b${lastEsc}\\p{L}*\\b`, "giu");
+      out = out.replace(re, " ");
+    } else {
+      if (w.length < 3) continue;
+      const re = new RegExp(`\\b${escapeRe(w)}\\p{L}*\\b`, "giu");
+      out = out.replace(re, " ");
+    }
   }
-  out = out.replace(/\s+/g, " ").trim();
-  // possessives like "türkiye'nin" → "türkiye"
+
+  out = out
+    .replace(/[“”"“”]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Turkish possessives: Türkiye'nin -> Türkiye
   out = out.replace(/\b(\p{L}+)(?:'nin|'nın|'nun|'nün|nin|nın|nun|nün)\b/giu, "$1");
-  // keep first 5 words max
+
+  // Remove common question particles that sometimes survive stripQuestionNoise
+  out = out.replace(/\b(nedir|ne|kim|kaç|kac|hangi|nasıl|nasil)\b/gi, " ").replace(/\s+/g, " ").trim();
+
   const words = out.split(/\s+/).filter(Boolean);
-  return safeString(words.slice(0, 5).join(" "));
+  return words.slice(0, 5).join(" ").trim();
 }
+
+const COUNTRY_LIKE_PROPS = new Set([
+  "capital",
+  "population",
+  "currency",
+  "official_language",
+  "area",
+  "calling_code",
+  "tld",
+  "time_zone",
+  "continent",
+  "neighbors",
+  "anthem",
+  "motto",
+  "official_website",
+  "religion",
+  "demonym",
+  "head_of_state",
+  "head_of_government",
+]);
+
+function scoreWikidataCandidate(cand, questionText, prop) {
+  const q = safeString(questionText).toLowerCase();
+  const label = safeString(cand?.label).toLowerCase();
+  const desc = safeString(cand?.desc).toLowerCase();
+  if (!label) return -999;
+
+  let s = 0;
+  if (desc.includes("disambiguation")) s -= 25;
+
+  const hint = safeString(guessEntityHint(questionText, prop)).toLowerCase();
+  if (hint && label === hint) s += 12;
+  if (hint && (label.startsWith(hint) || hint.startsWith(label))) s += 5;
+  if (q.includes(label)) s += 6;
+
+  // Municipality / district context
+  if (/(belediye|ilçe|ilcesi|municipality|district)/i.test(q)) {
+    if (/(municipality|district|belediye|ilçe|town|city|şehir)/i.test(desc)) s += 10;
+  }
+
+  // Country-ish facts should prefer country / sovereign state
+  if (prop?.key && COUNTRY_LIKE_PROPS.has(prop.key)) {
+    if (/(country|sovereign|state|republic|ülke|devlet|cumhuriyet)/i.test(desc)) s += 10;
+  }
+
+  // Prefer candidates whose label contains important words from hint
+  const hWords = hint.split(/\s+/).filter((w) => w.length >= 4);
+  if (hWords.length) {
+    const matchCount = hWords.reduce((acc, w) => (label.includes(w) ? acc + 1 : acc), 0);
+    s += Math.min(6, matchCount * 2);
+  }
+
+  // Small penalty for empty descriptions
+  if (!desc) s -= 1;
+  return s;
+}
+
 
 async function wikidataSearchEntities(search, lang) {
   const q = safeString(search);
@@ -1492,8 +1663,19 @@ async function getFactEvidence(text, lang) {
   if (!hint) {
     return { type: "clarify", kind: "entity", trustScore: 35 };
   }
+  let results = [];
+  const overrideId = lookupEntityOverride(hint);
+  if (overrideId) {
+    results = [{ id: overrideId, label: hint, description: "Known entity" }];
+  } else {
+    results = await wikidataSearchEntities(hint, L);
+    if (!results.length) {
+      // fallback: resolve by wiki title (trwiki/enwiki), sometimes more reliable than search
+      const byTitle = await wikidataGetEntityByWikiTitle(hint, L);
+      if (byTitle) results = [byTitle];
+    }
+  }
 
-  const results = await wikidataSearchEntities(hint, L);
   if (!results.length) {
     return {
       type: "no_answer",
@@ -1652,6 +1834,24 @@ async function getWorldBankLatest(iso3, indicatorId) {
 
 async function getEconEvidence(text, lang) {
   const L = normalizeLang(lang);
+  const low = safeString(text).toLowerCase();
+
+  // Gold/precious metals prices need live market data; avoid wrong Wikipedia definitions.
+  if (/(altın|altin|\bgold\b|\bxau\b)/i.test(low) && /(fiyat|price|kaç|kac|ne kadar|tl|try)/i.test(low)) {
+    return {
+      type: "econ",
+      indicator: L === "tr" ? "Gram altın fiyatı (anlık)" : "Gold price (live)",
+      country: L === "tr" ? "Türkiye" : "Turkey",
+      year: L === "tr" ? "anlık" : "live",
+      value: L === "tr"
+        ? "Bu bilgi canlı piyasa verisi gerektirir. Güvenilir fiyat için Borsa İstanbul / bankalar / lisanslı veri sağlayıcı kaynağı gerekir."
+        : "This requires live market data (exchange/authorized data provider).",
+      trustScore: 45,
+      sources: [
+        { title: "Borsa İstanbul", url: "https://www.borsaistanbul.com" },
+      ],
+    };
+  }
   const ind = pickWBIndicator(text, L);
   if (!ind) return null;
 
@@ -1855,6 +2055,49 @@ async function getRecipeEvidence(text, lang) {
     trustScore: srcUrl ? 78 : 70,
     sources: srcUrl ? [{ title: "Recipe source", url: srcUrl }] : [{ title: "TheMealDB", url: "https://www.themealdb.com/" }],
   };
+}
+
+
+
+// --- Simple science facts (deterministic, no-hallucination) ---
+async function getScienceEvidence(text, lang) {
+  const L = normalizeLang(lang);
+  const q = safeString(text).toLowerCase();
+
+  // 1) Water boiling point
+  if (/(\bsu\b|water)/i.test(q) && /(kayn|boil)/i.test(q)) {
+    const answerTr = "Su, deniz seviyesinde (1 atm basınçta) yaklaşık 100°C'de kaynar. Basınç azalınca (yüksek rakım) kaynama sıcaklığı düşer.";
+    const answerEn = "Water boils at about 100°C at sea level (1 atm). As pressure decreases (higher altitude), the boiling point drops.";
+    return {
+      type: "science",
+      title: L === "tr" ? "Su'nun kaynama noktası" : "Boiling point of water",
+      extract: L === "tr" ? answerTr : answerEn,
+      trustScore: 92,
+      sources: [
+        { title: "Wikipedia: Boiling point", url: "https://en.wikipedia.org/wiki/Boiling_point" },
+        { title: "Wikipedia: Water", url: "https://en.wikipedia.org/wiki/Water" },
+      ],
+    };
+  }
+
+  // 2) Water freezing point
+  if (/(\bsu\b|water)/i.test(q) && /(don|freez)/i.test(q)) {
+    const answerTr = "Su, 1 atm basınçta yaklaşık 0°C'de donar (saf su). Çözeltiler/tuzluluk donma noktasını düşürür.";
+    const answerEn = "Pure water freezes at about 0°C at 1 atm. Solutes/salinity lower the freezing point.";
+    return {
+      type: "science",
+      title: L === "tr" ? "Su'nun donma noktası" : "Freezing point of water",
+      extract: L === "tr" ? answerTr : answerEn,
+      trustScore: 90,
+      sources: [
+        { title: "Wikipedia: Freezing", url: "https://en.wikipedia.org/wiki/Freezing" },
+        { title: "Wikipedia: Water", url: "https://en.wikipedia.org/wiki/Water" },
+      ],
+    };
+  }
+
+  // Generic fallback (let wiki/LLM handle, but prefer null over wrong)
+  return null;
 }
 
 function detectPoiCategory(text = "") {
@@ -2168,6 +2411,12 @@ async function gatherEvidence({ text, lang, city }) {
     if (type === "fx") return await getFxEvidence(text, L);
     if (type === "weather") return await getWeatherEvidence(text, L, city);
     if (type === "recipe") return await getRecipeEvidence(text, L);
+
+    if (type === "science") {
+      const se = await getScienceEvidence(text, L);
+      if (se) return se;
+      // fallthrough to wiki if not covered by deterministic facts
+    }
     if (type === "poi") return await getPoiEvidence(text, L, city);
     if (type === "travel") return await getTravelEvidence(text, L, city);
     if (type === "news") return await getNewsEvidence(text, L);
