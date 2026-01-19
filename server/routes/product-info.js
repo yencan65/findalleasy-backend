@@ -1349,11 +1349,20 @@ async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", d
 
   let hits = [];
   try {
-    hits = await searchLocalBarcodeEngine(code, {
-      region: "TR",
-      maxCandidates: 6,
-      maxMatches: 1,
-    });
+    const localTimeoutMs = Number(process.env.FAE_LOCAL_BARCODE_TIMEOUT_MS || 6500);
+    const ac = new AbortController();
+    const tt = setTimeout(() => ac.abort(), localTimeoutMs);
+    try {
+      hits = await searchLocalBarcodeEngine(code, {
+        region: "TR",
+        maxCandidates: 6,
+        maxMatches: 1,
+        signal: ac.signal,
+        diag: diag?.enabled ? 1 : 0,
+      });
+    } finally {
+      clearTimeout(tt);
+    }
   } catch (e) {
     diag?.tries?.push?.({ step: "local_marketplaces_error", error: String(e?.message || e) });
     hits = [];
@@ -1537,12 +1546,22 @@ async function resolveBarcodeIdentityViaLocalMarketplaces(barcode, localeShort =
   diag?.tries?.push?.({ step: "local_identity_start", barcode: code });
 
   try {
-    const hits = await searchLocalBarcodeEngine(code, {
-      region: "TR",
-      maxCandidates: 5,
-      maxMatches: 1,
-      allowNoPrice: true,
-    });
+    const localTimeoutMs = Number(process.env.FAE_LOCAL_BARCODE_TIMEOUT_MS || 6500);
+    const ac = new AbortController();
+    const tt = setTimeout(() => ac.abort(), localTimeoutMs);
+    let hits;
+    try {
+      hits = await searchLocalBarcodeEngine(code, {
+        region: "TR",
+        maxCandidates: 5,
+        maxMatches: 1,
+        allowNoPrice: true,
+        signal: ac.signal,
+        diag: diag?.enabled ? 1 : 0,
+      });
+    } finally {
+      clearTimeout(tt);
+    }
 
     const h = Array.isArray(hits) ? hits[0] : null;
     if (!h) {
