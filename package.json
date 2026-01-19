@@ -1,5 +1,5 @@
 {
-  "name": "findalleasy-backend",
+"name": "findalleasy-backend",
   "version": "2.2.1",
   "type": "module",
   "main": "server.js",

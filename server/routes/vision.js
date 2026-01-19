@@ -12,8 +12,12 @@
 import express from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
+import FreeVisionService from "../services/freeVisionService.js";
 
 const router = express.Router();
+
+// Free vision (no paid credits): Tesseract OCR + optional Cloud Vision if key exists.
+const freeVisionService = new FreeVisionService();
 
 /* ============================================================
    S31 — SERPAPI LENS FALLBACK + TEMP IMAGE URL
@@ -554,78 +558,134 @@ function extractBarcodesFromText(text) {
 
 
 
-
-// ------------------------------------------------------------
-// Free OCR fallback (Tesseract.js) — ZERO-DELETE, only used when needed
-// ------------------------------------------------------------
-async function freeOcrTesseract(imageBuffer, opts = {}) {
-  const lang = String(opts.lang || process.env.TESSERACT_LANG || "eng").trim() || "eng";
-  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 9000;
-
-  // Very large images can choke OCR; skip gracefully.
-  try {
-    if (imageBuffer && imageBuffer.length > 6 * 1024 * 1024) {
-      return { ok: false, error: "IMAGE_TOO_LARGE_FOR_OCR" };
-    }
-  } catch {}
-
-  let worker = null;
-  const started = Date.now();
-  try {
-    const mod = await import("tesseract.js");
-    const createWorker = mod?.createWorker || mod?.default?.createWorker;
-    if (!createWorker) return { ok: false, error: "TESSERACT_IMPORT_FAILED" };
-
-    // Run OCR with a hard timeout.
-    const run = async () => {
-      worker = await createWorker();
-      await worker.loadLanguage(lang);
-      await worker.initialize(lang);
-      // Conservative params: stable on labels/packaging
-      try {
-        await worker.setParameters({
-          preserve_interword_spaces: "1",
-        });
-      } catch {}
-
-      const out = await worker.recognize(imageBuffer);
-      return out?.data || {};
-    };
-
-    const data = await Promise.race([
-      run(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("OCR_TIMEOUT")), timeoutMs)),
-    ]);
-
-    const rawText = String(data?.text || "").trim();
-    if (!rawText || rawText.length < 3) {
-      return { ok: false, error: "OCR_EMPTY", latencyMs: Date.now() - started };
-    }
-
-    const barcodes = extractBarcodesFromText(rawText);
-    const query = barcodes?.length ? String(barcodes[0] || "") : extractSearchQuery(rawText);
-
-    return {
-      ok: true,
-      query: String(query || "").trim(),
-      barcodes: Array.isArray(barcodes) ? barcodes : [],
-      rawText,
-      confidence: Number.isFinite(data?.confidence) ? (Number(data.confidence) / 100) : null,
-      latencyMs: Date.now() - started,
-      used: `tesseract:${lang}`,
-    };
-  } catch (e) {
-    return { ok: false, error: e?.message || String(e), latencyMs: Date.now() - started };
-  } finally {
-    try {
-      if (worker) await worker.terminate();
-    } catch {}
-  }
-}
-
 /* ============================================================
    VISION HANDLER
    ============================================================ */
+
+// ----------------------------------------------------------------------
+// FREE VISION HANDLER (NO PAID CREDITS)
+// POST /api/vision/free
+// - Uses Tesseract OCR (server-side) + optional Cloud Vision (if key exists)
+// - NEVER calls SerpApi Lens and NEVER calls Gemini.
+// ----------------------------------------------------------------------
+async function handleVisionFree(req, res) {
+  const startedAt = Date.now();
+  const ip = getIP(req);
+  const ua = getUA(req);
+  const debug =
+    String(process.env.VISION_DEBUG || "") === "1" ||
+    String(req.query?.diag || "") === "1";
+
+  const tries = [];
+  const tpush = (step, extra) => {
+    if (!debug) return;
+    try {
+      tries.push({ step, ...(extra || {}) });
+    } catch {
+      // ignore
+    }
+  };
+
+  try {
+    const rl = rateLimit(ip, 45, 60_000);
+    if (!rl.allowed) {
+      return safeJson(
+        res,
+        { ok: false, throttled: true, retryAfterMs: rl.retryMs },
+        429
+      );
+    }
+
+    const body = safeBody(req);
+    const rawImage = body.imageBase64 || body.image || body.base64 || "";
+    if (!rawImage) {
+      return safeJson(res, { ok: false, error: "imageBase64 eksik" }, 400);
+    }
+
+    const mimeType = detectMimeType(rawImage);
+    const base64Part = String(rawImage).includes(",")
+      ? String(rawImage).split(",")[1]
+      : String(rawImage);
+    let cleanBase64 = safeBase64(base64Part);
+    cleanBase64 = clampBase64Size(cleanBase64, 15 * 1024 * 1024);
+    if (!cleanBase64) {
+      return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
+    }
+    if (!cleanBase64 || cleanBase64.length < 50) {
+      return safeJson(res, { ok: false, error: "BASE64_INVALID" }, 400);
+    }
+
+    const visionKey = process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_API_KEY;
+    const useGoogleVision = Boolean(visionKey) && String(body?.useGoogleVision ?? "").toLowerCase() !== "0";
+
+    tpush("free_providers", { useGoogleVision, hasVisionKey: Boolean(visionKey) });
+
+    const buf = Buffer.from(cleanBase64, "base64");
+    tpush("free_image", { mimeType, bytes: buf.length });
+
+    // Process
+    const freeOut = await freeVisionService.processImage(buf, { useGoogleVision });
+    const rawText = String(freeOut?.text || "").trim();
+    const keywords = Array.isArray(freeOut?.keywords) ? freeOut.keywords : [];
+
+    // Extract barcodes from rawText (tesseract often catches digits)
+    const barcodes = extractBarcodesFromText(rawText);
+    const barcode = barcodes?.[0] || "";
+
+    let query = "";
+    if (barcode) query = barcode;
+    else if (keywords.length) query = keywords.slice(0, 3).join(" ");
+    else query = extractSearchQuery(rawText);
+
+    query = safeStr(query, 140);
+
+    // Guard: no generic junk
+    if (!query || isGenericVisionQuery(query)) {
+      const latencyMs = Date.now() - startedAt;
+      return safeJson(
+        res,
+        {
+          ok: false,
+          error: "NO_MATCH",
+          query: "",
+          barcode,
+          barcodes: Array.isArray(barcodes) ? barcodes : [],
+          rawText: safeStr(rawText, 2000),
+          raw: { free_vision: freeOut || null },
+          ...(debug ? { _diag: { tries } } : {}),
+          meta: {
+            ipHash: ip ? String(ip).slice(0, 8) : null,
+            uaSnippet: ua,
+            latencyMs,
+            used: "free_vision",
+            services: freeOut?.services || [],
+          },
+        },
+        200
+      );
+    }
+
+    const latencyMs = Date.now() - startedAt;
+    return safeJson(res, {
+      ok: true,
+      query,
+      barcode,
+      barcodes: Array.isArray(barcodes) ? barcodes : [],
+      rawText: safeStr(rawText, 2000),
+      raw: { free_vision: freeOut || null },
+      ...(debug ? { _diag: { tries } } : {}),
+      meta: {
+        ipHash: ip ? String(ip).slice(0, 8) : null,
+        uaSnippet: ua,
+        latencyMs,
+        used: "free_vision",
+        services: freeOut?.services || [],
+      },
+    });
+  } catch (e) {
+    return safeJson(res, { ok: false, error: "PROCESSING_ERROR", detail: e?.message }, 500);
+  }
+}
 
 async function handleVision(req, res) {
   const startedAt = Date.now();
@@ -800,50 +860,7 @@ async function handleVision(req, res) {
     });
 
 
-    
     if (!visionKey && !(geminiKey && allowGemini) && !(serpKey && allowSerpLens)) {
-      // ✅ Free OCR fallback (server-side) — only when paid/official providers are unavailable.
-      // This prevents the UX from collapsing into "VISION_DISABLED".
-      try {
-        const base64Part0 = String(rawImage).includes(",")
-          ? String(rawImage).split(",")[1]
-          : String(rawImage);
-        let clean0 = safeBase64(base64Part0);
-        if (clean0 && clean0.length >= 50) {
-          clean0 = clampBase64Size(clean0, 10 * 1024 * 1024);
-          const buf0 = Buffer.from(clean0, "base64");
-
-          const freeOk = String(process.env.USE_FREE_VISION || "true").toLowerCase() !== "false";
-          if (freeOk) {
-            tpush("free_ocr_fallback_try", { bytes: buf0?.length || null });
-            const ocr = await freeOcrTesseract(buf0, { timeoutMs: 9000 });
-            if (ocr?.ok && (ocr.query || (Array.isArray(ocr.barcodes) && ocr.barcodes.length))) {
-              const q = String(ocr.query || "").trim();
-              const b = Array.isArray(ocr.barcodes) && ocr.barcodes.length ? String(ocr.barcodes[0]) : "";
-              return safeJson(
-                res,
-                {
-                  ok: true,
-                  query: q || b || "",
-                  barcode: b || "",
-                  barcodes: Array.isArray(ocr.barcodes) ? ocr.barcodes : [],
-                  rawText: safeStr(ocr.rawText || "", 2000),
-                  ...(debug ? { _diag: { tries: [...tries, { step: "free_ocr_fallback_ok", used: ocr.used || null }] } } : {}),
-                  meta: {
-                    source: "free_ocr_fallback",
-                    used: ocr.used || null,
-                    latencyMs: Date.now() - startedAt,
-                  },
-                },
-                200
-              );
-            }
-          }
-        }
-      } catch (e0) {
-        tpush("free_ocr_fallback_error", { error: String(e0?.message || e0) });
-      }
-
       return safeJson(
         res,
         {
@@ -1203,70 +1220,8 @@ ${rawText}` : webHint;
   }
 }
 
-
-
-// ✅ Free vision endpoint (server-side OCR) — /api/vision/free
-router.post("/free", async (req, res) => {
-  const startedAt = Date.now();
-  try {
-    const body = safeBody(req);
-    const rawImage = body?.imageBase64 || body?.image || body?.img || "";
-
-    const base64Part = String(rawImage).includes(",")
-      ? String(rawImage).split(",")[1]
-      : String(rawImage);
-
-    let cleanBase64 = safeBase64(base64Part);
-    if (!cleanBase64 || cleanBase64.length < 50) {
-      return safeJson(res, { ok: false, error: "BASE64_INVALID" }, 400);
-    }
-
-    cleanBase64 = clampBase64Size(cleanBase64, 10 * 1024 * 1024);
-    if (!cleanBase64) {
-      return safeJson(res, { ok: false, error: "IMAGE_TOO_LARGE" }, 413);
-    }
-
-    const buf = Buffer.from(cleanBase64, "base64");
-    const ocr = await freeOcrTesseract(buf, { timeoutMs: 9000 });
-
-    if (!ocr?.ok) {
-      return safeJson(
-        res,
-        {
-          ok: false,
-          error: "NO_MATCH",
-          detail: ocr?.error || "OCR_FAILED",
-          meta: { latencyMs: Date.now() - startedAt, used: ocr?.used || null },
-        },
-        200
-      );
-    }
-
-    const q = String(ocr.query || "").trim();
-    const b = Array.isArray(ocr.barcodes) && ocr.barcodes.length ? String(ocr.barcodes[0]) : "";
-
-    return safeJson(
-      res,
-      {
-        ok: true,
-        query: q || b || "",
-        barcode: b || "",
-        barcodes: Array.isArray(ocr.barcodes) ? ocr.barcodes : [],
-        rawText: safeStr(ocr.rawText || "", 2000),
-        meta: {
-          source: "free_vision",
-          used: ocr.used || null,
-          latencyMs: Date.now() - startedAt,
-          freeTier: true,
-        },
-      },
-      200
-    );
-  } catch (e) {
-    return safeJson(res, { ok: false, error: "PROCESSING_ERROR", detail: e?.message || String(e) }, 500);
-  }
-});
 // Backward-compatible
+router.post("/free", handleVisionFree);
 router.post("/", handleVision);
 router.post("/vision", handleVision);
 
