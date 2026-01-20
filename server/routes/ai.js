@@ -623,6 +623,17 @@ function detectEvidenceType(text, lang = "tr") {
   // 4) Scholarly / evidence-based / medical-ish requests
   if (/(pubmed|\bdoi\b|crossref|randomi[sz]ed|meta[-\s]*analiz|systematic\s*review|peer\s*reviewed|hakemli|makale|araştırma|çalışma|clinical\s*trial|psikoloji|psikiyatr|hastalık|tedavi|belirti|ilaç|tıp|medical)/i.test(low)) return "scholar";
 
+// 4b) "İlkler / firsts" queries (need list logic + disambiguation; avoid confident nonsense)
+// Examples: "Türkiye'nin ilk kadın savaş pilotu", "Türkiye’nin ilkleri"
+// Hard exclusions: "ilk yardım" (first aid) and generic "ilk defa" life events.
+const isFirsts =
+  /(\bilk(?:ler|leri|lerden|lerinden)?\b|firsts?\b)/i.test(low) &&
+  !/(ilk\s*yard(?:ı|i)m|ilkyard(?:ı|i)m|first\s*aid)/i.test(low) &&
+  !/(ilk\s*defa|first\s*time|ilk\s*kez\s*(?:|daha))/i.test(low);
+
+if (isFirsts) return "firsts";
+
+
   // 5) Structured facts (Wikidata)
   const factHint = /(başkent|capital|nüfus|population|para\s*birimi|currency|resmi\s*dil|official\s*language|yüzölçümü|area|\bkm\s*2\b|\bkm2\b|başkan|başbakan|lider|head\s*of\s*state|head\s*of\s*government|telefon\s*kodu|calling\s*code|alan\s*adı|tld|domain|saat\s*dilimi|time\s*zone|kıta|continent|komşu|neighbor|kuruluş|inception|milli\s*marş|anthem|motto|resmi\s*site|official\s*website|doğum|ölüm|meslek|occupation|vatandaşlık|citizenship)/i.test(low);
   const qWord = /(nedir|ne|kaç|kim|hangi|what|who|which|how\s*many|tell\s*me|list|give\s*me)/i.test(low);
@@ -779,6 +790,7 @@ function buildEvidenceAnswer(e, lang) {
       recipe: "Tarif:",
       science: "Bilim bilgisi:",
       fact: "K\u0131sa ger\u00e7ek:",
+      firsts: "İlkler:",
       econ: "Ekonomi:",
       sports: "Spor:",
       scholar: "Bilimsel kaynaklar:",
@@ -805,6 +817,7 @@ function buildEvidenceAnswer(e, lang) {
       recipe: "Recipe:",
       science: "Science:",
       fact: "Fact:",
+      firsts: "Firsts:",
       econ: "Economy:",
       sports: "Sports:",
       scholar: "Scholarly sources:",
@@ -831,6 +844,7 @@ function buildEvidenceAnswer(e, lang) {
       recipe: "Recette :",
       science: "Science :",
       fact: "Fait :",
+      firsts: "Premières / Premiers :",
       econ: "\u00c9conomie :",
       sports: "Sport :",
       scholar: "Sources scientifiques :",
@@ -857,6 +871,7 @@ function buildEvidenceAnswer(e, lang) {
       recipe: "\u0420\u0435\u0446\u0435\u043f\u0442:",
       science: "\u041d\u0430\u0443\u043a\u0430:",
       fact: "\u0424\u0430\u043a\u0442:",
+      firsts: "Первые:",
       econ: "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u043a\u0430:",
       sports: "\u0421\u043f\u043e\u0440\u0442:",
       scholar: "\u041d\u0430\u0443\u0447\u043d\u044b\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438:",
@@ -883,6 +898,7 @@ function buildEvidenceAnswer(e, lang) {
       recipe: "\u0648\u0635\u0641\u0629:",
       science: "\u0645\u0639\u0644\u0648\u0645\u0629 \u0639\u0644\u0645\u064a\u0629:",
       fact: "\u062d\u0642\u064a\u0642\u0629:",
+      firsts: "الأوائل:",
       econ: "\u0627\u0642\u062a\u0635\u0627\u062f:",
       sports: "\u0631\u064a\u0627\u0636\u0629:",
       scholar: "\u0645\u0635\u0627\u062f\u0631 \u0639\u0644\u0645\u064a\u0629:",
@@ -1004,6 +1020,57 @@ function buildEvidenceAnswer(e, lang) {
       trustScore: trust ?? 72,
     };
   }
+
+
+if (e.type === "firsts") {
+  const scope = e.country ? ` (${e.country})` : "";
+  const items = Array.isArray(e.items) ? e.items : [];
+  if (!items.length) {
+    return {
+      answer: T.noAnswer,
+      suggestions: L === "tr" ? ["Türkiye'nin ilkleri", "Dünyanın ilkleri"] : ["Firsts of Turkey", "World firsts"],
+      sources: e.sources || [],
+      trustScore: trust ?? 45,
+    };
+  }
+
+  // List mode: show top items, keep suggestions as "query -> title" so selection preserves intent.
+  if (e.mode === "list") {
+    const lines = items
+      .slice(0, 8)
+      .map((x, i) => `${i + 1}) ${x.title}${x.note ? ` — ${x.note}` : ""}`);
+    const sug = items.slice(0, 4).map((x) => `${safeString(e.query || "").trim()} -> ${x.title}`.trim());
+    return {
+      answer: `${T.firsts}${scope}\n${lines.join("\n")}${lowNote}`.trim(),
+      suggestions: sug.filter(Boolean),
+      sources: e.sources || [],
+      trustScore: trust ?? 65,
+    };
+  }
+
+  // Single mode
+  const top = items[0] || {};
+  const headline = top.title || safeString(e.query || "");
+  const detail = top.note || top.extract || "";
+  return {
+    answer: `${T.firsts}${scope}\n${headline}${detail ? ` — ${detail}` : ""}${lowNote}`.trim(),
+    suggestions:
+      L === "tr"
+        ? [
+            `${(e.country || "Türkiye")} ilk kadın pilot`,
+            `${(e.country || "Türkiye")} ilk kadın doktor`,
+            `${(e.country || "Türkiye")} ilk cumhurbaşkanı`,
+          ]
+        : [
+            `${(e.country || "Turkey")} first female pilot`,
+            `${(e.country || "Turkey")} first woman doctor`,
+            `${(e.country || "Turkey")} first president`,
+          ],
+    sources: e.sources || [],
+    trustScore: trust ?? 70,
+  };
+}
+
 
   if (e.type === "fx") {
     const lines = [];
@@ -1314,6 +1381,354 @@ async function getWikiEvidence(text, lang) {
     sources: pageUrl ? [{ title: `Wikipedia: ${title}`, url: pageUrl }] : [],
   };
 }
+
+// ============================================================================
+// FIRSTS ENGINE: "İlkler / Firsts" (S60)
+//  - Fixes "Türkiye’nin ilkleri / ilk kadın savaş pilotu" style queries by forcing LIST logic.
+//  - Pipeline: parse -> (optional) scope disambiguation -> Wikipedia search -> summary validation -> sources
+//  - Disambiguation trick: suggestions use "query -> WikipediaTitle" so the follow-up keeps intent.
+// ============================================================================
+
+const FIRSTS_COUNTRY_HINTS = [
+  {
+    key: "turkey",
+    label: { tr: "Türkiye", en: "Turkey", fr: "Turquie", ru: "Турция", ar: "تركيا" },
+    patterns: [/\btürkiye\b/i, /\bturkiye\b/i, /\bturkey\b/i, /\btürk\b/i, /\bturkish\b/i],
+  },
+  {
+    key: "world",
+    isWorld: true,
+    label: { tr: "Dünya", en: "World", fr: "Monde", ru: "Мир", ar: "العالم" },
+    patterns: [/\bdünya(?:nın|da|de)?\b/i, /\bdunya(?:nin|da|de)?\b/i, /\bworld\b/i, /\bglobal\b/i],
+  },
+  {
+    key: "usa",
+    label: { tr: "ABD", en: "United States", fr: "États-Unis", ru: "США", ar: "الولايات المتحدة" },
+    patterns: [/\babd\b/i, /\bamerika\b/i, /\bunited\s*states\b/i, /\busa\b/i, /\bu\.s\.a\.\b/i],
+  },
+  {
+    key: "uk",
+    label: { tr: "İngiltere", en: "United Kingdom", fr: "Royaume-Uni", ru: "Великобритания", ar: "المملكة المتحدة" },
+    patterns: [/\bingiltere\b/i, /\bunited\s*kingdom\b/i, /\buk\b/i, /\bgreat\s*britain\b/i, /\bbritain\b/i, /\bbritanya\b/i],
+  },
+  {
+    key: "france",
+    label: { tr: "Fransa", en: "France", fr: "France", ru: "Франция", ar: "فرنسا" },
+    patterns: [/\bfransa\b/i, /\bfrance\b/i],
+  },
+  {
+    key: "germany",
+    label: { tr: "Almanya", en: "Germany", fr: "Allemagne", ru: "Германия", ar: "ألمانيا" },
+    patterns: [/\balmanya\b/i, /\bgermany\b/i, /\bdeutschland\b/i],
+  },
+  {
+    key: "russia",
+    label: { tr: "Rusya", en: "Russia", fr: "Russie", ru: "Россия", ar: "روسيا" },
+    patterns: [/\brusya\b/i, /\brussia\b/i, /\brossiya\b/i],
+  },
+];
+
+function firstsDetectCountry(text, lang) {
+  const s = safeString(text);
+  if (!s) return null;
+  for (const c of FIRSTS_COUNTRY_HINTS) {
+    if (c.patterns.some((rx) => rx.test(s))) return c;
+  }
+  return null;
+}
+
+function firstsSplitForcedTitle(qRaw) {
+  const q = safeString(qRaw).trim();
+  if (!q) return { base: "", forcedTitle: "" };
+  // UI / suggestions can send: "orijinal soru -> Wikipedia başlığı"
+  const m = q.match(/^(.*?)(?:\s*(?:->|→)\s*)(.+)$/);
+  if (!m) return { base: q, forcedTitle: "" };
+  const base = safeString(m[1]).trim();
+  const forcedTitle = safeString(m[2]).trim();
+  return { base: base || q, forcedTitle };
+}
+
+function firstsIsListQuery(text) {
+  const low = safeString(text).toLowerCase();
+  return /(ilkler|ilkleri|firsts?\b|listele|list\b|top\s*\d+)/i.test(low);
+}
+
+function firstsStripNoise(text, countryObj) {
+  let s = safeString(text);
+  if (!s) return "";
+  // remove country mentions (best-effort)
+  if (countryObj?.patterns?.length) {
+    for (const rx of countryObj.patterns) s = s.replace(rx, " ");
+  }
+  // remove generic firsts words + question fluff
+  s = s
+    .replace(/\bilk(?:ler|leri|lerden|lerinden)?\b/gi, " ")
+    .replace(/\b(firsts?|world's\s*first|first)\b/gi, " ")
+    .replace(/\b(kim|nedir|ne|kaç|hangi|what|who|which|tell\s*me|give\s*me|list|show)\b/gi, " ")
+    .replace(/[?¿!]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return s;
+}
+
+function firstsFirstSentence(extract = "", maxLen = 180) {
+  const t = safeString(extract).replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  const cut = t.split(/\n+/)[0];
+  const p = cut.split(/\. |\! |\? /)[0];
+  const out = p.length > maxLen ? p.slice(0, maxLen).trim() + "…" : p;
+  return out;
+}
+
+function firstsCandidateScore(query, title, snippet, countryObj, topic = "") {
+  let sc = scoreCandidate(query, title, snippet);
+
+  const t = safeString(title).toLowerCase();
+  const s = safeString(stripTags(snippet)).toLowerCase();
+  const top = safeString(topic).toLowerCase();
+
+  if (/\bilk\b/.test(t) || /\bilk\b/.test(s) || /\bfirst\b/.test(t) || /\bfirst\b/.test(s)) sc += 2;
+
+  if (countryObj?.key === "turkey") {
+    if (/(türkiye|turkiye|\btürk\b|\bturkish\b)/i.test(title + " " + stripTags(snippet))) sc += 2;
+    else sc -= 1;
+  }
+
+  if (/\bkadın\b|female/.test(top)) {
+    if (/\bkadın\b|female/.test(t + " " + s)) sc += 2;
+  }
+  if (/\bsavaş\b|combat|askeri|military/.test(top)) {
+    if (/\bsavaş\b|combat|askeri|military/.test(t + " " + s)) sc += 1;
+  }
+
+  return sc;
+}
+
+async function firstsWikiSearch(wLang, query, limit = 10) {
+  const q = safeString(query).trim();
+  if (!q) return [];
+  const sUrl = `https://${wLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(
+    q
+  )}&utf8=1&format=json&origin=*&srlimit=${Math.max(3, Math.min(20, Number(limit) || 10))}`;
+  const search = await fetchJsonCached(sUrl, 24 * 60 * 60 * 1000);
+  return (search?.query?.search || []).slice(0, limit);
+}
+
+async function firstsWikiSummary(wLang, title) {
+  const t = safeString(title).trim();
+  if (!t) return null;
+  const sumUrl = `https://${wLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`;
+  const sum = await fetchJsonCached(sumUrl, 24 * 60 * 60 * 1000);
+  const extract = safeString(sum?.extract || "");
+  const pageUrl = safeString(sum?.content_urls?.desktop?.page || "");
+  if (!extract || !pageUrl) return null;
+  return { title: safeString(sum?.title || t), extract, pageUrl };
+}
+
+async function getFirstsEvidence(text, lang) {
+  const L = normalizeLang(lang);
+  const q0 = safeString(text).trim();
+  if (!q0) return null;
+
+  const { base, forcedTitle } = firstsSplitForcedTitle(q0);
+  const isList = firstsIsListQuery(base);
+  const wLang = pickWikiLang(L);
+
+  // If user picked a specific Wikipedia title (via suggestion "q -> title"), answer deterministically.
+  if (forcedTitle) {
+    const sum = await firstsWikiSummary(wLang, forcedTitle);
+    if (!sum) return null;
+
+    const sources = [{ title: `Wikipedia: ${sum.title}`, url: sum.pageUrl }];
+    // Optional: add Wikidata entity link for extra trust.
+    try {
+      const wd = await wikidataGetEntityByWikiTitle(sum.title, L);
+      if (wd?.url) sources.push({ title: `Wikidata: ${wd.label || wd.id}`, url: wd.url });
+    } catch {}
+    return {
+      type: "firsts",
+      mode: "single",
+      query: base,
+      country: null,
+      items: [{ title: sum.title, note: firstsFirstSentence(sum.extract), extract: sum.extract, url: sum.pageUrl }],
+      sources,
+      trustScore: 78,
+    };
+  }
+
+  // Detect explicit scope/country. If none, we may need disambiguation instead of guessing.
+  const explicitCountry = firstsDetectCountry(base, L);
+  const topic = firstsStripNoise(base, explicitCountry);
+  const lowBase = base.toLowerCase();
+
+  // Broad "Türkiye'nin ilkleri" with no clear scope → ask for scope (country/world).
+  if (isList && !explicitCountry && !topic) {
+    const options = [
+      { label: "Türkiye'nin ilkleri", desc: "Ülke: Türkiye" },
+      { label: "Dünyanın ilkleri", desc: "Kapsam: Dünya" },
+      { label: "ABD'nin ilkleri", desc: "Ülke: ABD" },
+      { label: "İngiltere'nin ilkleri", desc: "Ülke: İngiltere" },
+    ];
+    return { type: "disambiguation", query: base, options, sources: [], trustScore: 45 };
+  }
+
+  // If no explicit country for a single-first query, try both: Turkey (common for TR UI) and unspecific.
+  const tryScopes = [];
+  if (explicitCountry) {
+    tryScopes.push(explicitCountry);
+  } else {
+    // Heuristic: if Turkish UI and no explicit world/country, Turkey is a plausible default — but we don't trust it blindly.
+    if (L === "tr" && !/(dünya|dunya|world|global)/i.test(lowBase)) {
+      const trGuess = FIRSTS_COUNTRY_HINTS.find((x) => x.key === "turkey");
+      if (trGuess) tryScopes.push(trGuess);
+    }
+    tryScopes.push(null);
+  }
+
+  async function runScope(scopeObj) {
+    const scopeLabel = scopeObj?.label?.[L] || scopeObj?.label?.en || "";
+    const qBase = stripQuestionNoise(base) || base;
+
+    const variants = [];
+    if (isList) {
+      if (topic) {
+        variants.push(`${scopeLabel ? scopeLabel + " " : ""}ilk ${topic}`.trim());
+        variants.push(`${scopeLabel ? scopeLabel + " " : ""}${topic} ilk`.trim());
+        variants.push(`${qBase}`.trim());
+      } else {
+        variants.push(`${scopeLabel} ilkleri`.trim());
+        variants.push(`${scopeLabel} ilk`.trim());
+        variants.push(`${scopeLabel} ilk kadın`.trim());
+        variants.push(`${scopeLabel} tarihinde ilk`.trim());
+      }
+    } else {
+      variants.push(`${qBase}`.trim());
+      if (scopeLabel && !scopeObj?.isWorld) variants.push(`${scopeLabel} ${qBase}`.trim());
+      if (topic) variants.push(`${scopeLabel ? scopeLabel + " " : ""}ilk ${topic}`.trim());
+    }
+
+    const uniq = Array.from(new Set(variants.filter(Boolean))).slice(0, 6);
+    let pool = [];
+    for (const v of uniq) {
+      const r = await firstsWikiSearch(wLang, v, 10);
+      pool = pool.concat(r.map((x) => ({ ...x, _q: v })));
+      if (pool.length >= 10) break;
+    }
+    if (!pool.length) return null;
+
+    // Score & pick candidates
+    const scored = pool
+      .map((c) => ({
+        title: c.title,
+        snippet: c.snippet,
+        q: c._q,
+        score: firstsCandidateScore(c._q, c.title, c.snippet, scopeObj, topic),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 12);
+
+    const stop = new Set(["nedir", "kim", "kaç", "hangi", "first", "ilk", "list", "give", "tell"]);
+    const sig = safeString(topic || qBase)
+      .toLowerCase()
+      .split(/\s+/g)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 4 && !stop.has(w))
+      .slice(0, 6);
+
+    // Validate with summaries (avoid wrong title jumps)
+    const items = [];
+    for (const cand of scored) {
+      const sum = await firstsWikiSummary(wLang, cand.title);
+      if (!sum) continue;
+
+      const extractLow = sum.extract.toLowerCase();
+      const titleLow = sum.title.toLowerCase();
+
+      // Must look like a "firsts" fact in content (or title)
+      const hasFirstSignal = /\bilk\b/i.test(sum.extract) || /\bfirst\b/i.test(sum.extract) || /\bilk\b/i.test(sum.title);
+      if (!hasFirstSignal && isList) continue;
+
+      // For single queries, require some significant overlap
+      if (!isList && sig.length) {
+        const ok = sig.some((w) => titleLow.includes(w) || extractLow.includes(w));
+        if (!ok) continue;
+      }
+
+      // Country sanity check (only for Turkey heuristic; keep loose to avoid false negatives)
+      if (scopeObj?.key === "turkey" && !/(türkiye|turkiye|\btürk\b|\bturkish\b)/i.test(sum.extract + " " + sum.title)) {
+        // still allow if query explicitly contains Turkey (user insisted)
+        if (/(türkiye|turkiye)/i.test(qBase) === false) continue;
+      }
+
+      items.push({
+        title: sum.title,
+        note: firstsFirstSentence(sum.extract),
+        extract: sum.extract,
+        url: sum.pageUrl,
+        _score: cand.score,
+      });
+
+      if (!isList) break;
+      if (items.length >= 8) break;
+    }
+
+    if (!items.length) return null;
+
+    const sources = items.slice(0, 8).map((x) => ({ title: `Wikipedia: ${x.title}`, url: x.url }));
+    // Optional: add Wikidata for the top item
+    try {
+      const wd = await wikidataGetEntityByWikiTitle(items[0].title, L);
+      if (wd?.url) sources.unshift({ title: `Wikidata: ${wd.label || wd.id}`, url: wd.url });
+    } catch {}
+
+    return {
+      type: "firsts",
+      mode: isList ? "list" : "single",
+      query: qBase,
+      country: scopeLabel || null,
+      items,
+      sources,
+      trustScore: Math.max(60, Math.min(92, 55 + (items[0]?._score || 0) * 4)),
+    };
+  }
+
+  // Run scopes and decide (disambiguate instead of guessing when close)
+  const results = [];
+  for (const sc of tryScopes) {
+    const r = await runScope(sc);
+    if (r?.items?.length) results.push(r);
+  }
+
+  if (!results.length) return null;
+  if (results.length === 1) return results[0];
+
+  // Multiple plausible scopes: return disambiguation (keep intent via "q -> title")
+  const a = results[0];
+  const b = results[1];
+
+  const topA = a.items?.[0];
+  const topB = b.items?.[0];
+  if (!topA || !topB) return a;
+
+  const opt = [];
+  opt.push({
+    label: `${safeString(a.query || base).trim()} -> ${topA.title}`.trim(),
+    desc: `${a.country ? `Kapsam: ${a.country}` : "Kapsam: Belirsiz"} — ${topA.note || ""}`.trim(),
+  });
+  opt.push({
+    label: `${safeString(b.query || base).trim()} -> ${topB.title}`.trim(),
+    desc: `${b.country ? `Kapsam: ${b.country}` : "Kapsam: Belirsiz"} — ${topB.note || ""}`.trim(),
+  });
+
+  return {
+    type: "disambiguation",
+    query: base,
+    options: opt,
+    sources: [],
+    trustScore: 50,
+  };
+}
+
 
 // ============================================================================
 // STRUCTURED FACTS (Wikidata) + DISAMBIGUATION  — S60
@@ -2417,6 +2832,13 @@ async function gatherEvidence({ text, lang, city }) {
       if (se) return se;
       // fallthrough to wiki if not covered by deterministic facts
     }
+
+if (type === "firsts") {
+  const fe = await getFirstsEvidence(text, L);
+  if (fe) return fe;
+  // fallthrough to wiki if firsts engine couldn't validate anything
+}
+
     if (type === "poi") return await getPoiEvidence(text, L, city);
     if (type === "travel") return await getTravelEvidence(text, L, city);
     if (type === "news") return await getNewsEvidence(text, L);
