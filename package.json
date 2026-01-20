@@ -1,8 +1,11 @@
 {
-"name": "findalleasy-backend",
+  "name": "findalleasy-backend",
   "version": "2.2.1",
   "type": "module",
   "main": "server.js",
+  "engines": {
+    "node": ">=18.20.0 <23"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
