@@ -195,12 +195,85 @@ export default class FreeVisionService {
       if (!r.ok) throw new Error(`CLOUD_VISION_HTTP_${r.status}`);
 
       const ann = j?.responses?.[0] || {};
-      const ocr = safeStr(ann?.textAnnotations?.[0]?.description || "", 8000);
+
+      // OCR (sometimes empty even when the image has logos)
+      const ocrRaw = safeStr(ann?.textAnnotations?.[0]?.description || "", 8000);
+      const ocrFirstLine = safeStr(String(ocrRaw || "").split(/\r?\n/)[0] || "", 160);
+
+      // Web "best guess" (very strong when present)
       const bestGuess = Array.isArray(ann?.webDetection?.bestGuessLabels)
         ? ann.webDetection.bestGuessLabels
         : [];
-      const guess = safeStr(bestGuess?.[0]?.label || "", 200);
-      const text = cleanOcrText((guess ? guess + "\n" : "") + ocr);
+      const guess = safeStr(bestGuess?.[0]?.label || "", 160);
+      const guessMore = bestGuess
+        .slice(1, 3)
+        .map((x) => safeStr(x?.label || "", 120))
+        .filter(Boolean);
+
+      // Logos (brand) + labels (object type)
+      const logoNames = (Array.isArray(ann?.logoAnnotations) ? ann.logoAnnotations : [])
+        .map((x) => safeStr(x?.description || "", 120))
+        .filter(Boolean);
+      const labelNames = (Array.isArray(ann?.labelAnnotations) ? ann.labelAnnotations : [])
+        .map((x) => safeStr(x?.description || "", 120))
+        .filter(Boolean);
+
+      // Web entities can carry model/brand terms even if OCR fails
+      const webNames = (Array.isArray(ann?.webDetection?.webEntities)
+        ? ann.webDetection.webEntities
+        : [])
+        .map((e) => ({ d: safeStr(e?.description || "", 120), s: Number(e?.score || 0) }))
+        .filter((x) => x.d)
+        .sort((a, b) => (b.s || 0) - (a.s || 0))
+        .filter((x) => (x.s || 0) >= 0.35)
+        .slice(0, 4)
+        .map((x) => x.d);
+
+      const hasHelmetHint = (s) => /helmet|kask/i.test(String(s || ""));
+
+      // Pick a primary query line
+      let primary = guess || ocrFirstLine;
+      if (!primary) {
+        const logo = logoNames?.[0] || "";
+        const labelHelmet = labelNames.find(hasHelmetHint) || labelNames?.[0] || "";
+        primary = [logo, labelHelmet].filter(Boolean).join(" ").trim();
+      }
+      if (!primary) {
+        primary = webNames?.[0] || guessMore?.[0] || labelNames?.[0] || "";
+      }
+      // If primary is only a brand and we have a "helmet" signal, enrich it
+      if (primary && !hasHelmetHint(primary)) {
+        const helmet = labelNames.find(hasHelmetHint);
+        if (helmet && logoNames?.[0] && primary.toLowerCase() === logoNames[0].toLowerCase()) {
+          primary = `${primary} ${helmet}`;
+        }
+      }
+
+      // Dedupe lines (case-insensitive)
+      const uniq = (arr) => {
+        const seen = new Set();
+        const out = [];
+        for (const it of arr || []) {
+          const k = String(it || "").trim();
+          if (!k) continue;
+          const lk = k.toLowerCase();
+          if (seen.has(lk)) continue;
+          seen.add(lk);
+          out.push(k);
+        }
+        return out;
+      };
+
+      const lines = uniq([
+        primary,
+        ocrFirstLine,
+        ...logoNames,
+        ...webNames,
+        ...guessMore,
+        ...labelNames,
+      ]);
+
+      const text = cleanOcrText(lines.join("\n"));
 
       const confidence = 0.8; // Cloud Vision icin tek skor yok; "useful" sinyali.
       return {
