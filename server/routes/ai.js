@@ -991,9 +991,8 @@ function buildEvidenceAnswer(e, lang) {
         ? `${scope ? scope + " — " : ""}İlkler (kategori seç):`
         : `${scope ? scope + " — " : ""}Firsts (pick a category):`;
       return {
-        answer: `${head}
-${lines.join("
-")}`.trim(),
+        answer: `${head}\n${lines.join("\n")}`.trim(),
+
         suggestions: cats.map((c) => safeString(c.suggestion)).filter(Boolean).slice(0, 4),
         sources: srcs,
         trustScore: trust ?? 65,
@@ -1002,8 +1001,8 @@ ${lines.join("
 
     if (mode === "single") {
       const ans = safeString(e.answer) || safeString(e.extract) || "";
-      const head = title ? `${title}:
-` : "";
+     const head = title ? `${title}:\n` : "";
+
       return {
         answer: `${head}${ans}${lowNote}`.trim(),
         suggestions: sugg.slice(0, 4),
@@ -1015,8 +1014,8 @@ ${lines.join("
     // mode === "list"
     const items = Array.isArray(e.items) ? e.items.slice(0, 10) : [];
     const top = `${scope ? scope + " — " : ""}${title ? title : (L === "tr" ? "İlkler" : "Firsts")}:`;
-    const body = items.map((x) => `• ${safeString(x)}`).filter(Boolean).join("
-");
+   const body = items.map((x) => `• ${safeString(x)}`).filter(Boolean).join("\n");
+
     return {
       answer: `${top}
 ${body}${lowNote}`.trim(),
