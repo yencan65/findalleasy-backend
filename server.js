@@ -419,15 +419,14 @@ async function registerRouterRoutes(appInstance) {
     let lastErr = null;
 
     for (const spec of specs) {
+      let u = null;
+      let absPath = null;
       try {
         if (!spec) continue;
 
         // Resolve relative imports against THIS file (server.js), not process.cwd().
         // This avoids Render/monorepo cwd surprises.
         const raw = String(spec);
-
-        let u;
-        let absPath;
 
         if (raw.startsWith("file://")) {
           u = new URL(raw);
@@ -449,7 +448,7 @@ async function registerRouterRoutes(appInstance) {
         return router;
       } catch (e) {
         lastErr = e;
-        console.error(`❌ Route import FAIL: ${label || spec} ->`, e?.stack || e?.message || e);
+        console.error("Route import FAIL:", (label || spec), { absPath, href: (u && u.href) ? u.href : null }, e?.stack || e?.message || e);
         if (strict) throw e;
       }
     }
