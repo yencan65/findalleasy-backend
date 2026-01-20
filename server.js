@@ -449,7 +449,7 @@ async function registerRouterRoutes(appInstance) {
         return router;
       } catch (e) {
         lastErr = e;
-        console.error(`❌ Route import FAIL: ${label || spec} ->`, e?.message || e);
+        console.error(`❌ Route import FAIL: ${label || spec} ->`, e?.stack || e?.message || e);
         if (strict) throw e;
       }
     }
