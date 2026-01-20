@@ -192,7 +192,10 @@ export default class FreeVisionService {
       });
       if (to) clearTimeout(to);
       const j = await r.json().catch(() => null);
-      if (!r.ok) throw new Error(`CLOUD_VISION_HTTP_${r.status}`);
+      if (!r.ok) {
+        const msg = safeStr(j?.error?.message || "", 240);
+        throw new Error(`CLOUD_VISION_HTTP_${r.status}${msg ? `: ${msg}` : ""}`);
+      }
 
       const ann = j?.responses?.[0] || {};
 
@@ -329,50 +332,68 @@ export default class FreeVisionService {
     const useGoogleVision = options.useGoogleVision !== false && !!visionKey;
     const started = Date.now();
 
-    // Run OCR and Cloud Vision in parallel (bounded by per-service timeouts).
-    const tesseractP = Promise.race([
+    const attempts = [];
+    const results = [];
+
+    // 1) Prefer Google Vision when available (faster + stronger).
+    // If it fails with permission errors (401/403), return FAST and show the reason.
+    let g = null;
+    if (useGoogleVision) {
+      g = await this.googleVision(buf, visionKey);
+      attempts.push({
+        service: "google_vision",
+        success: !!g?.success,
+        error: g?.success ? undefined : (g?.error || "FAILED"),
+      });
+
+      if (g?.success) {
+        results.push(g);
+        const merged = this.mergeResults(results);
+        const out = {
+          ...merged,
+          attempts,
+          meta: { latencyMs: Date.now() - started },
+        };
+        if (key) this._cacheSet(key, out);
+        return out;
+      }
+
+      const gerr = String(g?.error || "");
+      if (gerr.startsWith("CLOUD_VISION_HTTP_401") || gerr.startsWith("CLOUD_VISION_HTTP_403")) {
+        const out = {
+          text: "",
+          keywords: [],
+          confidence: 0,
+          services: [],
+          raw: {},
+          attempts,
+          meta: { latencyMs: Date.now() - started },
+        };
+        if (key) this._cacheSet(key, out);
+        return out;
+      }
+    }
+
+    // 2) Fallback: Tesseract (free, but can be heavy/slow).
+    const tesseract = await Promise.race([
       this.tesseractOcr(buf),
       new Promise((resolve) =>
-        setTimeout(
-          () => resolve({ success: false, service: "tesseract", error: "TIMEOUT" }),
-          this.timeoutMs
-        )
+        setTimeout(() => resolve({ success: false, service: "tesseract", error: "TIMEOUT" }), this.timeoutMs)
       ),
     ]);
 
-    const googleP = useGoogleVision
-      ? this.googleVision(buf, visionKey)
-      : Promise.resolve(null);
-
-    const [tesseract, g] = await Promise.all([tesseractP, googleP]);
-
-    const results = [];
+    attempts.push({
+      service: "tesseract",
+      success: !!tesseract?.success,
+      error: tesseract?.success ? undefined : (tesseract?.error || "FAILED"),
+    });
     if (tesseract?.success) results.push(tesseract);
-    if (g?.success) results.push(g);
-
-    const attempts = [];
-    if (tesseract) {
-      attempts.push({
-        service: tesseract.service || 'tesseract',
-        success: !!tesseract.success,
-        error: tesseract.success ? undefined : (tesseract.error || 'FAILED'),
-      });
-    }
-    if (useGoogleVision) {
-      attempts.push({
-        service: 'google_vision',
-        success: !!(g && g.success),
-        error: g && g.success ? undefined : (g?.error || 'FAILED'),
-      });
-    }
 
     const merged = this.mergeResults(results);
     const out = {
       ...merged,
       attempts,
-      meta: {
-        latencyMs: Date.now() - started,
-      },
+      meta: { latencyMs: Date.now() - started },
     };
 
     if (key) this._cacheSet(key, out);
