@@ -16,6 +16,9 @@ import FreeVisionService from "../services/freeVisionService.js";
 
 const router = express.Router();
 
+const __VISION_BUILD = process.env.VISION_BUILD || "2026-01-20-hardfix";
+console.log("✅ [vision] router loaded", __VISION_BUILD);
+
 // Free vision (no paid credits): Tesseract OCR + optional Cloud Vision if key exists.
 const freeVisionService = new FreeVisionService();
 
