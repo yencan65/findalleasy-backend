@@ -624,7 +624,7 @@ async function handleVisionFree(req, res) {
     tpush("free_image", { mimeType, bytes: buf.length });
 
     // Process
-    const freeOut = await freeVisionService.processImage(buf, { useGoogleVision });
+    const freeOut = await freeVisionService.processImage(buf, { useGoogleVision, visionKey });
     const rawText = String(freeOut?.text || "").trim();
     const keywords = Array.isArray(freeOut?.keywords) ? freeOut.keywords : [];
 
