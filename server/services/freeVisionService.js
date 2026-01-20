@@ -321,27 +321,55 @@ export default class FreeVisionService {
     const cached = key ? this._cacheGet(key) : null;
     if (cached) return { ...cached, cache: "hit" };
 
-    const useGoogleVision = options.useGoogleVision !== false && !!process.env.GOOGLE_VISION_API_KEY;
+    // Accept both env names (historical compatibility) and allow explicit override.
+    const visionKey = String(
+      options.visionKey || process.env.GOOGLE_VISION_API_KEY || process.env.GOOGLE_API_KEY || ""
+    ).trim();
+
+    const useGoogleVision = options.useGoogleVision !== false && !!visionKey;
     const started = Date.now();
 
-    // Race: don't let Tesseract hang forever.
-    const tesseractP = this.tesseractOcr(buf);
-    const tesseract = await Promise.race([
-      tesseractP,
-      new Promise((resolve) => setTimeout(() => resolve({ success: false, service: "tesseract", error: "TIMEOUT" }), this.timeoutMs)),
+    // Run OCR and Cloud Vision in parallel (bounded by per-service timeouts).
+    const tesseractP = Promise.race([
+      this.tesseractOcr(buf),
+      new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ success: false, service: "tesseract", error: "TIMEOUT" }),
+          this.timeoutMs
+        )
+      ),
     ]);
+
+    const googleP = useGoogleVision
+      ? this.googleVision(buf, visionKey)
+      : Promise.resolve(null);
+
+    const [tesseract, g] = await Promise.all([tesseractP, googleP]);
 
     const results = [];
     if (tesseract?.success) results.push(tesseract);
+    if (g?.success) results.push(g);
 
+    const attempts = [];
+    if (tesseract) {
+      attempts.push({
+        service: tesseract.service || 'tesseract',
+        success: !!tesseract.success,
+        error: tesseract.success ? undefined : (tesseract.error || 'FAILED'),
+      });
+    }
     if (useGoogleVision) {
-      const g = await this.googleVision(buf, process.env.GOOGLE_VISION_API_KEY);
-      if (g?.success) results.push(g);
+      attempts.push({
+        service: 'google_vision',
+        success: !!(g && g.success),
+        error: g && g.success ? undefined : (g?.error || 'FAILED'),
+      });
     }
 
     const merged = this.mergeResults(results);
     const out = {
       ...merged,
+      attempts,
       meta: {
         latencyMs: Date.now() - started,
       },
@@ -350,4 +378,3 @@ export default class FreeVisionService {
     if (key) this._cacheSet(key, out);
     return out;
   }
-}
