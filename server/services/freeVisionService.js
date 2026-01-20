@@ -378,3 +378,5 @@ export default class FreeVisionService {
     if (key) this._cacheSet(key, out);
     return out;
   }
+
+}
