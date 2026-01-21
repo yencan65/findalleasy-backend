@@ -1,6 +1,6 @@
 // server/routes/product-info.js
 // ======================================================================
-//  PRODUCT INFO ENGINE — S22.11 LOCKDOWN (OFFER TRUST SPLIT + UNKNOWN OUTSIDE VITRINE) (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
+//  PRODUCT INFO ENGINE — S22.12 LOCKDOWN (OFFER TRUST SPLIT + UNKNOWN OUTSIDE VITRINE) (MERCHANT-HUNT + CATALOG-VERIFY + GP OFFERS)
 //  ZERO DELETE — Eski davranış korunur, sadece daha sağlam/akıllı hale gelir
 //
 //  Amaç:
@@ -22,7 +22,7 @@ import Product from "../models/Product.js";
 import BarcodeHint from "../models/BarcodeHint.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
 import { searchLocalBarcodeEngine, searchLocalQueryEngine } from "../core/localBarcodeEngine.js";
-import { runVitrineS40 } from "../core/adapterEngine.js";
+import { runVitrineS40, runAdapters } from "../core/adapterEngine.js";
 
 import { getHtml } from "../core/NetClient.js";
 
@@ -1575,6 +1575,76 @@ async function resolveOffersViaLocalQuery(hintQuery, barcode, localeShort = "tr"
 }
 
 
+
+// ============================================================
+// S41 — OFFICIAL FREE SEARCH FALLBACK (BROAD) via adapterEngine
+// ============================================================
+async function resolveOffersViaS41Search(hintQuery, barcode, localeShort, diag) {
+  try {
+    const q0 = cleanTitle(hintQuery || "");
+    const q = safeStr(q0, 140);
+    if (!q || q.length < 4) return null;
+    if (/^\d{8,18}$/.test(q)) return null;
+
+    try {
+      diag?.tries?.push?.({ step: "official_s41_start", q });
+    } catch {}
+
+    const res = await runAdapters(q, "TR", {
+      source: "text",
+      qrPayload: { barcode },
+      categoryHint: "product",
+      engineVariant: "S200",
+      disablePaidAdapters: true,
+      // coverage floor helps free adapters; paid still disabled
+      skipCoverageFloor: false,
+    });
+
+    const items = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
+    const offersAll = offersFromVitrineItems(items, q);
+    const split = splitOffersByTrust(offersAll);
+
+    try {
+      diag?.tries?.push?.({
+        step: "official_s41_done",
+        offersAll: offersAll.length,
+        offersTrusted: split.trusted.length,
+        offersOther: split.other.length,
+      });
+    } catch {}
+
+    if (!offersAll.length) return null;
+
+    const bestPool = split.trusted.length ? split.trusted : offersAll;
+    const bestOffer = pickBestOffer(bestPool);
+    const image = pickBestImageFromOffers(offersAll) || "";
+
+    return {
+      name: q,
+      title: q,
+      qrCode: barcode,
+      provider: "text",
+      source: "official-s41",
+      currency: "TRY",
+      region: "TR",
+      category: "product",
+      image,
+      offersAll,
+      offersTrusted: split.trusted,
+      offersOther: split.other,
+      offers: split.trusted.length ? split.trusted : offersAll,
+      bestOffer,
+      merchantUrl: bestOffer?.url || "",
+      confidence: split.trusted.length ? "medium" : "low",
+    };
+  } catch (e) {
+    try {
+      diag?.tries?.push?.({ step: "official_s41_error", error: safeStr(e?.message || String(e), 160) });
+    } catch {}
+    return null;
+  }
+}
+
 async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
   if (!/^\d{8,18}$/.test(code)) return null;
@@ -2421,7 +2491,7 @@ async function handleProduct(req, res) {
     }
 
     try {
-      res.setHeader("x-product-info-ver", "S22.11");
+      res.setHeader("x-product-info-ver", "S22.12");
       res.setHeader("x-json-parse-error", req.__jsonParseError ? "1" : "0");
     } catch {}
 
@@ -2468,13 +2538,20 @@ async function handleProduct(req, res) {
           // Free-only mode: don't *depend* on a paid provider. If the cache entry is from a paid provider,
           // we either (a) sanitize + serve it (no new paid calls), or (b) skip/purge it in strict mode.
           if (!allowPaid && paidCache) {
-            const strictFree = parseBoolish(
+            const strictFreeRaw = String(
               req?.query?.strictFree ??
                 req?.query?.strict_free ??
                 process.env.STRICT_FREE_ONLY ??
-                "0",
-              false
-            );
+                "0"
+            ).trim();
+
+            const strictFree = parseBoolish(strictFreeRaw, false);
+            // strictFree=1 => no paid network calls, but paid cache MAY be reused (it costs 0 now).
+            // strictFree=2 / hard => do NOT reuse paid cache.
+            const strictSkipPaidCache = (() => {
+              const v = String(strictFreeRaw || "").toLowerCase();
+              return v === "2" || v === "hard" || v === "strict";
+            })();
 
             const purgePaidCache = parseBoolish(
               req?.query?.purgePaid ?? req?.query?.purge_paid ?? "0",
@@ -2488,7 +2565,7 @@ async function handleProduct(req, res) {
               } catch {}
             }
 
-            if (strictFree || purgePaidCache) {
+            if (strictSkipPaidCache || purgePaidCache) {
               diag?.tries?.push?.({ step: "mongo_cache_skip_paid" });
               // continue to free pipeline
             } else {
@@ -2664,6 +2741,28 @@ const out = { ok: true, product: sanitized, source: "mongo-cache" };
         return safeJson(res, out);
       }
 
+      
+      // 2.25) Official S41 (FREE, broad): if S40 and local engines are empty, try a broader free adapter run
+      const s41 = await resolveOffersViaS41Search(hintName || hintForOfficial || "", qr, localeShort, diag);
+      if (s41?.offersTrusted?.length || s41?.offersOther?.length) {
+        const merged = baseProduct
+          ? {
+              ...baseProduct,
+              ...s41,
+              // keep the original identity title as a human-facing label if we have it
+              name: hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || s41.name,
+              title: hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || s41.title,
+              image: s41.image || identity?.image || baseProduct?.image || "",
+            }
+          : s41;
+
+        await upsertProductDoc(merged, diag, "mongo_upsert_official_s41");
+        const out = { ok: true, product: merged, source: "official-affiliate-s41" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
+
       // 2.3) Paid fallbacks (ONLY if allowPaid=1)
       if (allowPaid) {
         // Catalog verification (epey/cimri/akakce)
@@ -2693,7 +2792,16 @@ const out = { ok: true, product: sanitized, source: "mongo-cache" };
       if (allowPaid) markUnresolved(unresolvedKey);
       const suggestedQuery = (() => {
         try {
-          const t = cleanTitle(baseProduct?.title || baseProduct?.name || "");
+          const candidate =
+            hintName ||
+            hintForOfficial ||
+            identity?.title ||
+            identity?.name ||
+            baseProduct?.suggestedQuery ||
+            baseProduct?.title ||
+            baseProduct?.name ||
+            "";
+          const t = cleanTitle(candidate);
           if (!t) return "";
           if (/^\d{8,18}$/.test(t)) return "";
           if (t.length < 4) return "";
