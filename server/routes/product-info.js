@@ -19,6 +19,7 @@ import express from "express";
 import fetch from "node-fetch";
 import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
+import BarcodeHint from "../models/BarcodeHint.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
 import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
 import { runVitrineS40 } from "../core/adapterEngine.js";
@@ -64,6 +65,95 @@ function sanitizePaidCacheProduct(p) {
 }
 
 
+function isWeakCacheDoc(doc, qr) {
+  try {
+    if (!doc || typeof doc !== "object") return false;
+    const code = String(qr || doc.qrCode || "").trim();
+    const title = String(doc.title || doc.name || "").trim();
+    const provider = String(doc.provider || "").toLowerCase();
+    const source = String(doc.source || "").toLowerCase();
+    const hasOffers =
+      (Array.isArray(doc.offersTrusted) && doc.offersTrusted.length) ||
+      (Array.isArray(doc.offers) && doc.offers.length) ||
+      (Array.isArray(doc.offersAll) && doc.offersAll.length) ||
+      !!doc.bestOffer;
+    // "text" placeholder cache entries (or barcode-unresolved) with no offers should never block resolution.
+    if (hasOffers) return false;
+    if (provider === "text" || source === "text") return true;
+    if (/^\d{8,18}$/.test(code) && (title === code || title === "")) return true;
+    if (String(doc.source || "") === "barcode-unresolved") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function buildSearchLinks(q) {
+  const s = encodeURIComponent(String(q || "").trim());
+  if (!s) return [];
+  return [
+    { merchant: "hepsiburada", url: `https://www.hepsiburada.com/ara?q=${s}` },
+    { merchant: "trendyol", url: `https://www.trendyol.com/sr?q=${s}` },
+    { merchant: "n11", url: `https://www.n11.com/arama?q=${s}` },
+    { merchant: "akakce", url: `https://www.akakce.com/arama/?q=${s}` },
+    { merchant: "cimri", url: `https://www.cimri.com/arama?q=${s}` },
+    { merchant: "google", url: `https://www.google.com/search?q=${s}` },
+  ];
+}
+
+async function getBarcodeHint(barcode, localeShort, diag) {
+  try {
+    const code = String(barcode || "").trim();
+    if (!/^\d{8,18}$/.test(code)) return null;
+    const doc = await BarcodeHint.findOne({ barcode: code, locale: localeShort }).lean();
+    if (doc?.query || doc?.title) {
+      diag?.tries?.push?.({ step: "barcode_hint_hit" });
+      return doc;
+    }
+    diag?.tries?.push?.({ step: "barcode_hint_miss" });
+    return null;
+  } catch (e) {
+    diag?.tries?.push?.({ step: "barcode_hint_error", error: String(e?.message || e) });
+    return null;
+  }
+}
+
+async function upsertBarcodeHint(barcode, localeShort, hintQuery, meta = {}, diag) {
+  try {
+    const code = String(barcode || "").trim();
+    const q = String(hintQuery || "").trim();
+    if (!/^\d{8,18}$/.test(code)) return null;
+    if (!q || q.length < 3) return null;
+    // refuse pure numeric (it's just the barcode again)
+    if (/^\d{8,18}$/.test(q)) return null;
+
+    const doc = await BarcodeHint.findOneAndUpdate(
+      { barcode: code, locale: localeShort },
+      {
+        $set: {
+          barcode: code,
+          locale: localeShort,
+          query: q.slice(0, 220),
+          title: String(meta?.title || "").slice(0, 220),
+          brand: String(meta?.brand || "").slice(0, 120),
+          image: String(meta?.image || "").slice(0, 2000),
+          source: String(meta?.source || "user-vision").slice(0, 80),
+          confidence: String(meta?.confidence || "medium").slice(0, 40),
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { new: true, upsert: true }
+    ).lean();
+
+    diag?.tries?.push?.({ step: "barcode_hint_upserted" });
+    return doc;
+  } catch (e) {
+    diag?.tries?.push?.({ step: "barcode_hint_upsert_error", error: String(e?.message || e) });
+    return null;
+  }
+}
+
 // ============================================================================
 // Mongo write helper — upsert (fixes duplicate qrCode create failures)
 // Also stores full offers universe in Mongo (offers / offersAll) so cache can be re-split safely.
@@ -92,22 +182,6 @@ async function upsertProductDoc(product, diag, step = "mongo_upsert") {
       toSave.offersAll = all;       // optional (if schema allows)
     }
 
-
-// Don't pollute cache with unresolved placeholders that will block future enrichment.
-// Example: title/name equals barcode and no offer signals.
-try {
-  const t = String(toSave.title || toSave.name || "").trim();
-  const src = String(toSave.source || "").toLowerCase();
-  const prov = String(toSave.provider || "").toLowerCase();
-  const hasOffers = Array.isArray(toSave.offers) && toSave.offers.length;
-  const hasBest = !!toSave.bestOffer;
-  const looksUnresolved = t === qrCode && !hasOffers && !hasBest;
-
-  if (looksUnresolved && (src === "barcode-unresolved" || src === "text" || src === "ocr" || prov === "text" || prov === "ocr")) {
-    if (diag && Array.isArray(diag.tries)) diag.tries.push({ step: `${step}_skip_unresolved` });
-    return;
-  }
-} catch {}
     await Product.updateOne({ qrCode }, { $set: toSave }, { upsert: true });
 
     if (diag && Array.isArray(diag.tries)) diag.tries.push({ step });
@@ -171,43 +245,6 @@ function parseBoolish(v, def = false) {
     return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'on';
   } catch {
     return def;
-  }
-}
-
-// ======================================================================
-// Cache quality gate (avoid weak/unresolved docs blocking signals)
-// ======================================================================
-function isWeakCacheDoc(doc, qr) {
-  try {
-    const code = sanitizeQR(qr);
-    const source = String(doc?.source || "").toLowerCase();
-    const provider = String(doc?.provider || "").toLowerCase();
-
-    const title = String(doc?.title || doc?.name || "").trim();
-    const merchantUrl = String(doc?.merchantUrl || "").trim();
-
-    const offers = Array.isArray(doc?.offers) ? doc.offers.length : 0;
-    const offersAll = Array.isArray(doc?.offersAll) ? doc.offersAll.length : 0;
-    const offersTrusted = Array.isArray(doc?.offersTrusted) ? doc.offersTrusted.length : 0;
-    const hasAnyOffer = !!(offers || offersAll || offersTrusted || doc?.bestOffer);
-
-    const isJustCode = !!code && title === code;
-    const weakSource = source === "barcode-unresolved" || source === "text" || source === "ocr";
-    const weakProvider = provider === "text" || provider === "ocr";
-
-    // If there is no offer signal and it looks like an unresolved placeholder, treat as weak.
-    if (!hasAnyOffer && !merchantUrl && isJustCode) return true;
-
-    // Text/OCR placeholder docs are weak unless they actually contain offers.
-    if ((weakSource || weakProvider) && !hasAnyOffer) return true;
-
-    // Confidence low + no offers is also weak.
-    const conf = String(doc?.confidence || "").toLowerCase();
-    if (conf === "low" && !hasAnyOffer) return true;
-
-    return false;
-  } catch {
-    return false;
   }
 }
 
@@ -355,6 +392,7 @@ function makeUnresolvedResponseProduct(qr, suggestedQuery = "") {
     merchantUrl: "",
     confidence: "low",
     suggestedQuery: sq || "",
+    searchLinks: buildSearchLinks(sq || qr),
   };
 }
 
@@ -1745,6 +1783,46 @@ async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort 
   return product;
 }
 
+async function resolveBarcodeViaOfficialVitrineVariants(titleHint, barcode, localeShort = "tr", diag, verifiedHint = false) {
+  const code = String(barcode || "").trim();
+  const hint = cleanTitle(titleHint || "");
+  if (!/^\d{8,18}$/.test(code)) return null;
+  if (!hint) return null;
+
+  // Candidate queries: try a few cheap variants before giving up.
+  const cands = [];
+  const push = (s) => {
+    const v = String(s || "").trim();
+    if (!v) return;
+    if (cands.includes(v)) return;
+    cands.push(v);
+  };
+
+  const isNumeric = /^\d{8,18}$/.test(hint);
+  if (isNumeric) {
+    push(code);
+    push(`${code} barkod`);
+    push(`${code} ean`);
+    push(`${code} gtin`);
+  } else {
+    push(hint);
+    push(`${hint} ${code}`);
+    // Sometimes the barcode is stored as GTIN; adding token helps.
+    push(`${hint} gtin`);
+  }
+
+  // Hard cap to avoid “free” still being expensive in time/rate-limits.
+  const maxTry = 3;
+  for (let i = 0; i < Math.min(cands.length, maxTry); i++) {
+    const q = cands[i];
+    diag?.tries?.push?.({ step: "official_s40_variant", q: safeStr(q, 140) });
+    const r = await resolveBarcodeViaOfficialVitrine(q, code, localeShort, diag, verifiedHint);
+    if (r?.offersTrusted?.length || r?.offers?.length || r?.offersAll?.length) return r;
+  }
+  return null;
+}
+
+
 // ======================================================================
 // Catalog snippet verify fallback (STRICT MODE)
 //  - Snippet tek başına “verified” yapmaz. Sadece URL bulup probe ile kanıt arar.
@@ -2146,6 +2224,11 @@ async function handleProduct(req, res) {
     let qr = sanitizeQR(raw);
     const localeShort = pickLocale(req, body);
 
+
+    const hintQuery = String(body?.hintQuery || body?.hint || body?.queryHint || "").trim();
+    const learn = parseBoolish(req.query?.learn ?? body?.learn ?? "0", false);
+    const purgeWeak = parseBoolish(req.query?.purgeWeak ?? body?.purgeWeak ?? "0", false);
+
     const diag = diagOn
       ? {
           force,
@@ -2169,6 +2252,15 @@ async function handleProduct(req, res) {
     );
 
     if (diag) diag.allowPaid = allowPaid;
+
+
+    // Learn mode: allow client to store a barcode -> query mapping (free, improves future strictFree lookups)
+    if (learn && /^\d{8,18}$/.test(qr) && hintQuery) {
+      await upsertBarcodeHint(qr, localeShort, hintQuery, { source: "client-vision" }, diag);
+      const out = { ok: true, saved: true, barcode: qr, query: hintQuery.slice(0, 220) };
+      if (diag) out._diag = diag;
+      return safeJson(res, out);
+    }
 
     try {
       res.setHeader("x-product-info-ver", "S22.11");
@@ -2198,6 +2290,21 @@ async function handleProduct(req, res) {
         diag?.tries?.push?.({ step: "mongo_cache_lookup" });
         const cached = await Product.findOne({ qrCode: qr }).lean();
         if (cached) {
+
+          // Weak/placeholder cache entries should not block strict-free resolution.
+          const weakCache = isWeakCacheDoc(cached, qr);
+          if (weakCache) {
+            diag?.tries?.push?.({ step: "mongo_cache_hit_weak", provider: String(cached.provider || ""), source: String(cached.source || "") });
+            if (purgeWeak) {
+              try {
+                await Product.deleteOne({ _id: cached._id });
+                diag?.tries?.push?.({ step: "mongo_cache_purged_weak" });
+              } catch (e) {
+                diag?.tries?.push?.({ step: "mongo_cache_purge_weak_error", error: String(e?.message || e) });
+              }
+            }
+            diag?.tries?.push?.({ step: "mongo_cache_skip_weak" });
+          } else {
           const paidCache = isPaidProviderDoc(cached);
 
           // Free-only mode: don't *depend* on a paid provider. If the cache entry is from a paid provider,
@@ -2237,39 +2344,14 @@ async function handleProduct(req, res) {
               if (diag) out._diag = diag;
               return safeJson(res, out);
             }
-
-} else {
-  // Non-paid cache hit. If it's a weak/unresolved placeholder, skip it and continue enrichment.
-  const purgeWeakCache = parseBoolish(
-    req?.query?.purgeWeak ?? req?.query?.purge_weak ?? req?.query?.purgeweak ?? "0",
-    false
-  );
-  const weak = isWeakCacheDoc(cached, qr);
-
-  if (weak) {
-    diag?.tries?.push?.({
-      step: "mongo_cache_hit_weak",
-      provider: String(cached?.provider || ""),
-      source: String(cached?.source || ""),
-    });
-
-    if (purgeWeakCache) {
-      try {
-        await Product.deleteOne({ _id: cached._id });
-        diag?.tries?.push?.({ step: "mongo_cache_purged_weak" });
-      } catch {}
-    }
-
-    diag?.tries?.push?.({ step: "mongo_cache_skip_weak" });
-    // continue to free pipeline (OFF/Wikidata/Official adapters, etc.)
-  } else {
-    diag?.tries?.push?.({ step: "mongo_cache_hit" });
-    const normalized = normalizeProductForVitrine(cached);
-    const out = { ok: true, product: normalized, source: "mongo-cache" };
-    if (diag) out._diag = diag;
-    return safeJson(res, out);
-  }
-}
+          } else {
+            diag?.tries?.push?.({ step: "mongo_cache_hit" });
+            const normalized = normalizeProductForVitrine(cached);
+            const out = { ok: true, product: normalized, source: "mongo-cache" };
+            if (diag) out._diag = diag;
+            return safeJson(res, out);
+          }
+          }
         }
       } catch (e) {
         diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
@@ -2325,6 +2407,28 @@ async function handleProduct(req, res) {
         if (hinted) identity = { name: hinted, title: hinted, image: baseProduct?.image || "", verifiedBarcode: !!baseProduct?.verifiedBarcode };
       } catch {}
 
+
+      // ✅ Learned barcode hints (from user photo/OCR) — free but very powerful
+      const hintDoc = await getBarcodeHint(qr, localeShort, diag);
+      if (hintDoc?.query || hintDoc?.title) {
+        const qh = cleanTitle(hintDoc.query || hintDoc.title || "");
+        if (qh) identity = identity || { };
+        if (qh) {
+          identity.name = identity.name || qh;
+          identity.title = identity.title || qh;
+          identity.image = identity.image || String(hintDoc.image || "");
+          identity.identitySource = identity.identitySource || "barcode-hint";
+        }
+      }
+
+      // ✅ Inline hint (client can send hintQuery without saving)
+      const inlineHint = cleanTitle(hintQuery || "");
+      if (inlineHint && !/^\d{8,18}$/.test(inlineHint)) {
+        identity = identity || {};
+        identity.name = identity.name || inlineHint;
+        identity.title = identity.title || inlineHint;
+      }
+
       if (!identity?.name) {
         const idLocal = await resolveBarcodeIdentityViaLocalMarketplaces(qr, localeShort, diag);
         if (idLocal?.name) identity = idLocal;
@@ -2340,7 +2444,7 @@ async function handleProduct(req, res) {
       const verifiedHint = !!(identity?.verifiedBarcode);
       // If we have no identity title, try a pure barcode query; many marketplaces accept it.
       const hintForOfficial = hintName || qr;
-      const official = await resolveBarcodeViaOfficialVitrine(hintForOfficial, qr, localeShort, diag, verifiedHint);
+      const official = await resolveBarcodeViaOfficialVitrineVariants(hintForOfficial, qr, localeShort, diag, verifiedHint);
       if (official?.offersTrusted?.length) {
         const merged = {
           ...official,
