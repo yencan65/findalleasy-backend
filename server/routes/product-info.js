@@ -1706,14 +1706,47 @@ async function resolveBarcodeIdentityViaLocalMarketplaces(barcode, localeShort =
   }
 }
 
+function buildOfficialQueryVariants(hint, barcode) {
+  const code = String(barcode || "").trim();
+  const base = cleanTitle(hint || "");
+  const variants = [];
+  const add = (s) => {
+    const v = cleanTitle(s || "");
+    if (!v) return;
+    if (!variants.includes(v)) variants.push(v);
+  };
+
+  if (/^\d{8,18}$/.test(base)) {
+    add(code);
+    add(`${code} barkod`);
+    add(`${code} gtin`);
+    add(`${code} ean`);
+    return variants;
+  }
+
+  add(base);
+  add(`${base} ${code}`);
+
+  const tokens = base.split(/\s+/).filter(Boolean);
+  const brand = tokens[0] || "";
+
+  const modelTokens = tokens.filter((t) => /[a-zA-Z]/.test(t) && /\d/.test(t) && t.length >= 3);
+  if (brand && modelTokens.length) add(`${brand} ${modelTokens.slice(0, 3).join(" ")}`);
+
+  if (tokens.length > 6) add(tokens.slice(0, 6).join(" "));
+  if (tokens.length > 8) add(tokens.slice(-6).join(" "));
+
+  return variants;
+}
+
+
 async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort = "tr", diag, verifiedHint = false) {
   const code = String(barcode || "").trim();
   const hint = cleanTitle(titleHint || "");
 
   if (!/^\d{8,18}$/.test(code)) return null;
   if (!hint) return null;
-  // In strict-free mode, we sometimes only have the barcode itself. Many marketplaces accept barcode search.
-  // Allow a pure-numeric hint, otherwise require letters to avoid junk queries.
+
   const numericOnly = /^\d{8,18}$/.test(hint);
   if (!numericOnly && !hasLetters(hint)) return null;
 
@@ -1721,47 +1754,62 @@ async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort 
   const cached = cacheGetBarcode(cacheKey);
   if (cached) return cached;
 
-  diag?.tries?.push?.({ step: "official_s40_start", q: safeStr(hint, 140) });
+  const variants = buildOfficialQueryVariants(hint, code);
+  if (!variants.length) return null;
 
-  let data = null;
-  try {
-    data = await runVitrineS40(hint, {
-      region: "TR",
-      categoryHint: "product",
-      source: "barcode",
-      disablePaidAdapters: true,
-      skipCoverageFloor: true,
+  for (let i = 0; i < variants.length; i++) {
+    const q = variants[i];
+    const qNumeric = /^\d{8,18}$/.test(q);
+    const src = qNumeric ? "barcode" : "text";
+
+    diag?.tries?.push?.({ step: "official_s40_variant_start", i, q: safeStr(q, 140), source: src });
+
+    let data = null;
+    try {
+      data = await runVitrineS40(q, {
+        region: "TR",
+        categoryHint: "product",
+        source: src,
+        disablePaidAdapters: true,
+        skipCoverageFloor: true,
+        qrPayload: { barcode: code, hint: q, verifiedHint: !!verifiedHint },
+      });
+    } catch (e) {
+      diag?.tries?.push?.({ step: "official_s40_variant_error", i, error: String(e?.message || e) });
+      data = null;
+    }
+
+    const items = Array.isArray(data?.items)
+      ? data.items
+      : [
+          ...(Array.isArray(data?.best) ? data.best : []),
+          ...(Array.isArray(data?.smart) ? data.smart : []),
+          ...(Array.isArray(data?.others) ? data.others : []),
+        ];
+
+    let offersAll = offersFromVitrineItems(items, q);
+    if (Array.isArray(offersAll) && offersAll.length > 30) offersAll = offersAll.slice(0, 30);
+
+    const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
+
+    diag?.tries?.push?.({
+      step: "official_s40_variant_done",
+      i,
+      offersAll: offersAll.length,
+      offersTrusted: offersTrusted.length,
+      offersOther: offersOther.length,
     });
-  } catch (e) {
-    diag?.tries?.push?.({ step: "official_s40_error", error: String(e?.message || e) });
-    data = null;
-  }
 
-  const items = Array.isArray(data?.items)
-    ? data.items
-    : [
-        ...(Array.isArray(data?.best) ? data.best : []),
-        ...(Array.isArray(data?.smart) ? data.smart : []),
-        ...(Array.isArray(data?.others) ? data.others : []),
-      ];
+    if (!offersAll.length) continue;
 
-  const offersAll = offersFromVitrineItems(items, hint);
-  const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
+    const usableOffers = offersTrusted.length ? offersTrusted : offersAll;
+    const bestOfferPick = pickBestOffer(usableOffers);
 
-  diag?.tries?.push?.({ step: "official_s40_done", offersAll: offersAll.length, offersTrusted: offersTrusted.length, offersOther: offersOther.length });
-
-  if (!offersTrusted.length) return null;
-
-  const bestOfferPick = pickBestOffer(offersTrusted);
-
-  const product = {
-      name: hint,
-      title: hint,
+    const product = {
+      name: q,
+      title: q,
       description: "",
-      image: safeStr(items?.[0]?.image || items?.[0]?.img || items?.[0]?.thumbnail || "", 2000) || "",
-      brand: "",
-      category: "product",
-      region: "TR",
+      image: safeStr(items?.[0]?.image || items?.[0]?.thumbnail || "", 2000),
       qrCode: code,
       provider: "barcode",
       source: "official-affiliate-s40",
@@ -1770,17 +1818,22 @@ async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort 
       verifiedUrl: "",
       offersTrusted,
       offersOther,
-      offers: offersTrusted,
+      offers: usableOffers,
       bestOffer: bestOfferPick
         ? { merchant: bestOfferPick.merchant, url: bestOfferPick.url, price: bestOfferPick.price ?? null, delivery: bestOfferPick.delivery || "" }
         : null,
       merchantUrl: bestOfferPick?.url || "",
-      confidence: verifiedHint ? "high" : "medium",
-      raw: { adapter: data, hint },
-  };
+      confidence: verifiedHint ? "high" : (offersTrusted.length ? "medium" : "low"),
+      raw: { adapter: data, hint: q },
+    };
 
-  cacheSetBarcode(cacheKey, product);
-  return product;
+    cacheSetBarcode(cacheKey, product);
+    diag?.tries?.push?.({ step: "official_s40_variant_hit", i, q: safeStr(q, 140) });
+    return product;
+  }
+
+  diag?.tries?.push?.({ step: "official_s40_all_variants_empty" });
+  return null;
 }
 
 async function resolveBarcodeViaOfficialVitrineVariants(titleHint, barcode, localeShort = "tr", diag, verifiedHint = false) {
@@ -2340,7 +2393,25 @@ async function handleProduct(req, res) {
               const normalized = normalizeProductForVitrine(cached);
               const sanitized = sanitizePaidCacheProduct(normalized);
 
-              const out = { ok: true, product: sanitized, source: "mongo-cache" };
+              
+              // ✅ Auto-learn: if this is a paid-origin cache hit but we're serving it in free-only mode,
+              // store a hint so future strictFree lookups can resolve via official free adapters.
+              try {
+                const autoLearn = parseBoolish(process.env.AUTO_LEARN_HINTS ?? "1", true);
+                if (autoLearn && sanitized?.qrCode && (sanitized?.title || sanitized?.name)) {
+                  await upsertBarcodeHint(
+                    sanitized.qrCode,
+                    localeShort,
+                    String(sanitized.title || sanitized.name || "").slice(0, 220),
+                    { title: sanitized.title || "", brand: sanitized.brand || "", image: sanitized.image || "", confidence: sanitized.confidence || "medium", source: "auto-paid-cache" },
+                    diag
+                  );
+                }
+              } catch (e) {
+                diag?.tries?.push?.({ step: "barcode_hint_auto_learn_error", error: String(e?.message || e) });
+              }
+
+const out = { ok: true, product: sanitized, source: "mongo-cache" };
               if (diag) out._diag = diag;
               return safeJson(res, out);
             }
