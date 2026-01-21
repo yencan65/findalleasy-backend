@@ -26,6 +26,44 @@ import { runVitrineS40 } from "../core/adapterEngine.js";
 import { getHtml } from "../core/NetClient.js";
 
 const router = express.Router();
+
+// ============================================================================
+// Free-only cache guard
+// If allowPaid=0 and the cached doc clearly came from a paid provider (e.g., serpapi),
+// we skip that cache hit (and optionally purge it) so "free-only" mode stays honest.
+// ============================================================================
+function isPaidProviderDoc(doc) {
+  try {
+    if (!doc || typeof doc !== "object") return false;
+    const src = String(doc.source || "").toLowerCase();
+    const raw = doc.raw || {};
+    const pf = String(raw.providerFamily || raw.providerKey || raw.provider || "").toLowerCase();
+    const rid = String(raw.id || "").toLowerCase();
+    // Extend here if you add other paid providers later
+    if (src.includes("serpapi")) return true;
+    if (pf.includes("serpapi")) return true;
+    if (rid.includes("serpapi")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizePaidCacheProduct(p) {
+  try {
+    if (!p || typeof p !== "object") return p;
+    const out = { ...p };
+    // Remove paid-provider fingerprints from the payload in free-only mode.
+    if (out.raw) delete out.raw;
+    const src = String(out.source || "").toLowerCase();
+    if (src.includes("serpapi")) out.source = "cache";
+    return out;
+  } catch {
+    return p;
+  }
+}
+
+
 // ============================================================================
 // Mongo write helper — upsert (fixes duplicate qrCode create failures)
 // Also stores full offers universe in Mongo (offers / offersAll) so cache can be re-split safely.
@@ -2020,12 +2058,53 @@ async function handleProduct(req, res) {
         diag?.tries?.push?.({ step: "mongo_cache_lookup" });
         const cached = await Product.findOne({ qrCode: qr }).lean();
         if (cached) {
-    diag?.tries?.push?.({ step: "mongo_cache_hit" });
-    const normalized = normalizeProductForVitrine(cached);
-    const out = { ok: true, product: normalized, source: "mongo-cache" };
-    if (diag) out._diag = diag;
-    return safeJson(res, out);
-  }
+          const paidCache = isPaidProviderDoc(cached);
+
+          // Free-only mode: don't *depend* on a paid provider. If the cache entry is from a paid provider,
+          // we either (a) sanitize + serve it (no new paid calls), or (b) skip/purge it in strict mode.
+          if (!allowPaid && paidCache) {
+            const strictFree = parseBoolish(
+              req?.query?.strictFree ??
+                req?.query?.strict_free ??
+                process.env.STRICT_FREE_ONLY ??
+                "0",
+              false
+            );
+
+            const purgePaidCache = parseBoolish(
+              req?.query?.purgePaid ?? req?.query?.purge_paid ?? "0",
+              false
+            );
+
+            if (purgePaidCache) {
+              try {
+                await Product.deleteOne({ qrCode: qr });
+                diag?.tries?.push?.({ step: "mongo_cache_purged_paid" });
+              } catch {}
+            }
+
+            if (strictFree || purgePaidCache) {
+              diag?.tries?.push?.({ step: "mongo_cache_skip_paid" });
+              // continue to free pipeline
+            } else {
+              diag?.tries?.push?.({ step: "mongo_cache_hit_paid_sanitized" });
+              if (diag) diag.paidCache = true;
+
+              const normalized = normalizeProductForVitrine(cached);
+              const sanitized = sanitizePaidCacheProduct(normalized);
+
+              const out = { ok: true, product: sanitized, source: "mongo-cache" };
+              if (diag) out._diag = diag;
+              return safeJson(res, out);
+            }
+          } else {
+            diag?.tries?.push?.({ step: "mongo_cache_hit" });
+            const normalized = normalizeProductForVitrine(cached);
+            const out = { ok: true, product: normalized, source: "mongo-cache" };
+            if (diag) out._diag = diag;
+            return safeJson(res, out);
+          }
+        }
       } catch (e) {
         diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
       }
