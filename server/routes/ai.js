@@ -3658,7 +3658,7 @@ if (shouldEvidence) {
         didSearch,
         trustScore: typeof llm.trustScore === 'number' ? llm.trustScore : null,
       },
-      ...(diagOn ? { diag: { ip, intent, mode: modeNorm, noSearchMode, shouldEvidence, didSearch, evidenceType: evidence && evidence.type ? evidence.type : null, evidenceConfidence: evidence && typeof evidence.confidence === 'number' ? evidence.confidence : null, resultsCount: Array.isArray(results) ? results.length : 0, openaiKey: !!process.env.OPENAI_API_KEY } } : {}),
+      ...(diagOn ? { diag: { ip, intent, mode: modeNorm, noSearchMode, shouldEvidence, didSearch, evidenceType: evidence && evidence.type ? evidence.type : null, evidenceConfidence: evidence && typeof evidence.confidence === 'number' ? evidence.confidence : null, resultsCount: Array.isArray(rawResults) ? rawResults.length : (rawResults && Array.isArray(rawResults.items) ? rawResults.items.length : 0), openaiKey: !!process.env.OPENAI_API_KEY } } : {}),
     });
   } catch (err) {
     console.error("AI ERROR:", err);
