@@ -3099,9 +3099,10 @@ async function getTravelEvidence(text, lang, cityHint) {
   };
 }
 
-async function gatherEvidence({ text, lang, city }) {
+async function gatherEvidence({ text, lang, city, forcedType = null }) {
   const L = normalizeLang(lang);
-  const type = detectEvidenceType(text, L);
+  // forcedType: info-modunda "hiçbir şeye uymadı" gibi durumlarda default wiki vb.
+  const type = forcedType || detectEvidenceType(text, L);
 
   try {
     if (type === "fx") return await getFxEvidence(text, L);
@@ -3169,6 +3170,9 @@ async function callLLM({
   city,
   memorySnapshot,
   persona,
+  didSearch = false,
+  evidenceReply = null,
+  cardsObj = null,
 }) {
   const apiKey = safeString(process.env.OPENAI_API_KEY);
   const baseUrl =
@@ -3185,6 +3189,38 @@ async function callLLM({
 
   // Mesajı sert limit ile kısalt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
+
+  // Mixed modda arama sonuçları + bilgi kanıtları aynı cevapta harmanlansın.
+  const evidenceText = evidenceReply?.answer
+    ? clampText(String(evidenceReply.answer), 1200)
+    : "";
+  const evidenceSources = Array.isArray(evidenceReply?.sources)
+    ? evidenceReply.sources
+        .slice(0, 5)
+        .map((s) => safeString(s?.title || s?.publisher || s?.url))
+        .filter(Boolean)
+    : [];
+  const evidenceBlock = evidenceText
+    ? `\n\nEVIDENCE (trusted facts):\n${evidenceText}` +
+      (evidenceSources.length ? `\n\nEVIDENCE_SOURCES:\n- ${evidenceSources.join("\n- ")}` : "")
+    : "";
+
+  const topCards = Array.isArray(cardsObj?.items)
+    ? cardsObj.items
+        .slice(0, 3)
+        .map((c) => {
+          const t = safeString(c?.title || c?.name);
+          const p = safeString(c?.priceText || c?.price);
+          const src = safeString(c?.source);
+          return [t, p, src].filter(Boolean).join(" | ");
+        })
+        .filter(Boolean)
+    : [];
+  const cardsBlock = didSearch && topCards.length
+    ? `\n\nSEARCH_RESULTS (top picks):\n- ${topCards.join("\n- ")}`
+    : "";
+
+  const userContent = `${safeMessage}${cardsBlock}${evidenceBlock}`.trim();
 
   if (!apiKey) {
     return {
@@ -3227,6 +3263,8 @@ Rules:
   • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
 - Keep it short, clear, and helpful. No fluff.
 - Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
+- If the user message contains a section starting with "EVIDENCE (trusted facts):", treat it as ground truth and base factual statements on it.
+- If you are not sure about a fact, say you're unsure instead of making it up.
 
 Output format (VERY IMPORTANT):
 Return ONLY valid JSON with this exact shape:
@@ -3247,10 +3285,11 @@ Persona hint: ${persona} → ${personaNote || "balanced"}
     model: safeString(process.env.OPENAI_MODEL) || "gpt-4.1-mini",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: safeMessage },
+      { role: "user", content: userContent },
     ],
     max_tokens: 250,
-    temperature: 0.7,
+    // Daha deterministik (alakasız/hayali cevapları azaltır)
+    temperature: 0.25,
   };
 
   try {
@@ -3472,6 +3511,7 @@ router.post("/", aiFirewall, async (req, res) => {
     const normRegion = safeString(region || "TR").toUpperCase();
     const normCity = safeString(city);
     const ip = getClientIp(req);
+	    const diag = String(req.query?.diag || "") === "1" || String(req.query?.debug || "") === "1";
 
     // Boş mesaj için hızlı cevap (frontend için) — KORUNDU
     if (!text) {
@@ -3525,29 +3565,37 @@ const cardsObj = didSearch
   ? buildVitrineCards(text, rawResults)
   : { best: null, aiSmart: [], others: [] };
 
-let evidence = null;
-let evidenceReply = null;
+	// Evidence: bilgi soruları (info) ve chat modu için her zaman devrede.
+	// Ayrıca mixed modda (arama + bilgi) ise ve metin açıkça bilgi istiyorsa devreye girer.
+	const eType0 = detectEvidenceType(text, lang);
+	const wantsEvidence =
+	  noSearchMode || intent === "info" || (intent === "mixed" && eType0 !== "none");
+	const forcedEvidenceType = (noSearchMode || intent === "info") && eType0 === "none" ? "wiki" : null;
 
-if (noSearchMode) {
-  evidence = await gatherEvidence({ text, lang, city: normCity });
-  evidenceReply = buildEvidenceAnswer(evidence, lang);
-}
+	let evidence = null;
+	let evidenceReply = null;
+	if (wantsEvidence) {
+	  evidence = await gatherEvidence({ text, lang, city: normCity, forcedType: forcedEvidenceType });
+	  evidenceReply = buildEvidenceAnswer(evidence, lang);
+	}
 
+	const effectiveCity = normCity || evidence?.memory?.lastCity || userMem.lastCity;
+	if (userId || ip) {
+	  await updateUserMemory(userId, ip, {
+	    clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
+	    lastQuery: text,
+	    lastRegion: normRegion,
+	    lastCity: effectiveCity,
+	    preferredSource: cardsObj.best?.source || null,
+	    personaHint: persona,
+	  });
+	}
 
-    await updateUserMemory(userId, ip, {
-      clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
-      lastQuery: text,
-      lastRegion: normRegion,
-      lastCity: normCity || userMem.lastCity,
-      preferredSource: cardsObj.best?.source || null,
-      personaHint: persona,
-    });
-
-    const memorySnapshot = await getUserMemory(userId, ip);
+	const memorySnapshot = (userId || ip) ? await getUserMemory(userId, ip) : userMem;
 
     let llm;
 
-    if (noSearchMode && evidenceReply && evidenceReply.answer) {
+    if ((noSearchMode || intent === "info") && evidenceReply && evidenceReply.answer) {
       llm = {
         provider: "evidence",
         answer: evidenceReply.answer,
@@ -3561,9 +3609,12 @@ if (noSearchMode) {
         locale: normLocale,
         intent,
         region: normRegion,
-        city: normCity,
+	        city: effectiveCity,
         persona,
         memorySnapshot,
+        didSearch,
+        evidenceReply: evidenceReply || null,
+        cardsObj: cardsObj || null,
       });
     }
 
@@ -3580,7 +3631,7 @@ if (noSearchMode) {
         intent,
         persona,
         region: normRegion,
-        city: normCity,
+	        city: effectiveCity,
         queryLength: text.length,
         bestSource: cardsObj.best?.source || null,
         latencyMs,
@@ -3601,10 +3652,24 @@ if (noSearchMode) {
       meta: {
         latencyMs,
         region: normRegion,
+        city: effectiveCity || null,
         locale: normLocale,
         mode: modeNorm,
         didSearch,
         trustScore: typeof llm.trustScore === 'number' ? llm.trustScore : null,
+	        ...(diag
+	          ? {
+	              debug: {
+	                openaiConfigured: !!OPENAI_API_KEY,
+	                openaiModel: OPENAI_MODEL,
+	                intent,
+	                noSearchMode,
+	                wantsEvidence,
+	                evidenceType: forcedEvidenceType || detectEvidenceType(text, lang),
+	                effectiveCity: effectiveCity || null,
+	              },
+	            }
+	          : {}),
       },
     });
   } catch (err) {
