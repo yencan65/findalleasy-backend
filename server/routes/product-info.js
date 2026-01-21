@@ -1620,7 +1620,11 @@ async function resolveBarcodeViaOfficialVitrine(titleHint, barcode, localeShort 
   const hint = cleanTitle(titleHint || "");
 
   if (!/^\d{8,18}$/.test(code)) return null;
-  if (!hint || !hasLetters(hint)) return null;
+  if (!hint) return null;
+  // In strict-free mode, we sometimes only have the barcode itself. Many marketplaces accept barcode search.
+  // Allow a pure-numeric hint, otherwise require letters to avoid junk queries.
+  const numericOnly = /^\d{8,18}$/.test(hint);
+  if (!numericOnly && !hasLetters(hint)) return null;
 
   const cacheKey = `${localeShort}:official:${code}`;
   const cached = cacheGetBarcode(cacheKey);
@@ -1988,6 +1992,89 @@ async function fetchOpenFoodFacts(qr, diag) {
   diag?.tries?.push?.({ step: "openfoodfacts_miss" });
   return null;
 }
+
+// ============================================================
+//  Wikidata GTIN helper (FREE) — identity/name/image only
+//  Uses Wikidata SPARQL endpoint (no API key).
+//  Coverage is not universal, but it helps for many products.
+//  IMPORTANT: must NEVER crash the route (no 500).
+// ============================================================
+async function fetchWikidataByGTIN(qr, localeShort, diag) {
+  const code = sanitizeQR(qr);
+  if (!/^[0-9]{8,18}$/.test(code)) return null;
+
+  const lang = String(localeShort || "tr").toLowerCase();
+  const ua = process.env.WIKIDATA_UA || process.env.OFF_USER_AGENT || "FindAllEasy/1.0 (findalleasy@gmail.com)";
+
+  // Wikidata GTIN property is typically P3962 (Global Trade Item Number).
+  // We keep the query tiny and cache-friendly.
+  const sparql = `
+SELECT ?item ?itemLabel ?brandLabel ?image WHERE {
+  ?item wdt:P3962 "${code}" .
+  OPTIONAL { ?item wdt:P1716 ?brand . }
+  OPTIONAL { ?item wdt:P18 ?image . }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "${lang},en". }
+} LIMIT 1
+`.trim();
+
+  const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
+  try {
+    diag?.tries?.push?.({ step: "wikidata_gtin_fetch" });
+    const j = await fetchJsonWithTimeout(url, Number(process.env.WIKIDATA_TIMEOUT_MS || 6500));
+    const b = j?.results?.bindings?.[0];
+    if (!b?.item?.value) {
+      diag?.tries?.push?.({ step: "wikidata_gtin_miss" });
+      return null;
+    }
+
+    const title = safeStr(b?.itemLabel?.value || "", 200).trim();
+    const brand = safeStr(b?.brandLabel?.value || "", 120).trim();
+    const image = safeStr(b?.image?.value || "", 2000).trim();
+    const itemUrl = safeStr(b?.item?.value || "", 400).trim();
+
+    const bestTitle = cleanTitle(`${brand ? brand + " " : ""}${title}`.trim()) || cleanTitle(title) || code;
+
+    diag?.tries?.push?.({ step: "wikidata_gtin_hit", title: safeStr(bestTitle, 160) });
+    return {
+      name: bestTitle,
+      title: bestTitle,
+      qrCode: code,
+      provider: "barcode",
+      source: "wikidata",
+      identitySource: "wikidata",
+      verifiedBarcode: true,
+      verifiedBy: "wikidata",
+      verifiedUrl: itemUrl || "",
+      image: image || "",
+      offersTrusted: [],
+      offersOther: [],
+      offers: [],
+      bestOffer: null,
+      merchantUrl: "",
+      confidence: "medium",
+      suggestedQuery: bestTitle && bestTitle !== code ? bestTitle : "",
+    };
+  } catch (e) {
+    // never throw
+    diag?.tries?.push?.({ step: "wikidata_gtin_error", error: String(e?.message || e) });
+    return null;
+  }
+}
+
+function buildMarketplaceSearchLinks(q, localeShort = "tr") {
+  const query = String(q || "").trim();
+  if (!query) return [];
+  const enc = encodeURIComponent(query);
+  // These are simple outbound search links (no scraping).
+  return [
+    { merchant: "hepsiburada", url: `https://www.hepsiburada.com/ara?q=${enc}` },
+    { merchant: "trendyol", url: `https://www.trendyol.com/sr?q=${enc}` },
+    { merchant: "n11", url: `https://www.n11.com/arama?q=${enc}` },
+    { merchant: "akakce", url: `https://www.akakce.com/arama/?q=${enc}` },
+    { merchant: "cimri", url: `https://www.cimri.com/arama?q=${enc}` },
+    { merchant: "google", url: `https://www.google.com/search?q=${enc}` },
+  ];
+}
 async function handleProduct(req, res) {
   try {
     const body = pickBody(req);
@@ -2140,6 +2227,17 @@ async function handleProduct(req, res) {
         } catch {}
       }
 
+      // 2.12) Wikidata GTIN (FREE) — many non-food items are not in OFF; try Wikidata for identity
+      if (!baseProduct) {
+        const wd = await fetchWikidataByGTIN(qr, localeShort, diag);
+        if (wd) {
+          baseProduct = wd;
+          try {
+            await upsertProductDoc(wd, diag, "mongo_upsert_wikidata");
+          } catch {}
+        }
+      }
+
       // 2.15) Official affiliate/adapters (FREE-only) — önce bunu dene
       //     (Serp/GoogleShopping yok, coverage-floor yok)
       let identity = null;
@@ -2153,12 +2251,23 @@ async function handleProduct(req, res) {
         if (idLocal?.name) identity = idLocal;
       }
 
+      // Extra identity fallback: even if OFF/locals miss, Wikidata can still give a usable title.
+      if (!identity?.name) {
+        const wdId = await fetchWikidataByGTIN(qr, localeShort, diag);
+        if (wdId?.name) identity = wdId;
+      }
+
       const hintName = cleanTitle(identity?.title || identity?.name || "");
       const verifiedHint = !!(identity?.verifiedBarcode);
-      const official = await resolveBarcodeViaOfficialVitrine(hintName, qr, localeShort, diag, verifiedHint);
+      // If we have no identity title, try a pure barcode query; many marketplaces accept it.
+      const hintForOfficial = hintName || qr;
+      const official = await resolveBarcodeViaOfficialVitrine(hintForOfficial, qr, localeShort, diag, verifiedHint);
       if (official?.offersTrusted?.length) {
         const merged = {
           ...official,
+          // if the query was just the barcode, prefer a human title when available
+          name: (hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || official.name),
+          title: (hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || official.title),
           // prefer identity image when official lacks
           image: official.image || identity?.image || baseProduct?.image || "",
           verifiedBarcode: !!verifiedHint,
@@ -2221,6 +2330,14 @@ async function handleProduct(req, res) {
 
       const product = makeUnresolvedResponseProduct(qr, suggestedQuery);
       const needsImage = !String(suggestedQuery || "").trim();
+
+      // Free UX helper: provide outbound search links without scraping.
+      // (Frontend can show these when strictFree/identity miss.)
+      try {
+        const qLink = suggestedQuery || qr;
+        product.searchLinks = buildMarketplaceSearchLinks(qLink, localeShort);
+      } catch {}
+
       const out = {
         ok: true,
         product,
