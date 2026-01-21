@@ -188,93 +188,141 @@ async function updateUserMemory(userId, ip, payload = {}) {
 // ============================================================================
 // INTENT DETECT — S16 (KORUNDU, sadece hijyen)
 // ============================================================================
+
 function detectIntent(text = "") {
-  const low = safeString(text).toLowerCase();
+  const t = safeString(text).toLowerCase().trim();
+  if (!t) return "mixed";
 
-  if (!low) return "mixed";
-
+  // Ürün niyeti: fiyat/indirim/model/teknik özellikler
+  // Not: otel/uçak/bilet gibi hizmet kelimeleri ürün sayılmasın.
   const productWords = [
-    "almak istiyorum",
-    "fiyat",
-    "uçak",
-    "otel",
-    "bilet",
-    "kirala",
-    "kira",
-    "araba",
-    "iphone",
-    "telefon",
-    "laptop",
-    "ayakkabı",
-    "uçuş",
-    "rezervasyon",
-    "satın al",
     "en ucuz",
+    "en uygun",
+    "fiyat",
+    "kaç para",
+    "indirim",
     "kampanya",
-    "uçuş bak",
-    "konaklama",
+    "kupon",
+    "stok",
+    "kargo",
+    "garanti",
+    "model",
+    "gb",
+    "ram",
+    "ssd",
+    "iphone",
+    "samsung",
+    "xiaomi",
+    "dyson",
+    "airpods",
+    "playstation",
+    "ps5",
+    "laptop",
+    "telefon",
+    "tablet",
+    "kulaklık",
+    "televizyon",
+    "tv",
+    "buzdolabı",
+    "çamaşır",
+    "bulaşık",
+    "klima",
+    "kombi",
+    "monitör",
+    "ekran kartı",
+    "gpu",
+    "rtx",
+    "rx",
   ];
 
+  const serviceWords = [
+    "otel",
+    "uçak",
+    "bilet",
+    "araba kiralama",
+    "kiralık araç",
+    "rent a car",
+    "tur",
+    "sigorta",
+    "kredi",
+    "kredi kartı",
+    "internet",
+    "fiber",
+    "gsm",
+    "tarife",
+    "restoran",
+    "mekan",
+    "doktor",
+    "hastane",
+    "randevu",
+    "kurs",
+    "eğitim",
+    "emlak",
+    "kiralık",
+    "satılık",
+  ];
+
+  // Bilgi niyeti: hava/döviz/haber/wiki-coğrafya/rota/yakın yer/tarif
   const infoWords = [
+    "hava durumu",
+    "kaç derece",
+    "sıcaklık",
+    "yağmur",
+    "yağış",
+    "rüzgar",
+    "nem",
+    "uv",
+    "forecast",
+    "weather",
+    "döviz",
+    "kur",
+    "usd",
+    "eur",
+    "euro",
+    "dolar",
+    "sterlin",
+    "exchange rate",
+    "haber",
+    "son dakika",
+    "gündem",
+    "news",
+    "wikipedia",
+    "wiki",
+    "kimdir",
     "nedir",
-    "nasıl yapılır",
-    "how to",
-    "açıkla",
-    "neden",
-    "bilgi ver",
-    "detay",
-    "açıklama",
-    "anlat",
-    "özellikleri",
+    "ne demek",
+    "nerede",
+    "konum",
+    "harita",
+    "nüfus",
+    "rakım",
+    "yüzölçüm",
+    "enlem",
+    "boylam",
+    "gezilecek",
+    "rota",
+    "itinerary",
+    "yakınımda",
+    "near me",
+    "en yakın",
+    "tarif",
+    "recipe",
   ];
 
-  const exitWords = [
-    "sonra bakarım",
-    "vazgeçtim",
-    "kapat",
-    "çıkıyorum",
-    "later",
-    "maybe later",
-    "sonra",
-    "daha sonra",
-  ];
+  const hasProduct = productWords.some((w) => t.includes(w));
+  if (hasProduct) return "product";
 
-  let scoreProduct = 0;
-  let scoreInfo = 0;
-  let scoreExit = 0;
+  const hasService = serviceWords.some((w) => t.includes(w));
+  if (hasService) return "service";
 
-  productWords.forEach((w) => {
-    if (low.includes(w)) scoreProduct += 2;
-  });
+  const hasInfo = infoWords.some((w) => t.includes(w));
+  if (hasInfo) return "info";
 
-  infoWords.forEach((w) => {
-    if (low.includes(w)) scoreInfo += 2;
-  });
-
-  exitWords.forEach((w) => {
-    if (low.includes(w)) scoreExit += 3;
-  });
-
-  // S16 — fiyat ifadesi artı puan (KORUNDU)
-  if (/[0-9]/.test(low) && /(₺|\$|€|tl|lira|usd|eur)/.test(low)) {
-    scoreProduct += 2;
-  }
-
-  if (scoreExit > 0 && scoreExit >= scoreProduct && scoreExit >= scoreInfo) {
-    return "exit";
-  }
-  if (scoreProduct > scoreInfo && scoreProduct >= 2) {
-    return "product";
-  }
-  if (scoreInfo > scoreProduct && scoreInfo >= 2) {
-    return "info";
-  }
+  // Soru formu: bu tip mesajları bilgi niyeti say.
+  if (/[?]/.test(t) || /\b(nasıl|neden|ne zaman|ne kadar|hangi|kaç|kim|nerede)\b/.test(t)) return "info";
 
   return "mixed";
 }
-
-// ============================================================================
-// PERSONA DETECT — S16 (hafif bellek destekli, KORUNDU)
 // ============================================================================
 function detectPersona(text = "", memorySnapshot = {}) {
   const low = safeString(text).toLowerCase();
@@ -3099,10 +3147,9 @@ async function getTravelEvidence(text, lang, cityHint) {
   };
 }
 
-async function gatherEvidence({ text, lang, city, forcedType = null }) {
+async function gatherEvidence({ text, lang, city }) {
   const L = normalizeLang(lang);
-  // forcedType: info-modunda "hiçbir şeye uymadı" gibi durumlarda default wiki vb.
-  const type = forcedType || detectEvidenceType(text, L);
+  const type = detectEvidenceType(text, L);
 
   try {
     if (type === "fx") return await getFxEvidence(text, L);
@@ -3170,9 +3217,6 @@ async function callLLM({
   city,
   memorySnapshot,
   persona,
-  didSearch = false,
-  evidenceReply = null,
-  cardsObj = null,
 }) {
   const apiKey = safeString(process.env.OPENAI_API_KEY);
   const baseUrl =
@@ -3189,38 +3233,6 @@ async function callLLM({
 
   // Mesajı sert limit ile kısalt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
-
-  // Mixed modda arama sonuçları + bilgi kanıtları aynı cevapta harmanlansın.
-  const evidenceText = evidenceReply?.answer
-    ? clampText(String(evidenceReply.answer), 1200)
-    : "";
-  const evidenceSources = Array.isArray(evidenceReply?.sources)
-    ? evidenceReply.sources
-        .slice(0, 5)
-        .map((s) => safeString(s?.title || s?.publisher || s?.url))
-        .filter(Boolean)
-    : [];
-  const evidenceBlock = evidenceText
-    ? `\n\nEVIDENCE (trusted facts):\n${evidenceText}` +
-      (evidenceSources.length ? `\n\nEVIDENCE_SOURCES:\n- ${evidenceSources.join("\n- ")}` : "")
-    : "";
-
-  const topCards = Array.isArray(cardsObj?.items)
-    ? cardsObj.items
-        .slice(0, 3)
-        .map((c) => {
-          const t = safeString(c?.title || c?.name);
-          const p = safeString(c?.priceText || c?.price);
-          const src = safeString(c?.source);
-          return [t, p, src].filter(Boolean).join(" | ");
-        })
-        .filter(Boolean)
-    : [];
-  const cardsBlock = didSearch && topCards.length
-    ? `\n\nSEARCH_RESULTS (top picks):\n- ${topCards.join("\n- ")}`
-    : "";
-
-  const userContent = `${safeMessage}${cardsBlock}${evidenceBlock}`.trim();
 
   if (!apiKey) {
     return {
@@ -3263,8 +3275,6 @@ Rules:
   • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
 - Keep it short, clear, and helpful. No fluff.
 - Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
-- If the user message contains a section starting with "EVIDENCE (trusted facts):", treat it as ground truth and base factual statements on it.
-- If you are not sure about a fact, say you're unsure instead of making it up.
 
 Output format (VERY IMPORTANT):
 Return ONLY valid JSON with this exact shape:
@@ -3285,11 +3295,10 @@ Persona hint: ${persona} → ${personaNote || "balanced"}
     model: safeString(process.env.OPENAI_MODEL) || "gpt-4.1-mini",
     messages: [
       { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
+      { role: "user", content: safeMessage },
     ],
     max_tokens: 250,
-    // Daha deterministik (alakasız/hayali cevapları azaltır)
-    temperature: 0.25,
+    temperature: 0.7,
   };
 
   try {
@@ -3484,7 +3493,7 @@ function aiFirewall(req, res, next) {
 // POST /api/ai — Ana Sono AI endpoint’i — S16 → S50 güçlendirilmiş
 // ============================================================================
 
-router.post("/", aiFirewall, async (req, res) => {
+async function handleAiChat(req, res) {
   const startedAt = Date.now();
 
   try {
@@ -3511,7 +3520,7 @@ router.post("/", aiFirewall, async (req, res) => {
     const normRegion = safeString(region || "TR").toUpperCase();
     const normCity = safeString(city);
     const ip = getClientIp(req);
-	    const diag = String(req.query?.diag || "") === "1" || String(req.query?.debug || "") === "1";
+    const diagOn = safeString(req.query && req.query.diag) === "1";
 
     // Boş mesaj için hızlı cevap (frontend için) — KORUNDU
     if (!text) {
@@ -3542,11 +3551,14 @@ router.post("/", aiFirewall, async (req, res) => {
 
     const intent = detectIntent(text);
 
-const modeNorm = safeString(mode).toLowerCase();
-// mode=chat → sadece sohbet/info; adapter çalıştırma (kredi yakma) YASAK
-const noSearchMode =
-  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
-const didSearch = !noSearchMode && (intent === "product" || intent === "mixed");
+	const modeNorm = safeString(mode).toLowerCase();
+	// mode=chat/info/... → sadece sohbet/info; adapter çalıştırma (kredi yakma) YASAK
+	const noSearchMode =
+	  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
+	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence üret
+	const shouldEvidence = noSearchMode || intent === "info";
+	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
+	const didSearch = !shouldEvidence && (intent === "product" || intent === "service" || intent === "mixed");
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
@@ -3565,37 +3577,29 @@ const cardsObj = didSearch
   ? buildVitrineCards(text, rawResults)
   : { best: null, aiSmart: [], others: [] };
 
-	// Evidence: bilgi soruları (info) ve chat modu için her zaman devrede.
-	// Ayrıca mixed modda (arama + bilgi) ise ve metin açıkça bilgi istiyorsa devreye girer.
-	const eType0 = detectEvidenceType(text, lang);
-	const wantsEvidence =
-	  noSearchMode || intent === "info" || (intent === "mixed" && eType0 !== "none");
-	const forcedEvidenceType = (noSearchMode || intent === "info") && eType0 === "none" ? "wiki" : null;
+let evidence = null;
+let evidenceReply = null;
 
-	let evidence = null;
-	let evidenceReply = null;
-	if (wantsEvidence) {
-	  evidence = await gatherEvidence({ text, lang, city: normCity, forcedType: forcedEvidenceType });
-	  evidenceReply = buildEvidenceAnswer(evidence, lang);
-	}
+if (shouldEvidence) {
+  evidence = await gatherEvidence({ text, lang, city: normCity });
+  evidenceReply = buildEvidenceAnswer(evidence, lang);
+}
 
-	const effectiveCity = normCity || evidence?.memory?.lastCity || userMem.lastCity;
-	if (userId || ip) {
-	  await updateUserMemory(userId, ip, {
-	    clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
-	    lastQuery: text,
-	    lastRegion: normRegion,
-	    lastCity: effectiveCity,
-	    preferredSource: cardsObj.best?.source || null,
-	    personaHint: persona,
-	  });
-	}
 
-	const memorySnapshot = (userId || ip) ? await getUserMemory(userId, ip) : userMem;
+    await updateUserMemory(userId, ip, {
+      clicks: (userMem.clicks || 0) + (didSearch ? 1 : 0),
+      lastQuery: text,
+      lastRegion: normRegion,
+      lastCity: normCity || userMem.lastCity,
+      preferredSource: cardsObj.best?.source || null,
+      personaHint: persona,
+    });
+
+    const memorySnapshot = await getUserMemory(userId, ip);
 
     let llm;
 
-    if ((noSearchMode || intent === "info") && evidenceReply && evidenceReply.answer) {
+    if (shouldEvidence && evidenceReply && evidenceReply.answer) {
       llm = {
         provider: "evidence",
         answer: evidenceReply.answer,
@@ -3609,12 +3613,9 @@ const cardsObj = didSearch
         locale: normLocale,
         intent,
         region: normRegion,
-	        city: effectiveCity,
+        city: normCity,
         persona,
         memorySnapshot,
-        didSearch,
-        evidenceReply: evidenceReply || null,
-        cardsObj: cardsObj || null,
       });
     }
 
@@ -3631,7 +3632,7 @@ const cardsObj = didSearch
         intent,
         persona,
         region: normRegion,
-	        city: effectiveCity,
+        city: normCity,
         queryLength: text.length,
         bestSource: cardsObj.best?.source || null,
         latencyMs,
@@ -3652,25 +3653,12 @@ const cardsObj = didSearch
       meta: {
         latencyMs,
         region: normRegion,
-        city: effectiveCity || null,
         locale: normLocale,
         mode: modeNorm,
         didSearch,
         trustScore: typeof llm.trustScore === 'number' ? llm.trustScore : null,
-	        ...(diag
-	          ? {
-	              debug: {
-	                openaiConfigured: !!OPENAI_API_KEY,
-	                openaiModel: OPENAI_MODEL,
-	                intent,
-	                noSearchMode,
-	                wantsEvidence,
-	                evidenceType: forcedEvidenceType || detectEvidenceType(text, lang),
-	                effectiveCity: effectiveCity || null,
-	              },
-	            }
-	          : {}),
       },
+      ...(diagOn ? { diag: { ip, intent, mode: modeNorm, noSearchMode, shouldEvidence, didSearch, evidenceType: evidence && evidence.type ? evidence.type : null, evidenceConfidence: evidence && typeof evidence.confidence === 'number' ? evidence.confidence : null, resultsCount: Array.isArray(results) ? results.length : 0, openaiKey: !!process.env.OPENAI_API_KEY } } : {}),
     });
   } catch (err) {
     console.error("AI ERROR:", err);
@@ -3679,6 +3667,9 @@ const cardsObj = didSearch
       error: "AI endpoint error",
     });
   }
-});
+}
+
+router.post("/", aiFirewall, handleAiChat);
+router.post("/chat", aiFirewall, handleAiChat);
 
 export default router;
