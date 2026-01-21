@@ -79,6 +79,9 @@ function isWeakCacheDoc(doc, qr) {
       !!doc.bestOffer;
     // "text" placeholder cache entries (or barcode-unresolved) with no offers should never block resolution.
     if (hasOffers) return false;
+
+    // Barcode without any offers is a weak cache entry for strict-free flows.
+    if (/^\d{8,18}$/.test(code)) return true;
     if (provider === "text" || source === "text") return true;
     if (/^\d{8,18}$/.test(code) && (title === code || title === "")) return true;
     if (String(doc.source || "") === "barcode-unresolved") return true;
@@ -1596,27 +1599,32 @@ async function resolveOffersViaS41Search(hintQuery, barcode, localeShort, diag) 
       categoryHint: "product",
       engineVariant: "S200",
       disablePaidAdapters: true,
-      // coverage floor helps free adapters; paid still disabled
-      skipCoverageFloor: false,
+      freeOnly: true,
+      // ✅ critical: coverage floor can call paid sources (SerpAPI/Google Shopping), so skip it here
+      skipCoverageFloor: true,
     });
 
     const items = Array.isArray(res?.items) ? res.items : Array.isArray(res) ? res : [];
     const offersAll = offersFromVitrineItems(items, q);
-    const split = splitOffersByTrust(offersAll);
+    const { offersTrusted, offersOther } = splitOffersForVitrine(offersAll);
 
     try {
       diag?.tries?.push?.({
         step: "official_s41_done",
         offersAll: offersAll.length,
-        offersTrusted: split.trusted.length,
-        offersOther: split.other.length,
+        offersTrusted: offersTrusted.length,
+        offersOther: offersOther.length,
       });
     } catch {}
 
     if (!offersAll.length) return null;
 
-    const bestPool = split.trusted.length ? split.trusted : offersAll;
-    const bestOffer = pickBestOffer(bestPool);
+    const bestPool = offersTrusted.length ? offersTrusted : offersAll;
+    const best = pickBestOffer(bestPool);
+    const bestOffer = best
+      ? { merchant: best.merchant, url: best.url, price: best.price ?? null, delivery: best.delivery || "" }
+      : null;
+
     const image = pickBestImageFromOffers(offersAll) || "";
 
     return {
@@ -1630,12 +1638,12 @@ async function resolveOffersViaS41Search(hintQuery, barcode, localeShort, diag) 
       category: "product",
       image,
       offersAll,
-      offersTrusted: split.trusted,
-      offersOther: split.other,
-      offers: split.trusted.length ? split.trusted : offersAll,
+      offersTrusted,
+      offersOther,
+      offers: offersTrusted.length ? offersTrusted : offersAll,
       bestOffer,
       merchantUrl: bestOffer?.url || "",
-      confidence: split.trusted.length ? "medium" : "low",
+      confidence: offersTrusted.length ? "medium" : "low",
     };
   } catch (e) {
     try {
@@ -1644,6 +1652,7 @@ async function resolveOffersViaS41Search(hintQuery, barcode, localeShort, diag) 
     return null;
   }
 }
+
 
 async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
@@ -2580,7 +2589,13 @@ async function handleProduct(req, res) {
               // store a hint so future strictFree lookups can resolve via official free adapters.
               try {
                 const autoLearn = parseBoolish(process.env.AUTO_LEARN_HINTS ?? "1", true);
-                if (autoLearn && sanitized?.qrCode && (sanitized?.title || sanitized?.name)) {
+                const __hasOffers = !!(
+                  (Array.isArray(sanitized?.offersTrusted) && sanitized.offersTrusted.length) ||
+                  (Array.isArray(sanitized?.offersOther) && sanitized.offersOther.length) ||
+                  (Array.isArray(sanitized?.offers) && sanitized.offers.length) ||
+                  sanitized?.bestOffer
+                );
+                if (autoLearn && __hasOffers && sanitized?.qrCode && (sanitized?.title || sanitized?.name)) {
                   await upsertBarcodeHint(
                     sanitized.qrCode,
                     localeShort,
