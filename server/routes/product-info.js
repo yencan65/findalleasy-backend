@@ -21,7 +21,7 @@ import rateLimit from "express-rate-limit";
 import Product from "../models/Product.js";
 import BarcodeHint from "../models/BarcodeHint.js";
 import { searchWithSerpApi } from "../adapters/serpApi.js";
-import { searchLocalBarcodeEngine } from "../core/localBarcodeEngine.js";
+import { searchLocalBarcodeEngine, searchLocalQueryEngine } from "../core/localBarcodeEngine.js";
 import { runVitrineS40 } from "../core/adapterEngine.js";
 
 import { getHtml } from "../core/NetClient.js";
@@ -1470,6 +1470,111 @@ async function resolveBarcodeViaCatalogSites(barcode, localeShort = "tr", diag) 
 // ======================================================================
 // Local marketplaces resolver (TR) — eskisi korunur
 // ======================================================================
+
+// ============================================================================
+// Local Query Engine (FREE) — uses learned hint / product name to fetch offers from free HTML sources
+// - Runs only when official S40 returns empty
+// - Uses localBarcodeEngine's query mode (scrape search + product pages)
+// ============================================================================
+async function resolveOffersViaLocalQuery(hintQuery, barcode, localeShort = "tr", diag) {
+  const q0 = cleanTitle(hintQuery || "");
+  const q = q0 && !/^\d{8,18}$/.test(q0) ? q0 : "";
+  const code = String(barcode || "").trim();
+  if (!q) return null;
+
+  const cacheKey = `${localeShort}:localq:${q.toLowerCase().slice(0, 120)}`;
+  const cached = cacheGetBarcode(cacheKey);
+  if (cached) return cached;
+
+  diag?.tries?.push?.({ step: "local_query_start", q: safeStr(q, 140), barcode: code });
+
+  let hits = [];
+  try {
+    hits = await searchLocalQueryEngine(q, {
+      region: "TR",
+      maxCandidates: 10,
+      maxMatches: 4,
+      allowNoPrice: false,
+    });
+  } catch (e) {
+    diag?.tries?.push?.({ step: "local_query_error", error: String(e?.message || e) });
+    hits = [];
+  }
+
+  if (!Array.isArray(hits) || hits.length === 0) {
+    diag?.tries?.push?.({ step: "local_query_empty" });
+    cacheSetBarcode(cacheKey, null);
+    return null;
+  }
+
+  const rawOffers = hits
+    .map((h) => {
+      const url0 = safeStr(h?.url || h?.link || "", 2000) || "";
+      const url = normalizeOutboundUrl(url0);
+      if (!url) return null;
+      const domain = pickDomain(url);
+      const price = typeof h?.price === "number" ? h.price : null;
+      if (!(typeof price === "number" && Number.isFinite(price) && price > 0)) return null;
+
+      return {
+        merchant: domain || String(h?.provider || "local"),
+        merchantKey: domain || String(h?.provider || "local"),
+        url,
+        title: cleanTitle(h?.title || h?.name || "") || q,
+        image: safeStr(h?.image || "", 2000) || "",
+        price,
+        currency: "TRY",
+        delivery: "",
+        domain,
+        rank: merchantRank(domain),
+      };
+    })
+    .filter(Boolean);
+
+  const { offersTrusted, offersOther } = splitOffersForVitrine(rawOffers);
+  const offersAll = [...(offersTrusted || []), ...(offersOther || [])];
+
+  if (!offersAll.length) {
+    diag?.tries?.push?.({ step: "local_query_no_offers" });
+    cacheSetBarcode(cacheKey, null);
+    return null;
+  }
+
+  const best = pickBestOffer(offersAll);
+  const imagePick = safeStr(best?.image || offersAll?.[0]?.image || "", 2000) || "";
+  const out = {
+    name: q,
+    title: q,
+    image: imagePick,
+    category: "product",
+    region: "TR",
+    currency: "TRY",
+    qrCode: code,
+    provider: "barcode",
+    source: "local-query-engine",
+    verifiedBarcode: false,
+    verifiedBy: "",
+    verifiedUrl: "",
+    offersTrusted,
+    offersOther,
+    offers: offersTrusted?.length ? offersTrusted : offersOther,
+    bestOffer: best ? { merchant: best.merchant, url: best.url, price: best.price ?? null, delivery: best.delivery || "" } : null,
+    confidence: offersTrusted?.length ? "medium" : "low",
+    suggestedQuery: q,
+  };
+
+  diag?.tries?.push?.({
+    step: "local_query_done",
+    offersAll: offersAll.length,
+    offersTrusted: offersTrusted?.length || 0,
+    offersOther: offersOther?.length || 0,
+  });
+
+  cacheSetBarcode(cacheKey, out);
+  return out;
+}
+
+
 async function resolveBarcodeViaLocalMarketplaces(barcode, localeShort = "tr", diag) {
   const code = String(barcode || "").trim();
   if (!/^\d{8,18}$/.test(code)) return null;
@@ -2529,6 +2634,22 @@ const out = { ok: true, product: sanitized, source: "mongo-cache" };
         };
         await upsertProductDoc(merged, diag, "mongo_upsert_official_s40");
         const out = { ok: true, product: merged, source: "official-affiliate-s40" };
+        if (diag) out._diag = diag;
+        return safeJson(res, out);
+      }
+
+
+      // 2.15) Local query engine (FREE): if we have a human title hint, try free HTML sources
+      const localQ = await resolveOffersViaLocalQuery(hintName || hintForOfficial || "", qr, localeShort, diag);
+      if (localQ?.offersTrusted?.length || localQ?.offersOther?.length) {
+        const merged = {
+          ...localQ,
+          name: (hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || localQ.name),
+          title: (hintName || baseProduct?.suggestedQuery || baseProduct?.title || baseProduct?.name || localQ.title),
+          image: localQ.image || identity?.image || baseProduct?.image || "",
+        };
+        await upsertProductDoc(merged, diag, "mongo_upsert_local_query");
+        const out = { ok: true, product: merged, source: "local-query-engine" };
         if (diag) out._diag = diag;
         return safeJson(res, out);
       }
