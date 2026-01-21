@@ -92,6 +92,22 @@ async function upsertProductDoc(product, diag, step = "mongo_upsert") {
       toSave.offersAll = all;       // optional (if schema allows)
     }
 
+
+// Don't pollute cache with unresolved placeholders that will block future enrichment.
+// Example: title/name equals barcode and no offer signals.
+try {
+  const t = String(toSave.title || toSave.name || "").trim();
+  const src = String(toSave.source || "").toLowerCase();
+  const prov = String(toSave.provider || "").toLowerCase();
+  const hasOffers = Array.isArray(toSave.offers) && toSave.offers.length;
+  const hasBest = !!toSave.bestOffer;
+  const looksUnresolved = t === qrCode && !hasOffers && !hasBest;
+
+  if (looksUnresolved && (src === "barcode-unresolved" || src === "text" || src === "ocr" || prov === "text" || prov === "ocr")) {
+    if (diag && Array.isArray(diag.tries)) diag.tries.push({ step: `${step}_skip_unresolved` });
+    return;
+  }
+} catch {}
     await Product.updateOne({ qrCode }, { $set: toSave }, { upsert: true });
 
     if (diag && Array.isArray(diag.tries)) diag.tries.push({ step });
@@ -155,6 +171,43 @@ function parseBoolish(v, def = false) {
     return s === '1' || s === 'true' || s === 'yes' || s === 'y' || s === 'on';
   } catch {
     return def;
+  }
+}
+
+// ======================================================================
+// Cache quality gate (avoid weak/unresolved docs blocking signals)
+// ======================================================================
+function isWeakCacheDoc(doc, qr) {
+  try {
+    const code = sanitizeQR(qr);
+    const source = String(doc?.source || "").toLowerCase();
+    const provider = String(doc?.provider || "").toLowerCase();
+
+    const title = String(doc?.title || doc?.name || "").trim();
+    const merchantUrl = String(doc?.merchantUrl || "").trim();
+
+    const offers = Array.isArray(doc?.offers) ? doc.offers.length : 0;
+    const offersAll = Array.isArray(doc?.offersAll) ? doc.offersAll.length : 0;
+    const offersTrusted = Array.isArray(doc?.offersTrusted) ? doc.offersTrusted.length : 0;
+    const hasAnyOffer = !!(offers || offersAll || offersTrusted || doc?.bestOffer);
+
+    const isJustCode = !!code && title === code;
+    const weakSource = source === "barcode-unresolved" || source === "text" || source === "ocr";
+    const weakProvider = provider === "text" || provider === "ocr";
+
+    // If there is no offer signal and it looks like an unresolved placeholder, treat as weak.
+    if (!hasAnyOffer && !merchantUrl && isJustCode) return true;
+
+    // Text/OCR placeholder docs are weak unless they actually contain offers.
+    if ((weakSource || weakProvider) && !hasAnyOffer) return true;
+
+    // Confidence low + no offers is also weak.
+    const conf = String(doc?.confidence || "").toLowerCase();
+    if (conf === "low" && !hasAnyOffer) return true;
+
+    return false;
+  } catch {
+    return false;
   }
 }
 
@@ -2184,13 +2237,39 @@ async function handleProduct(req, res) {
               if (diag) out._diag = diag;
               return safeJson(res, out);
             }
-          } else {
-            diag?.tries?.push?.({ step: "mongo_cache_hit" });
-            const normalized = normalizeProductForVitrine(cached);
-            const out = { ok: true, product: normalized, source: "mongo-cache" };
-            if (diag) out._diag = diag;
-            return safeJson(res, out);
-          }
+
+} else {
+  // Non-paid cache hit. If it's a weak/unresolved placeholder, skip it and continue enrichment.
+  const purgeWeakCache = parseBoolish(
+    req?.query?.purgeWeak ?? req?.query?.purge_weak ?? req?.query?.purgeweak ?? "0",
+    false
+  );
+  const weak = isWeakCacheDoc(cached, qr);
+
+  if (weak) {
+    diag?.tries?.push?.({
+      step: "mongo_cache_hit_weak",
+      provider: String(cached?.provider || ""),
+      source: String(cached?.source || ""),
+    });
+
+    if (purgeWeakCache) {
+      try {
+        await Product.deleteOne({ _id: cached._id });
+        diag?.tries?.push?.({ step: "mongo_cache_purged_weak" });
+      } catch {}
+    }
+
+    diag?.tries?.push?.({ step: "mongo_cache_skip_weak" });
+    // continue to free pipeline (OFF/Wikidata/Official adapters, etc.)
+  } else {
+    diag?.tries?.push?.({ step: "mongo_cache_hit" });
+    const normalized = normalizeProductForVitrine(cached);
+    const out = { ok: true, product: normalized, source: "mongo-cache" };
+    if (diag) out._diag = diag;
+    return safeJson(res, out);
+  }
+}
         }
       } catch (e) {
         diag?.tries?.push?.({ step: "mongo_cache_error", error: String(e?.message || e) });
