@@ -604,4 +604,280 @@ export async function searchLocalBarcodeEngine(barcode, opts = {}) {
   return finalList;
 }
 
-export default { searchLocalBarcodeEngine };
+
+
+// ---------------------------------------------------------------------------
+// Query-based local engine (FREE): search by product name/model, not barcode
+// ---------------------------------------------------------------------------
+function normalizeForMatch(s) {
+  try {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[ı]/g, "i")
+      .replace(/[ş]/g, "s")
+      .replace(/[ğ]/g, "g")
+      .replace(/[ü]/g, "u")
+      .replace(/[ö]/g, "o")
+      .replace(/[ç]/g, "c")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function tokenizeForMatch(s) {
+  const n = normalizeForMatch(s);
+  if (!n) return [];
+  return n.split(" ").filter((t) => t && t.length >= 2);
+}
+
+function scoreTitleMatch(title, query) {
+  const qTokens = tokenizeForMatch(query);
+  const tTokens = tokenizeForMatch(title);
+  if (!qTokens.length || !tTokens.length) return 0;
+
+  const qSet = new Set(qTokens);
+  const tSet = new Set(tTokens);
+
+  let inter = 0;
+  for (const tok of qSet) if (tSet.has(tok)) inter++;
+
+  const base = inter / Math.max(3, qSet.size);
+
+  // Model-ish tokens: digits or longer tokens — these matter more (e.g., hch5b1, 011)
+  const model = qTokens.filter((x) => /\d/.test(x) || x.length >= 4);
+  let modelHit = 0;
+  for (const tok of model) if (tSet.has(tok)) modelHit++;
+
+  const bonus = model.length ? (modelHit / model.length) * 0.45 : 0;
+  return Math.min(1, base + bonus);
+}
+
+function providerSearchUrlsQuery(provider, query) {
+  const q = encodeURIComponent(String(query || "").trim());
+  if (!q) return [];
+  if (provider === "hepsiburada") return [`https://www.hepsiburada.com/ara?q=${q}`];
+  if (provider === "trendyol") return [`https://www.trendyol.com/sr?q=${q}`];
+  if (provider === "n11") return [`https://www.n11.com/arama?q=${q}`];
+
+  if (provider === "akakce") return [`https://www.akakce.com/arama/?q=${q}`, `https://www.akakce.com/arama/?keyword=${q}`];
+  if (provider === "cimri") return [`https://www.cimri.com/arama?q=${q}`, `https://www.cimri.com/arama?query=${q}`];
+  if (provider === "epey") return [`https://www.epey.com/ara/?q=${q}`, `https://www.epey.com/ara/?search=${q}`];
+
+  return [];
+}
+
+function parsePriceFromText(text) {
+  try {
+    const t = String(text || "");
+    // Find TL patterns: ₺1.234,56 or 1234 TL
+    const re = /(₺\s*[\d\.\,]+)|([\d\.\,]+\s*TL)/gi;
+    const hits = [];
+    let m;
+    while ((m = re.exec(t)) !== null) {
+      const raw = String(m[0] || "").replace(/\s+/g, " ").trim();
+      // reuse existing price coercion by wrapping into cheerio-ish extractor:
+      const n = coercePrice(raw);
+      if (Number.isFinite(n) && n > 0) hits.push(n);
+    }
+    if (!hits.length) return null;
+    // Use the smallest number found (often the "from" price)
+    hits.sort((a, b) => a - b);
+    return hits[0];
+  } catch {
+    return null;
+  }
+}
+
+function extractInlineOffersFromSearch(provider, baseUrl, html, query, maxItems = 8) {
+  try {
+    const $ = cheerio.load(html);
+    const out = [];
+    const seen = new Set();
+
+    $("a[href]").each((_, el) => {
+      const href = $(el).attr("href");
+      const abs = absUrl(baseUrl, href);
+      if (!abs) return;
+      if (!isLikelyProductUrl(provider, abs)) return;
+
+      const url = abs.split("#")[0];
+      if (seen.has(url)) return;
+
+      const title =
+        cleanText($(el).attr("title")) ||
+        cleanText($(el).text()) ||
+        cleanText($(el).find("img").attr("alt")) ||
+        "";
+      const score = scoreTitleMatch(title, query);
+      if (score < 0.18) return;
+
+      const box = $(el).closest("article, li, div");
+      const boxText = cleanText(box.text()).slice(0, 800);
+      const price = parsePriceFromText(boxText);
+
+      let image =
+        $(el).find("img").attr("src") ||
+        $(el).find("img").attr("data-src") ||
+        box.find("img").attr("src") ||
+        box.find("img").attr("data-src") ||
+        "";
+      image = absUrl(baseUrl, image) || image;
+
+      out.push({ provider, url, title, image, price, score });
+      seen.add(url);
+      if (out.length >= maxItems) return false;
+    });
+
+    // Best first: score desc, then price asc (if present)
+    out.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const ap = Number.isFinite(a.price) ? a.price : 1e18;
+      const bp = Number.isFinite(b.price) ? b.price : 1e18;
+      return ap - bp;
+    });
+
+    return out.slice(0, maxItems);
+  } catch {
+    return [];
+  }
+}
+
+async function resolveOneProviderQuery(provider, query, signal, opts = {}) {
+  const maxCandidates = Number.isFinite(opts?.maxCandidates) ? Number(opts.maxCandidates) : 8;
+  const maxMatches = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 2;
+
+  const searchUrls = providerSearchUrlsQuery(provider, query);
+  if (!Array.isArray(searchUrls) || searchUrls.length === 0) return [];
+
+  let inline = [];
+  let candidates = [];
+
+  for (const searchUrl of searchUrls) {
+    const searchHtml = await fetchHtml(searchUrl, signal, `query-search:${provider}`);
+    if (!searchHtml) continue;
+    if (looksBlocked(searchHtml)) continue;
+
+    inline = extractInlineOffersFromSearch(provider, searchUrl, searchHtml, query, maxCandidates);
+    candidates = extractCandidateLinks(provider, searchUrl, searchHtml).slice(0, maxCandidates);
+
+    if ((inline && inline.length) || (candidates && candidates.length)) break;
+  }
+
+  const allowNoPrice = !!opts?.allowNoPrice;
+
+  // Prefer inline offers (faster, fewer blocks). If inline has prices, use them directly.
+  const matches = [];
+  for (const it of inline) {
+    if (Number.isFinite(it?.price) && it.price > 0) {
+      matches.push({
+        provider,
+        url: it.url,
+        title: it.title,
+        image: it.image || "",
+        price: it.price,
+        currency: "TRY",
+        verifiedBarcode: false,
+      });
+      if (matches.length >= maxMatches) return matches;
+    }
+  }
+
+  // If still not enough, fetch product pages for top candidates and extract a real price
+  for (const url of candidates) {
+    const html = await fetchHtml(url, signal, `query-page:${provider}`);
+    if (!html) continue;
+
+    try {
+      const $ = cheerio.load(html);
+      const title = extractTitle($);
+      if (!title || title.length < 5) continue;
+
+      const score = scoreTitleMatch(title, query);
+      if (score < 0.20) continue;
+
+      const image = extractImage($);
+      const priceNum = extractPriceHeuristic($, provider);
+
+      if (!priceNum && !allowNoPrice) continue;
+
+      matches.push({
+        provider,
+        url,
+        title,
+        image,
+        price: priceNum,
+        currency: "TRY",
+        verifiedBarcode: false,
+      });
+
+      if (matches.length >= maxMatches) break;
+    } catch {
+      // ignore
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * searchLocalQueryEngine(query, opts)
+ * Returns: Array<{ provider, url, title, image, price, currency, verifiedBarcode:false }>
+ */
+export async function searchLocalQueryEngine(query, opts = {}) {
+  const q = String(query || "").trim();
+  if (!q) return [];
+  if (/^\d{8,18}$/.test(q)) return []; // use barcode engine for pure barcodes
+  if (q.length < 4) return [];
+
+  const region = String(opts?.region || "TR").toUpperCase();
+  const allowNoPrice = !!opts?.allowNoPrice;
+  const qKey = normalizeForMatch(q).slice(0, 120);
+  const cacheKey = `${region}:Q:${qKey}:${allowNoPrice ? 1 : 0}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const signal = opts?.signal;
+
+  const envProviders = String(process.env.FAE_LOCAL_QUERY_PROVIDERS || "")
+    .split(",")
+    .map((s) => String(s || "").trim().toLowerCase())
+    .filter(Boolean);
+
+  const providers = Array.isArray(opts?.providers)
+    ? opts.providers
+    : (envProviders.length ? envProviders : ["cimri", "akakce", "epey", "hepsiburada", "trendyol", "n11"]);
+
+  const maxMatchesGlobal = Number.isFinite(opts?.maxMatches) ? Number(opts.maxMatches) : 4;
+
+  const out = [];
+  for (const p of providers) {
+    try {
+      const matches = await resolveOneProviderQuery(String(p), q, signal, opts);
+      if (Array.isArray(matches)) out.push(...matches);
+    } catch {
+      // ignore
+    }
+    if (out.filter((x) => Number.isFinite(x?.price) && x.price > 0).length >= Math.max(1, maxMatchesGlobal)) break;
+  }
+
+  const byUrl = new Map();
+  for (const it of out) {
+    if (!it?.url) continue;
+    if (!byUrl.has(it.url)) byUrl.set(it.url, it);
+  }
+
+  // Prefer priced offers, cheapest first
+  const finalList = Array.from(byUrl.values())
+    .filter((x) => Number.isFinite(x?.price) && x.price > 0)
+    .sort((a, b) => (a.price || 1e18) - (b.price || 1e18))
+    .slice(0, Math.max(1, maxMatchesGlobal));
+
+  cacheSet(cacheKey, finalList);
+  return finalList;
+}
+
+
+export default { searchLocalBarcodeEngine, searchLocalQueryEngine };
