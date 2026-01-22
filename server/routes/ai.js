@@ -1,37 +1,37 @@
-// server/routes/ai.js
+﻿// server/routes/ai.js
 // ============================================================================
-//   SONO AI — S50 ULTRA OMEGA ROUTE (FINAL FINAL FORM)
-//   • Intent Engine v3 (S16 core + hijyen güçlendirme)
-//   • Persona Memory v3 (in-memory, TTL + GC, zero-crash)
-//   • Triple-Fallback Vitrin Beyni (runAdapters → normalize → kartlar)
-//   • LLM Safe-Core (Timeout + Guard + persona aware + sanitize)
-//   • Frontend / Vitrin ile %100 Geriye Dönük Uyum (response shape aynı)
-//   • S16/S20’deki TÜM işlevler korunmuştur, sadece güçlendirilmiştir.
+//   SONO AI â€” S50 ULTRA OMEGA ROUTE (FINAL FINAL FORM)
+//   â€¢ Intent Engine v3 (S16 core + hijyen gÃ¼Ã§lendirme)
+//   â€¢ Persona Memory v3 (in-memory, TTL + GC, zero-crash)
+//   â€¢ Triple-Fallback Vitrin Beyni (runAdapters â†’ normalize â†’ kartlar)
+//   â€¢ LLM Safe-Core (Timeout + Guard + persona aware + sanitize)
+//   â€¢ Frontend / Vitrin ile %100 Geriye DÃ¶nÃ¼k Uyum (response shape aynÄ±)
+//   â€¢ S16/S20â€™deki TÃœM iÅŸlevler korunmuÅŸtur, sadece gÃ¼Ã§lendirilmiÅŸtir.
 // ============================================================================
 
 import express from "express";
-import fetch from "node-fetch"; // S20: Node sürümünden bağımsız stabil fetch
+import fetch from "node-fetch"; // S20: Node sÃ¼rÃ¼mÃ¼nden baÄŸÄ±msÄ±z stabil fetch
 import { runAdapters } from "../core/adapterEngine.js";
 
 const router = express.Router();
 const IS_PROD = process.env.NODE_ENV === "production";
 
 // ============================================================================
-// GLOBAL SABİTLER — S50
+// GLOBAL SABÄ°TLER â€” S50
 // ============================================================================
-const MAX_MESSAGE_LENGTH = 2000; // kullanıcı mesajı sert limit
-const MAX_LLM_ANSWER_LENGTH = 1200; // LLM cevabı sert limit
+const MAX_MESSAGE_LENGTH = 2000; // kullanÄ±cÄ± mesajÄ± sert limit
+const MAX_LLM_ANSWER_LENGTH = 1200; // LLM cevabÄ± sert limit
 const MEMORY_MAX_KEYS = 5000;
 const MEMORY_TTL_MS = 60 * 60 * 1000; // 1 saat
 const MEMORY_GC_THRESHOLD = 6000;
 
 // ============================================================================
-// BASİT MEMORY (S50 Hardened — TTL + GC + ZERO DELETE)
+// BASÄ°T MEMORY (S50 Hardened â€” TTL + GC + ZERO DELETE)
 // ============================================================================
 
 const memory = new Map();
 
-// S50 — internal GC
+// S50 â€” internal GC
 function gcMemory(now = Date.now()) {
   if (memory.size <= MEMORY_GC_THRESHOLD) return;
 
@@ -42,7 +42,7 @@ function gcMemory(now = Date.now()) {
     }
   }
 
-  // aşırı büyümeyi kes: en eski kalanları at
+  // aÅŸÄ±rÄ± bÃ¼yÃ¼meyi kes: en eski kalanlarÄ± at
   if (memory.size > MEMORY_MAX_KEYS) {
     const entries = Array.from(memory.entries()).sort(
       (a, b) => (a[1]?._ts || 0) - (b[1]?._ts || 0)
@@ -54,7 +54,7 @@ function gcMemory(now = Date.now()) {
   }
 }
 
-// S16 — basit hijyen helper (KORUNDU, hafif güçlendirme)
+// S16 â€” basit hijyen helper (KORUNDU, hafif gÃ¼Ã§lendirme)
 function safeString(v, fallback = "") {
   if (v == null) return fallback;
   try {
@@ -67,7 +67,7 @@ function safeString(v, fallback = "") {
   }
 }
 
-// S50 — metin kısaltıcı (input/LLM guard)
+// S50 â€” metin kÄ±saltÄ±cÄ± (input/LLM guard)
 function clampText(text, maxLen) {
   const s = safeString(text);
   if (!s) return "";
@@ -75,7 +75,7 @@ function clampText(text, maxLen) {
   return s.slice(0, maxLen);
 }
 
-// IP helper (AI telemetri için ufak hijyen)
+// IP helper (AI telemetri iÃ§in ufak hijyen)
 function getClientIp(req) {
   try {
     const xf = req.headers["x-forwarded-for"];
@@ -88,14 +88,14 @@ function getClientIp(req) {
   }
 }
 
-// S16 — userKey (KORUNDU)
+// S16 â€” userKey (KORUNDU)
 function getUserKey(userId, ip) {
   const uid = safeString(userId, "");
   const ipClean = safeString(ip, "");
   return uid || ipClean || "anonymous";
 }
 
-// S16 → S50 — getUserMemory (TTL + GC + _ts alanı)
+// S16 â†’ S50 â€” getUserMemory (TTL + GC + _ts alanÄ±)
 async function getUserMemory(userId, ip) {
   const key = getUserKey(userId, ip);
   const now = Date.now();
@@ -104,7 +104,7 @@ async function getUserMemory(userId, ip) {
   if (existing && typeof existing === "object") {
     const ts = existing._ts || 0;
     if (!ts || now - ts > MEMORY_TTL_MS) {
-      // süresi dolmuş
+      // sÃ¼resi dolmuÅŸ
       memory.delete(key);
     } else {
       return {
@@ -137,7 +137,7 @@ async function getUserMemory(userId, ip) {
   return fresh;
 }
 
-// S16 — updateUserMemory (KORUNDU, S50 limit + TTL)
+// S16 â€” updateUserMemory (KORUNDU, S50 limit + TTL)
 async function updateUserMemory(userId, ip, payload = {}) {
   const key = getUserKey(userId, ip);
   const prev = await getUserMemory(userId, ip);
@@ -147,7 +147,7 @@ async function updateUserMemory(userId, ip, payload = {}) {
 
   if (payload.lastQuery) {
     const arr = Array.isArray(prev.lastQueries) ? [...prev.lastQueries] : [];
-    const cleanQ = clampText(payload.lastQuery, 200); // tek query için ekstra limit
+    const cleanQ = clampText(payload.lastQuery, 200); // tek query iÃ§in ekstra limit
     if (cleanQ) {
       arr.push(cleanQ);
       while (arr.length > 20) arr.shift();
@@ -186,41 +186,9 @@ async function updateUserMemory(userId, ip, payload = {}) {
 }
 
 // ============================================================================
-// INTENT DETECT — S16 (KORUNDU, sadece hijyen)
+// INTENT DETECT â€” S16 (KORUNDU, sadece hijyen)
 // ============================================================================
 
-<<<<<<< HEAD
-function detectIntent(text = "") {
-  const low = safeString(text).toLowerCase().trim();
-  if (!low) return "info";
-
-  // Evidence-first overrides (these are not product price comparisons)
-  try {
-    const et = detectEvidenceType(low);
-    if (["weather", "fx", "econ", "news", "poi", "travel", "recipe"].includes(et)) return "info";
-  } catch (_) {}
-
-  const productWords = [
-    "en ucuz", "en uygun", "en iyi fiyat", "indirim", "kampanya", "kupon",
-    "fiyat", "fiyatı", "kaç tl", "kaç lira", "ne kadar", "satın al", "sipariş",
-    "link", "nereden al", "nereden alınır", "stok", "taksit", "kargo", "bedava kargo",
-    "hepsiburada", "trendyol", "n11", "amazon", "akakçe", "cimri", "epey",
-    "otel fiyat", "uçak bileti", "kiralık araba", "rent a car", "rezervasyon", "booking",
-    // service-ish
-    "otel", "uçak", "bilet", "araba kiralama", "kiralık araç", "tur", "sigorta", "kredi", "kredi kartı",
-    "internet", "fiber", "gsm", "tarife", "restoran", "mekan", "doktor", "hastane", "randevu",
-    "kurs", "eğitim", "emlak", "kiralık", "satılık",
-  ];
-
-  const infoWords = [
-    "nedir", "kimdir", "nerede", "nasıl", "neden", "tarih", "özellik", "tarif", "hava durumu",
-    "kur", "döviz", "haber", "wiki", "gezi", "rota", "yakındaki"
-  ];
-
-  const hasProduct = productWords.some((w) => low.includes(w));
-  const hasInfo = infoWords.some((w) => low.includes(w));
-
-=======
 function detectIntent(text, lang = "tr") {
   const raw = safeString(text);
   const low = raw.toLowerCase().trim();
@@ -232,20 +200,19 @@ function detectIntent(text, lang = "tr") {
 
   // Product intent should be explicit (price / purchase / marketplace).
   const buyOrMarket =
-    /(satın\s*al|sipariş|nereden\s*al|buy|purchase|order|where\s*to\s*buy|acheter|où\s*acheter|купить|где\s*купить|اشتر|شراء|من\s*أين)/i.test(low) ||
-    /(hepsiburada|trendyol|n11|amazon|akakçe|cimri|epey|booking|expedia)/i.test(low);
+    /(satÄ±n\s*al|sipariÅŸ|nereden\s*al|buy|purchase|order|where\s*to\s*buy|acheter|oÃ¹\s*acheter|ĞºÑƒĞ¿Ğ¸Ñ‚ÑŒ|Ğ³Ğ´Ğµ\s*ĞºÑƒĞ¿Ğ¸Ñ‚ÑŒ|Ø§Ø´ØªØ±|Ø´Ø±Ø§Ø¡|Ù…Ù†\s*Ø£ÙŠÙ†)/i.test(low) ||
+    /(hepsiburada|trendyol|n11|amazon|akakÃ§e|cimri|epey|booking|expedia)/i.test(low);
 
   const priceish =
-    /(fiyat|kaç\s*para|ne\s*kadar|en\s*uygun|en\s*ucuz|ucuz|ekonomik|uygun\s*fiyat|indirim|kampanya|price|cost|how\s*much|cheapest|discount|deal|prix|combien|moins\s*cher|цена|сколько|дешевле|скидк|سعر|كم|أرخص|خصم)/i.test(low);
+    /(fiyat|kaÃ§\s*para|ne\s*kadar|en\s*uygun|en\s*ucuz|ucuz|ekonomik|uygun\s*fiyat|indirim|kampanya|price|cost|how\s*much|cheapest|discount|deal|prix|combien|moins\s*cher|Ñ†ĞµĞ½Ğ°|ÑĞºĞ¾Ğ»ÑŒĞºĞ¾|Ğ´ĞµÑˆĞµĞ²Ğ»Ğµ|ÑĞºĞ¸Ğ´Ğº|Ø³Ø¹Ø±|ÙƒÙ…|Ø£Ø±Ø®Øµ|Ø®ØµÙ…)/i.test(low);
 
   const infoish =
-    /[?؟]/.test(raw) ||
-    /(nedir|ne\s*demek|açıkla|anlat|bilgi|hakkında|tarih|kimdir|nasıl|neden|where|what|who|why|how|explain|information|guide|history|qu['’]est-ce|c['’]est\s*quoi|comment|pourquoi|où|quand|expliquer|что\s*такое|кто|где|когда|почему|как|объясни|ما|ماذا|من|أين|متى|لماذا|كيف|اشرح|معلومات)/i.test(low);
+    /[?ØŸ]/.test(raw) ||
+    /(nedir|ne\s*demek|aÃ§Ä±kla|anlat|bilgi|hakkÄ±nda|tarih|kimdir|nasÄ±l|neden|where|what|who|why|how|explain|information|guide|history|qu['â€™]est-ce|c['â€™]est\s*quoi|comment|pourquoi|oÃ¹|quand|expliquer|Ñ‡Ñ‚Ğ¾\s*Ñ‚Ğ°ĞºĞ¾Ğµ|ĞºÑ‚Ğ¾|Ğ³Ğ´Ğµ|ĞºĞ¾Ğ³Ğ´Ğ°|Ğ¿Ğ¾Ñ‡ĞµĞ¼Ñƒ|ĞºĞ°Ğº|Ğ¾Ğ±ÑŠÑÑĞ½Ğ¸|Ù…Ø§|Ù…Ø§Ø°Ø§|Ù…Ù†|Ø£ÙŠÙ†|Ù…ØªÙ‰|Ù„Ù…Ø§Ø°Ø§|ÙƒÙŠÙ|Ø§Ø´Ø±Ø­|Ù…Ø¹Ù„ÙˆÙ…Ø§Øª)/i.test(low);
 
   const hasProduct = buyOrMarket || priceish;
   const hasInfo = infoish;
 
->>>>>>> 2c35ef7 (chore: sync backend)
   if (hasProduct && !hasInfo) return "product";
   if (hasInfo && !hasProduct) return "info";
   if (hasProduct && hasInfo) return "mixed";
@@ -257,21 +224,21 @@ function detectPersona(text = "", memorySnapshot = {}) {
   const score = { saver: 0, fast: 0, luxury: 0, explorer: 0 };
 
   const saverWords = ["ucuz", "fiyat", "indirim", "kampanya", "en uygun"];
-  const fastWords = ["hemen", "şimdi", "bugün", "acil", "acelem var", "şipariş"];
+  const fastWords = ["hemen", "ÅŸimdi", "bugÃ¼n", "acil", "acelem var", "ÅŸipariÅŸ"];
   const luxuryWords = [
     "en iyi",
     "premium",
     "kaliteli",
-    "üst seviye",
-    "5 yıldız",
-    "lüks",
+    "Ã¼st seviye",
+    "5 yÄ±ldÄ±z",
+    "lÃ¼ks",
   ];
   const explorerWords = [
-    "başka",
+    "baÅŸka",
     "alternatif",
-    "diğerleri",
-    "farklı",
-    "çeşit",
+    "diÄŸerleri",
+    "farklÄ±",
+    "Ã§eÅŸit",
   ];
 
   saverWords.forEach((w) => low.includes(w) && (score.saver += 2));
@@ -300,7 +267,7 @@ function detectPersona(text = "", memorySnapshot = {}) {
 }
 
 // ============================================================================
-// VİTRİN KARTLARI — 3 Kart Sistemi (Best / Smart / Others) — KORUNDU
+// VÄ°TRÄ°N KARTLARI â€” 3 Kart Sistemi (Best / Smart / Others) â€” KORUNDU
 // ============================================================================
 function normalizeNumberMaybe(n) {
   const num = Number(n);
@@ -330,7 +297,7 @@ function buildVitrineCards(query, rawResults) {
   } else if (isArray) {
     const allItems = result.filter(Boolean);
 
-    // S50: score'u varsa, küçük bir normalize ile sıralayalım
+    // S50: score'u varsa, kÃ¼Ã§Ã¼k bir normalize ile sÄ±ralayalÄ±m
     const scored = [...allItems].sort(
       (a, b) => (b.score || 0) - (a.score || 0)
     );
@@ -360,7 +327,7 @@ function buildVitrineCards(query, rawResults) {
       ? {
           slot: "best",
           title: bestItems[0].title || query,
-          subtitle: "En uygun & güvenilir seçenek",
+          subtitle: "En uygun & gÃ¼venilir seÃ§enek",
           source: bestItems[0].provider || bestItems[0].source || "unknown",
           price: normalizeNumberMaybe(
             bestItems[0].finalPrice ??
@@ -378,7 +345,7 @@ function buildVitrineCards(query, rawResults) {
   const aiSmartCards = smartItems.map((x, index) => ({
     slot: "smart",
     title: x.title || query,
-    subtitle: index === 0 ? "Tamamlayıcı öneriler" : "Alternatif seçenek",
+    subtitle: index === 0 ? "TamamlayÄ±cÄ± Ã¶neriler" : "Alternatif seÃ§enek",
     source: x.provider || x.source || "unknown",
     price: normalizeNumberMaybe(
       x.finalPrice ?? x.optimizedPrice ?? x.price
@@ -393,7 +360,7 @@ function buildVitrineCards(query, rawResults) {
   const othersCards = otherItems.map((x) => ({
     slot: "others",
     title: x.title || query,
-    subtitle: "Diğer satıcılar",
+    subtitle: "DiÄŸer satÄ±cÄ±lar",
     source: x.provider || x.source || "unknown",
     price: normalizeNumberMaybe(
       x.finalPrice ?? x.optimizedPrice ?? x.price
@@ -413,7 +380,7 @@ function buildVitrineCards(query, rawResults) {
 }
 
 // ============================================================================
-// LLM YARDIMCI: Timeout + Güvenli Fetch (S16 core + S20 + S50 guard)
+// LLM YARDIMCI: Timeout + GÃ¼venli Fetch (S16 core + S20 + S50 guard)
 // ============================================================================
 
 async function fetchWithTimeout(resource, options = {}) {
@@ -517,12 +484,12 @@ function extractLocationCandidate(text = "") {
     /([A-Za-z\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff][\w\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff\s-]{1,40})\s*(?:'d[ae]|\s+d[ae])\b/i,
     // EN: in/at/near X
     /\b(?:in|at|near)\s+([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f\s-]{1,40})\b/i,
-    // FR: à/au/aux X
-    /\b(?:à|au|aux|dans)\s+([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f\s-]{1,40})\b/i,
-    // RU: в X
-    /\bв\s+([A-Za-z\u00c0-\u024f\u0400-\u04ff][A-Za-z\u00c0-\u024f\u0400-\u04ff\s-]{1,40})\b/i,
-    // AR: في X
-    /\bفي\s+([\u0600-\u06ff\s-]{2,40})\b/i,
+    // FR: Ã /au/aux X
+    /\b(?:Ã |au|aux|dans)\s+([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f\s-]{1,40})\b/i,
+    // RU: Ğ² X
+    /\bĞ²\s+([A-Za-z\u00c0-\u024f\u0400-\u04ff][A-Za-z\u00c0-\u024f\u0400-\u04ff\s-]{1,40})\b/i,
+    // AR: ÙÙŠ X
+    /\bÙÙŠ\s+([\u0600-\u06ff\s-]{2,40})\b/i,
   ];
 
   for (const p of patterns) {
@@ -545,8 +512,8 @@ function pickCity(text, cityHint) {
   const stop = [
     "hava", "durumu", "forecast", "weather", "temperature",
     "gezilecek", "yerler", "things", "places", "visit",
-    "yakınımda", "yakında", "near", "me", "nearby",
-    "mekan", "kafe", "restoran", "kahvaltı",
+    "yakÄ±nÄ±mda", "yakÄ±nda", "near", "me", "nearby",
+    "mekan", "kafe", "restoran", "kahvaltÄ±",
     "tarif", "recipe", "recette",
   ];
 
@@ -568,114 +535,79 @@ function pickWikiLang(lang) {
 }
 
 function detectEvidenceType(text, lang = "tr") {
-<<<<<<< HEAD
-  const low = safeString(text).toLowerCase();
-=======
   const low = safeString(text).toLowerCase().trim();
->>>>>>> 2c35ef7 (chore: sync backend)
   if (!low) return "none";
 
   const L = normalizeLang(lang);
 
   // Weather
-  if (/(hava\s*durumu|weather|météo|погода|طقس)/i.test(low)) return "weather";
+  if (/(hava\s*durumu|weather|mÃ©tÃ©o|Ğ¿Ğ¾Ğ³Ğ¾Ğ´Ğ°|Ø·Ù‚Ø³)/i.test(low)) return "weather";
 
   // News
-  if (/(haber|news|actualité|новост|أخبار)/i.test(low)) return "news";
+  if (/(haber|news|actualitÃ©|Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚|Ø£Ø®Ø¨Ø§Ø±)/i.test(low)) return "news";
 
   // Travel / itinerary / plan
-  if (/(gezi|rota|travel|itinerary|itin(é|e)raire|путешеств|маршрут|سفر|خطة)/i.test(low))
+  if (/(gezi|rota|travel|itinerary|itin(Ã©|e)raire|Ğ¿ÑƒÑ‚ĞµÑˆĞµÑÑ‚Ğ²|Ğ¼Ğ°Ñ€ÑˆÑ€ÑƒÑ‚|Ø³ÙØ±|Ø®Ø·Ø©)/i.test(low))
     return "travel";
 
   // Recipe
-  if (/(tarif|recipe|recette|рецепт|وصفة)/i.test(low)) return "recipe";
+  if (/(tarif|recipe|recette|Ñ€ĞµÑ†ĞµĞ¿Ñ‚|ÙˆØµÙØ©)/i.test(low)) return "recipe";
 
   // POI / nearby / food / restaurants, etc.
   if (
-    /(yakın(ımda)?|nearby|à\s*proximité|рядом|بالقرب|nerede|where\s*(is|are)|restoran|restaurant|cafe|kafe|otel|hotel|müze|museum|park|kahvaltı)/i.test(
+    /(yakÄ±n(Ä±mda)?|nearby|Ã \s*proximitÃ©|Ñ€ÑĞ´Ğ¾Ğ¼|Ø¨Ø§Ù„Ù‚Ø±Ø¨|nerede|where\s*(is|are)|restoran|restaurant|cafe|kafe|otel|hotel|mÃ¼ze|museum|park|kahvaltÄ±)/i.test(
       low
     )
   )
     return "poi";
 
   // FX vs metals
-  const fxish = /(d[öo]viz|kur|usd|eur|gbp|try|exchange\s*rate|taux|курс|سعر\s*الصرف)/i.test(
+  const fxish = /(d[Ã¶o]viz|kur|usd|eur|gbp|try|exchange\s*rate|taux|ĞºÑƒÑ€Ñ|Ø³Ø¹Ø±\s*Ø§Ù„ØµØ±Ù)/i.test(
     low
   );
 
-<<<<<<< HEAD
-
-// 1a) "İlkler / firsts" (liste mantığı) — avoid "ilk yardım / first aid"
-const isFirstAid = /(ilk\s*yardım|first\s*aid)/i.test(low);
-if (
-  !isFirstAid &&
-  (
-    /\b(ilkler|ilkleri)\b/i.test(low) ||
-    /\bfirsts\b/i.test(low) ||
-    (/\bilk\b/i.test(low) && /(kadın|erkek|female|woman|man|male|kez|defa|ever)\b/i.test(low)) ||
-    (/\bilk\b/i.test(low) && /(türkiye|turkiye|türk|dünya|world|abd|amerika|united\s*states|usa|uk|ingiltere|england|fransa|france|almanya|germany|italya|italy|ispanya|spain|japonya|japan|çin|china|rusya|russia)\b/i.test(low))
-  )
-) return "firsts";
-
-  // 1b) Simple science / constants (avoid wrong Wikipedia hits)
-  if (/(kaynar|donar|erir|kaynama\s*noktası|donma\s*noktası|erime\s*noktası|boiling\s*point|freezing\s*point|melting\s*point|kaç\s*derece|\b°\s*c\b|\bdeg(?:ree)?\b)/i.test(low)) return "science";
-
-  // 2) Economy / macro indicators (also common commodities keywords)
-  if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b|altın|altin|gold|xau|ons\s*altın|gram\s*altın|gümüş|gumus|silver|xag|platin|platinum|xpt|paladyum|palladium|xpd)/i.test(low)) return "econ";
-=======
   const metalish =
-    /(gram\s*alt(ı|i)n|alt(ı|i)n|g[uü]m[uü]ş|gold|silver|xau|xag|platin|platinum|palladyum|palladium|xpt|xpd|ons|ounce|çeyrek|yarım|tam|cumhuriyet|ata)/i.test(
+    /(gram\s*alt(Ä±|i)n|alt(Ä±|i)n|g[uÃ¼]m[uÃ¼]ÅŸ|gold|silver|xau|xag|platin|platinum|palladyum|palladium|xpt|xpd|ons|ounce|Ã§eyrek|yarÄ±m|tam|cumhuriyet|ata)/i.test(
       low
     );
 
   if (metalish) return "metals";
   if (fxish) return "fx";
->>>>>>> 2c35ef7 (chore: sync backend)
 
   // Firsts (curiosity / trivia)
-  if (/(ilk\s*(uçuş|insan|kadın|erkek|robot|uydu)|first\s*(flight|human|woman|man|robot|satellite))/i.test(low))
+  if (/(ilk\s*(uÃ§uÅŸ|insan|kadÄ±n|erkek|robot|uydu)|first\s*(flight|human|woman|man|robot|satellite))/i.test(low))
     return "firsts";
 
   // Science-ish
-  if (/(bilim|science|physics|kimya|chemistry|uzay|space|astronomy|astrofizik|astrophysics|nöro|neuro|yapay\s*zeka|ai|machine\s*learning)/i.test(low))
+  if (/(bilim|science|physics|kimya|chemistry|uzay|space|astronomy|astrofizik|astrophysics|nÃ¶ro|neuro|yapay\s*zeka|ai|machine\s*learning)/i.test(low))
     return "science";
 
   // Econ / macro (non-FX, non-metals): GDP, inflation, unemployment etc.
   if (
-    /(enflasyon|inflation|gdp|büyüme|growth|işsizlik|unemployment|faiz|interest\s*rate|cpi|ppi|market\s*cap|borsa|index|endeks|tüfe|üfe)/i.test(
+    /(enflasyon|inflation|gdp|bÃ¼yÃ¼me|growth|iÅŸsizlik|unemployment|faiz|interest\s*rate|cpi|ppi|market\s*cap|borsa|index|endeks|tÃ¼fe|Ã¼fe)/i.test(
       low
     )
   )
     return "econ";
 
   // Sports results, tables etc.
-  if (/(maç|fikstür|puan\s*durumu|league\s*table|standings|score|результат|النتيجة)/i.test(low))
+  if (/(maÃ§|fikstÃ¼r|puan\s*durumu|league\s*table|standings|score|Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚|Ø§Ù„Ù†ØªÙŠØ¬Ø©)/i.test(low))
     return "sports";
 
   // Scholar-style request
   if (/(makale|paper|journal|doi|arxiv|pubmed|akademik|scholar)/i.test(low))
     return "scholar";
 
-<<<<<<< HEAD
-    // 7) General knowledge / definitions (wiki-like) vs unknown
-  const wikiish =
-    /(\b(nedir|kimdir|nerede|ne zaman|tarih\b|tarihi\b|özellik(ler)?|hakkında|anlamı|tanım|biyografi)\b)/i.test(low) ||
-    /(\b(what is|who is|where is|history of|definition of|biography of)\b)/i.test(low) ||
-    /(\b(c’est quoi|qui est|où est|histoire de|définition de)\b)/i.test(low) ||
-    /(\b(что такое|кто такой|где находится|история)\b)/i.test(low) ||
-    /(\b(ما هو|من هو|أين|تاريخ)\b)/i.test(low);
-=======
   // Fact / quick lookup
-  if (/(nüfus|population|alanı|area|başkent|capital|yükseklik|elevation|kuruluş|founded|kurucu)/i.test(low))
+  if (/(nÃ¼fus|population|alanÄ±|area|baÅŸkent|capital|yÃ¼kseklik|elevation|kuruluÅŸ|founded|kurucu)/i.test(low))
     return "fact";
 
   // Wiki-ish (only if question looks like it)
   const wikiish =
-    /[?؟]/.test(text) ||
-    /(nedir|ne\s*demek|kimdir|hakkında|tarih(çe|i)?|nerede|nasıl|neden|what\s*is|who\s*is|where|when|why|how|explain|define|definition|guide|history|qu['’]est-ce|c['’]est\s*quoi|comment|pourquoi|où|quand|что\s*такое|кто|где|когда|почему|как|ما|ماذا|من|أين|متى|لماذا|كيف)/i.test(
+    /[?ØŸ]/.test(text) ||
+    /(nedir|ne\s*demek|kimdir|hakkÄ±nda|tarih(Ã§e|i)?|nerede|nasÄ±l|neden|what\s*is|who\s*is|where|when|why|how|explain|define|definition|guide|history|qu['â€™]est-ce|c['â€™]est\s*quoi|comment|pourquoi|oÃ¹|quand|Ñ‡Ñ‚Ğ¾\s*Ñ‚Ğ°ĞºĞ¾Ğµ|ĞºÑ‚Ğ¾|Ğ³Ğ´Ğµ|ĞºĞ¾Ğ³Ğ´Ğ°|Ğ¿Ğ¾Ñ‡ĞµĞ¼Ñƒ|ĞºĞ°Ğº|Ù…Ø§|Ù…Ø§Ø°Ø§|Ù…Ù†|Ø£ÙŠÙ†|Ù…ØªÙ‰|Ù„Ù…Ø§Ø°Ø§|ÙƒÙŠÙ)/i.test(
       low
     );
->>>>>>> 2c35ef7 (chore: sync backend)
 
   if (wikiish) return "wiki";
   return "none";
@@ -950,13 +882,13 @@ function buildEvidenceAnswer(e, lang) {
       answer: T.needCity,
       suggestions:
         L === "tr"
-          ? ["Van hava durumu", "İstanbul gezilecek yerler"]
+          ? ["Van hava durumu", "Ä°stanbul gezilecek yerler"]
           : L === "fr"
-          ? ["météo Van", "Istanbul à visiter"]
+          ? ["mÃ©tÃ©o Van", "Istanbul Ã  visiter"]
           : L === "ru"
-          ? ["погода Ван", "что посмотреть в Стамбуле"]
+          ? ["Ğ¿Ğ¾Ğ³Ğ¾Ğ´Ğ° Ğ’Ğ°Ğ½", "Ñ‡Ñ‚Ğ¾ Ğ¿Ğ¾ÑĞ¼Ğ¾Ñ‚Ñ€ĞµÑ‚ÑŒ Ğ² Ğ¡Ñ‚Ğ°Ğ¼Ğ±ÑƒĞ»Ğµ"]
           : L === "ar"
-          ? ["طقس فان", "أماكن للزيارة في إسطنبول"]
+          ? ["Ø·Ù‚Ø³ ÙØ§Ù†", "Ø£Ù…Ø§ÙƒÙ† Ù„Ù„Ø²ÙŠØ§Ø±Ø© ÙÙŠ Ø¥Ø³Ø·Ù†Ø¨ÙˆÙ„"]
           : ["London weather", "Paris things to do"],
       sources: [],
       trustScore: 40,
@@ -981,7 +913,7 @@ function buildEvidenceAnswer(e, lang) {
   // Clarify / Disambiguation / No-answer (avoid confident nonsense)
   if (e.type === "disambiguation") {
     const opts = Array.isArray(e.options) ? e.options.slice(0, 4) : [];
-    const lines = opts.map((o, i) => `${i + 1}) ${o.label}${o.desc ? ` — ${o.desc}` : ""}`);
+    const lines = opts.map((o, i) => `${i + 1}) ${o.label}${o.desc ? ` â€” ${o.desc}` : ""}`);
     return {
       answer: `${T.chooseOne}\n${lines.join("\n")}`.trim(),
       suggestions: opts.map((o) => o.label).slice(0, 4),
@@ -995,33 +927,33 @@ function buildEvidenceAnswer(e, lang) {
     const prompt = kind === "country"
       ? T.needCountry
       : L === "tr"
-      ? "Hangi kişi/ülke/şehir?"
+      ? "Hangi kiÅŸi/Ã¼lke/ÅŸehir?"
       : L === "fr"
       ? "Quelle personne/pays/ville ?"
       : L === "ru"
-      ? "Какого человека/страну/город?"
+      ? "ĞšĞ°ĞºĞ¾Ğ³Ğ¾ Ñ‡ĞµĞ»Ğ¾Ğ²ĞµĞºĞ°/ÑÑ‚Ñ€Ğ°Ğ½Ñƒ/Ğ³Ğ¾Ñ€Ğ¾Ğ´?"
       : L === "ar"
-      ? "أي شخص/دولة/مدينة؟"
+      ? "Ø£ÙŠ Ø´Ø®Øµ/Ø¯ÙˆÙ„Ø©/Ù…Ø¯ÙŠÙ†Ø©ØŸ"
       : "Which person/country/city?";
 
     const sugg = kind === "country"
       ? (L === "tr"
-          ? ["Türkiye", "Almanya", "ABD"]
+          ? ["TÃ¼rkiye", "Almanya", "ABD"]
           : L === "fr"
-          ? ["Turquie", "Allemagne", "États-Unis"]
+          ? ["Turquie", "Allemagne", "Ã‰tats-Unis"]
           : L === "ru"
-          ? ["Турция", "Германия", "США"]
+          ? ["Ğ¢ÑƒÑ€Ñ†Ğ¸Ñ", "Ğ“ĞµÑ€Ğ¼Ğ°Ğ½Ğ¸Ñ", "Ğ¡Ğ¨Ğ"]
           : L === "ar"
-          ? ["تركيا", "ألمانيا", "الولايات المتحدة"]
+          ? ["ØªØ±ÙƒÙŠØ§", "Ø£Ù„Ù…Ø§Ù†ÙŠØ§", "Ø§Ù„ÙˆÙ„Ø§ÙŠØ§Øª Ø§Ù„Ù…ØªØ­Ø¯Ø©"]
           : ["Turkey", "Germany", "USA"])
       : (L === "tr"
-          ? ["Türkiye", "İstanbul", "Albert Einstein"]
+          ? ["TÃ¼rkiye", "Ä°stanbul", "Albert Einstein"]
           : L === "fr"
           ? ["Turquie", "Istanbul", "Albert Einstein"]
           : L === "ru"
-          ? ["Турция", "Стамбул", "Альберт Эйнштейн"]
+          ? ["Ğ¢ÑƒÑ€Ñ†Ğ¸Ñ", "Ğ¡Ñ‚Ğ°Ğ¼Ğ±ÑƒĞ»", "ĞĞ»ÑŒĞ±ĞµÑ€Ñ‚ Ğ­Ğ¹Ğ½ÑˆÑ‚ĞµĞ¹Ğ½"]
           : L === "ar"
-          ? ["تركيا", "إسطنبول", "ألبرت أينشتاين"]
+          ? ["ØªØ±ÙƒÙŠØ§", "Ø¥Ø³Ø·Ù†Ø¨ÙˆÙ„", "Ø£Ù„Ø¨Ø±Øª Ø£ÙŠÙ†Ø´ØªØ§ÙŠÙ†"]
           : ["Turkey", "Istanbul", "Albert Einstein"]);
     return {
       answer: prompt,
@@ -1038,11 +970,11 @@ function buildEvidenceAnswer(e, lang) {
         L === "tr"
           ? ["Daha net yaz", "Kaynak isteyen soru"]
           : L === "fr"
-          ? ["Sois plus précis", "Ajoute du contexte"]
+          ? ["Sois plus prÃ©cis", "Ajoute du contexte"]
           : L === "ru"
-          ? ["Сформулируй точнее", "Добавь контекст"]
+          ? ["Ğ¡Ñ„Ğ¾Ñ€Ğ¼ÑƒĞ»Ğ¸Ñ€ÑƒĞ¹ Ñ‚Ğ¾Ñ‡Ğ½ĞµĞµ", "Ğ”Ğ¾Ğ±Ğ°Ğ²ÑŒ ĞºĞ¾Ğ½Ñ‚ĞµĞºÑÑ‚"]
           : L === "ar"
-          ? ["اكتب بشكل أوضح", "أضف سياقًا"]
+          ? ["Ø§ÙƒØªØ¨ Ø¨Ø´ÙƒÙ„ Ø£ÙˆØ¶Ø­", "Ø£Ø¶Ù Ø³ÙŠØ§Ù‚Ù‹Ø§"]
           : ["Be more specific", "Add context"],
       sources: e.sources || [],
       trustScore: trust ?? 40,
@@ -1061,8 +993,8 @@ function buildEvidenceAnswer(e, lang) {
       const cats = Array.isArray(e.categories) ? e.categories.slice(0, 24) : [];
       const lines = cats.map((c, i) => `${i + 1}) ${safeString(c.title)}`).filter(Boolean);
       const head = L === "tr"
-        ? `${scope ? scope + " — " : ""}İlkler (kategori seç):`
-        : `${scope ? scope + " — " : ""}Firsts (pick a category):`;
+        ? `${scope ? scope + " â€” " : ""}Ä°lkler (kategori seÃ§):`
+        : `${scope ? scope + " â€” " : ""}Firsts (pick a category):`;
       return {
         answer: `${head}\n${lines.join("\n")}`.trim(),
 
@@ -1086,8 +1018,8 @@ function buildEvidenceAnswer(e, lang) {
 
     // mode === "list"
     const items = Array.isArray(e.items) ? e.items.slice(0, 10) : [];
-    const top = `${scope ? scope + " — " : ""}${title ? title : (L === "tr" ? "İlkler" : "Firsts")}:`;
-   const body = items.map((x) => `• ${safeString(x)}`).filter(Boolean).join("\n");
+    const top = `${scope ? scope + " â€” " : ""}${title ? title : (L === "tr" ? "Ä°lkler" : "Firsts")}:`;
+   const body = items.map((x) => `â€¢ ${safeString(x)}`).filter(Boolean).join("\n");
 
     return {
       answer: `${top}
@@ -1106,13 +1038,13 @@ ${body}${lowNote}`.trim(),
       answer: `${T.fact} ${ent}\n${prop}: ${val}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? [`${ent} nüfus`, `${ent} para birimi`, `${ent} resmi dil`]
+          ? [`${ent} nÃ¼fus`, `${ent} para birimi`, `${ent} resmi dil`]
           : L === "fr"
           ? [`population ${ent}`, `monnaie ${ent}`, `langue officielle ${ent}`]
           : L === "ru"
-          ? [`население ${ent}`, `валюта ${ent}`, `официальный язык ${ent}`]
+          ? [`Ğ½Ğ°ÑĞµĞ»ĞµĞ½Ğ¸Ğµ ${ent}`, `Ğ²Ğ°Ğ»ÑÑ‚Ğ° ${ent}`, `Ğ¾Ñ„Ğ¸Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ·Ñ‹Ğº ${ent}`]
           : L === "ar"
-          ? [`عدد سكان ${ent}`, `عملة ${ent}`, `اللغة الرسمية ${ent}`]
+          ? [`Ø¹Ø¯Ø¯ Ø³ÙƒØ§Ù† ${ent}`, `Ø¹Ù…Ù„Ø© ${ent}`, `Ø§Ù„Ù„ØºØ© Ø§Ù„Ø±Ø³Ù…ÙŠØ© ${ent}`]
           : [`${ent} population`, `${ent} currency`, `${ent} official language`],
       sources: e.sources || [],
       trustScore: trust ?? 88,
@@ -1125,14 +1057,14 @@ ${body}${lowNote}`.trim(),
       const asOf = safeString(e.asOf || "");
       const head =
         L === "tr"
-          ? `Emtia (spot) — ${safeString(e.metal)}`
+          ? `Emtia (spot) â€” ${safeString(e.metal)}`
           : L === "fr"
-          ? `Matières premières (spot) — ${safeString(e.metal)}`
+          ? `MatiÃ¨res premiÃ¨res (spot) â€” ${safeString(e.metal)}`
           : L === "ru"
-          ? `Сырьё (spot) — ${safeString(e.metal)}`
+          ? `Ğ¡Ñ‹Ñ€ÑŒÑ‘ (spot) â€” ${safeString(e.metal)}`
           : L === "ar"
-          ? `سلع (فوري) — ${safeString(e.metal)}`
-          : `Commodities (spot) — ${safeString(e.metal)}`;
+          ? `Ø³Ù„Ø¹ (ÙÙˆØ±ÙŠ) â€” ${safeString(e.metal)}`
+          : `Commodities (spot) â€” ${safeString(e.metal)}`;
 
       const lines = [];
       if (e.ounce?.text) lines.push(`1 oz: ${safeString(e.ounce.text)}${asOf ? ` (${asOf})` : ""}`);
@@ -1147,33 +1079,33 @@ ${lines.join("
 ")}${lowNote}`.trim(),
         suggestions:
           L === "tr"
-            ? ["Gram altın fiyatı", "Gümüş fiyatı", "USD/TRY"]
+            ? ["Gram altÄ±n fiyatÄ±", "GÃ¼mÃ¼ÅŸ fiyatÄ±", "USD/TRY"]
             : L === "fr"
             ? ["prix de l'or au gramme", "prix de l'argent", "USD vers TRY"]
             : L === "ru"
-            ? ["цена золота за грамм", "цена серебра", "USD к TRY"]
+            ? ["Ñ†ĞµĞ½Ğ° Ğ·Ğ¾Ğ»Ğ¾Ñ‚Ğ° Ğ·Ğ° Ğ³Ñ€Ğ°Ğ¼Ğ¼", "Ñ†ĞµĞ½Ğ° ÑĞµÑ€ĞµĞ±Ñ€Ğ°", "USD Ğº TRY"]
             : L === "ar"
-            ? ["سعر الذهب للغرام", "سعر الفضة", "USD إلى TRY"]
+            ? ["Ø³Ø¹Ø± Ø§Ù„Ø°Ù‡Ø¨ Ù„Ù„ØºØ±Ø§Ù…", "Ø³Ø¹Ø± Ø§Ù„ÙØ¶Ø©", "USD Ø¥Ù„Ù‰ TRY"]
             : ["gold price per gram", "silver price", "USD to TRY"],
         sources: e.sources || [],
         trustScore: trust ?? 84,
       };
     }
 
-    const line = `${e.country || ""} — ${e.indicator || ""}: ${e.value || ""}${e.year ? ` (${e.year})` : ""}`.trim();
-    const country = safeString(e.country || (L === "tr" ? "Türkiye" : "Turkey"));
+    const line = `${e.country || ""} â€” ${e.indicator || ""}: ${e.value || ""}${e.year ? ` (${e.year})` : ""}`.trim();
+    const country = safeString(e.country || (L === "tr" ? "TÃ¼rkiye" : "Turkey"));
     return {
       answer: `${T.econ}
 ${line}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? [`${country} enflasyon`, `${country} işsizlik`, `${country} gsyih`]
+          ? [`${country} enflasyon`, `${country} iÅŸsizlik`, `${country} gsyih`]
           : L === "fr"
-          ? [`inflation ${country}`, `chômage ${country}`, `PIB ${country}`]
+          ? [`inflation ${country}`, `chÃ´mage ${country}`, `PIB ${country}`]
           : L === "ru"
-          ? [`инфляция ${country}`, `безработица ${country}`, `ВВП ${country}`]
+          ? [`Ğ¸Ğ½Ñ„Ğ»ÑÑ†Ğ¸Ñ ${country}`, `Ğ±ĞµĞ·Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ¸Ñ†Ğ° ${country}`, `Ğ’Ğ’ĞŸ ${country}`]
           : L === "ar"
-          ? [`تضخم ${country}`, `بطالة ${country}`, `الناتج المحلي ${country}`]
+          ? [`ØªØ¶Ø®Ù… ${country}`, `Ø¨Ø·Ø§Ù„Ø© ${country}`, `Ø§Ù„Ù†Ø§ØªØ¬ Ø§Ù„Ù…Ø­Ù„ÙŠ ${country}`]
           : [`${country} inflation`, `${country} unemployment`, `${country} gdp`],
       sources: e.sources || [],
       trustScore: trust ?? 78,
@@ -1186,13 +1118,13 @@ ${line}${lowNote}`.trim(),
       answer: `${T.sports}\n${lines.join("\n\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? ["Galatasaray haber", "Fenerbahçe haber", "Süper Lig puan durumu"]
+          ? ["Galatasaray haber", "FenerbahÃ§e haber", "SÃ¼per Lig puan durumu"]
           : L === "fr"
           ? ["actu Ligue 1", "Ligue des champions", "actu NBA"]
           : L === "ru"
-          ? ["новости футбола", "Лига чемпионов", "новости НБА"]
+          ? ["Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚Ğ¸ Ñ„ÑƒÑ‚Ğ±Ğ¾Ğ»Ğ°", "Ğ›Ğ¸Ğ³Ğ° Ñ‡ĞµĞ¼Ğ¿Ğ¸Ğ¾Ğ½Ğ¾Ğ²", "Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚Ğ¸ ĞĞ‘Ğ"]
           : L === "ar"
-          ? ["أخبار كرة القدم", "دوري أبطال أوروبا", "أخبار NBA"]
+          ? ["Ø£Ø®Ø¨Ø§Ø± ÙƒØ±Ø© Ø§Ù„Ù‚Ø¯Ù…", "Ø¯ÙˆØ±ÙŠ Ø£Ø¨Ø·Ø§Ù„ Ø£ÙˆØ±ÙˆØ¨Ø§", "Ø£Ø®Ø¨Ø§Ø± NBA"]
           : ["Premier League news", "UEFA Champions League", "NBA news"],
       sources: e.sources || [],
       trustScore: trust ?? 68,
@@ -1200,18 +1132,18 @@ ${line}${lowNote}`.trim(),
   }
 
   if (e.type === "scholar") {
-    const lines = (e.items || []).slice(0, 5).map((x, i) => `${i + 1}) ${x.title}${x.year ? ` (${x.year})` : ""}${x.source ? ` — ${x.source}` : ""}\n${x.url}`);
+    const lines = (e.items || []).slice(0, 5).map((x, i) => `${i + 1}) ${x.title}${x.year ? ` (${x.year})` : ""}${x.source ? ` â€” ${x.source}` : ""}\n${x.url}`);
     return {
       answer: `${T.scholar}\n${lines.join("\n\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
           ? ["Bu konuda meta-analiz", "Randomized trial", "Yan etkiler"]
           : L === "fr"
-          ? ["méta-analyse", "essai randomisé", "effets secondaires"]
+          ? ["mÃ©ta-analyse", "essai randomisÃ©", "effets secondaires"]
           : L === "ru"
-          ? ["мета-анализ", "рандомизированное исследование", "побочные эффекты"]
+          ? ["Ğ¼ĞµÑ‚Ğ°-Ğ°Ğ½Ğ°Ğ»Ğ¸Ğ·", "Ñ€Ğ°Ğ½Ğ´Ğ¾Ğ¼Ğ¸Ğ·Ğ¸Ñ€Ğ¾Ğ²Ğ°Ğ½Ğ½Ğ¾Ğµ Ğ¸ÑÑĞ»ĞµĞ´Ğ¾Ğ²Ğ°Ğ½Ğ¸Ğµ", "Ğ¿Ğ¾Ğ±Ğ¾Ñ‡Ğ½Ñ‹Ğµ ÑÑ„Ñ„ĞµĞºÑ‚Ñ‹"]
           : L === "ar"
-          ? ["تحليل تلوي", "تجربة عشوائية", "آثار جانبية"]
+          ? ["ØªØ­Ù„ÙŠÙ„ ØªÙ„ÙˆÙŠ", "ØªØ¬Ø±Ø¨Ø© Ø¹Ø´ÙˆØ§Ø¦ÙŠØ©", "Ø¢Ø«Ø§Ø± Ø¬Ø§Ù†Ø¨ÙŠØ©"]
           : ["meta analysis", "randomized trial", "side effects"],
       sources: e.sources || [],
       trustScore: trust ?? 72,
@@ -1229,9 +1161,9 @@ ${line}${lowNote}`.trim(),
           : L === "fr"
           ? ["USD vers TRY", "EUR vers TRY", "GBP vers TRY"]
           : L === "ru"
-          ? ["USD к TRY", "EUR к TRY", "GBP к TRY"]
+          ? ["USD Ğº TRY", "EUR Ğº TRY", "GBP Ğº TRY"]
           : L === "ar"
-          ? ["USD إلى TRY", "EUR إلى TRY", "GBP إلى TRY"]
+          ? ["USD Ø¥Ù„Ù‰ TRY", "EUR Ø¥Ù„Ù‰ TRY", "GBP Ø¥Ù„Ù‰ TRY"]
           : ["USD to TRY", "EUR to TRY", "GBP to TRY"],
       sources: e.sources || [],
       trustScore: trust ?? 80,
@@ -1249,15 +1181,15 @@ ${line}${lowNote}`.trim(),
         const buy = it.buyText || (typeof it.buy === "number" ? String(it.buy) : "");
         const sell = it.sellText || (typeof it.sell === "number" ? String(it.sell) : "");
         const ccy = String(it.ccy || "").trim();
-        const label = String(it.name || "").trim() || "—";
-        if (buy && sell) return `• ${label}: ${T.buy || "Buy"} ${buy} / ${T.sell || "Sell"} ${sell}${ccy ? " " + ccy : ""}`;
-        if (sell) return `• ${label}: ${sell}${ccy ? " " + ccy : ""}`;
-        if (buy) return `• ${label}: ${buy}${ccy ? " " + ccy : ""}`;
-        return `• ${label}`;
+        const label = String(it.name || "").trim() || "â€”";
+        if (buy && sell) return `â€¢ ${label}: ${T.buy || "Buy"} ${buy} / ${T.sell || "Sell"} ${sell}${ccy ? " " + ccy : ""}`;
+        if (sell) return `â€¢ ${label}: ${sell}${ccy ? " " + ccy : ""}`;
+        if (buy) return `â€¢ ${label}: ${buy}${ccy ? " " + ccy : ""}`;
+        return `â€¢ ${label}`;
       })
       .join("\n");
 
-    const head = T.metals || (L === "tr" ? "Güncel altın/metal fiyatları:" : "Live precious metals prices:");
+    const head = T.metals || (L === "tr" ? "GÃ¼ncel altÄ±n/metal fiyatlarÄ±:" : "Live precious metals prices:");
     const upd = updatedAt ? `\n${T.updated || "Updated:"} ${updatedAt}` : "";
 
     return {
@@ -1280,13 +1212,13 @@ if (e.type === "weather") {
       answer: `${T.weather} ${e.city}\n${lines.join("\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? [`${e.city} yarın hava`, `${e.city} 5 günlük hava`]
+          ? [`${e.city} yarÄ±n hava`, `${e.city} 5 gÃ¼nlÃ¼k hava`]
           : L === "fr"
-          ? [`météo ${e.city} demain`, `prévisions ${e.city} 5 jours`]
+          ? [`mÃ©tÃ©o ${e.city} demain`, `prÃ©visions ${e.city} 5 jours`]
           : L === "ru"
-          ? [`погода ${e.city} завтра`, `прогноз ${e.city} на 5 дней`]
+          ? [`Ğ¿Ğ¾Ğ³Ğ¾Ğ´Ğ° ${e.city} Ğ·Ğ°Ğ²Ñ‚Ñ€Ğ°`, `Ğ¿Ñ€Ğ¾Ğ³Ğ½Ğ¾Ğ· ${e.city} Ğ½Ğ° 5 Ğ´Ğ½ĞµĞ¹`]
           : L === "ar"
-          ? [`طقس ${e.city} غدًا`, `توقعات ${e.city} لمدة 5 أيام`]
+          ? [`Ø·Ù‚Ø³ ${e.city} ØºØ¯Ù‹Ø§`, `ØªÙˆÙ‚Ø¹Ø§Øª ${e.city} Ù„Ù…Ø¯Ø© 5 Ø£ÙŠØ§Ù…`]
           : [`${e.city} weather tomorrow`, `${e.city} 5 day forecast`],
       sources: e.sources || [],
       trustScore: trust ?? 85,
@@ -1294,18 +1226,18 @@ if (e.type === "weather") {
   }
 
   if (e.type === "poi") {
-    const lines = (e.items || []).slice(0, 10).map((x, i) => `${i + 1}) ${x.name}${x.note ? ` — ${x.note}` : ""}\n${x.url}`);
+    const lines = (e.items || []).slice(0, 10).map((x, i) => `${i + 1}) ${x.name}${x.note ? ` â€” ${x.note}` : ""}\n${x.url}`);
     return {
       answer: `${T.poi} ${e.city}\n${lines.join("\n\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? ["Yakınımdaki kafe", "Yakınımdaki restoran"]
+          ? ["YakÄ±nÄ±mdaki kafe", "YakÄ±nÄ±mdaki restoran"]
           : L === "fr"
-          ? ["cafés à proximité", "restaurants à proximité"]
+          ? ["cafÃ©s Ã  proximitÃ©", "restaurants Ã  proximitÃ©"]
           : L === "ru"
-          ? ["кафе рядом", "рестораны рядом"]
+          ? ["ĞºĞ°Ñ„Ğµ Ñ€ÑĞ´Ğ¾Ğ¼", "Ñ€ĞµÑÑ‚Ğ¾Ñ€Ğ°Ğ½Ñ‹ Ñ€ÑĞ´Ğ¾Ğ¼"]
           : L === "ar"
-          ? ["مقاهي قريبة", "مطاعم قريبة"]
+          ? ["Ù…Ù‚Ø§Ù‡ÙŠ Ù‚Ø±ÙŠØ¨Ø©", "Ù…Ø·Ø§Ø¹Ù… Ù‚Ø±ÙŠØ¨Ø©"]
           : ["nearby cafes", "nearby restaurants"],
       sources: e.sources || [],
       trustScore: trust ?? 80,
@@ -1331,13 +1263,13 @@ if (e.type === "weather") {
       answer: `${header}\n\n${blocks.join("\n\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? [`${e.city} gezilecek yerler`, `${e.city} yeme içme`]
+          ? [`${e.city} gezilecek yerler`, `${e.city} yeme iÃ§me`]
           : L === "fr"
-          ? [`${e.city} à visiter`, `où manger à ${e.city}`]
+          ? [`${e.city} Ã  visiter`, `oÃ¹ manger Ã  ${e.city}`]
           : L === "ru"
-          ? [`что посмотреть в ${e.city}`, `где поесть в ${e.city}`]
+          ? [`Ñ‡Ñ‚Ğ¾ Ğ¿Ğ¾ÑĞ¼Ğ¾Ñ‚Ñ€ĞµÑ‚ÑŒ Ğ² ${e.city}`, `Ğ³Ğ´Ğµ Ğ¿Ğ¾ĞµÑÑ‚ÑŒ Ğ² ${e.city}`]
           : L === "ar"
-          ? [`أماكن للزيارة في ${e.city}`, `أين تأكل في ${e.city}`]
+          ? [`Ø£Ù…Ø§ÙƒÙ† Ù„Ù„Ø²ÙŠØ§Ø±Ø© ÙÙŠ ${e.city}`, `Ø£ÙŠÙ† ØªØ£ÙƒÙ„ ÙÙŠ ${e.city}`]
           : [`${e.city} things to do`, `${e.city} where to eat`],
       sources: e.sources || [],
       trustScore: trust ?? 78,
@@ -1362,13 +1294,13 @@ if (e.type === "weather") {
       answer: `${T.recipe} ${e.title}\n\n${parts.join("\n\n")}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? ["Tavuk tarifi", "Tatlı tarifi"]
+          ? ["Tavuk tarifi", "TatlÄ± tarifi"]
           : L === "fr"
           ? ["recette de poulet", "recette de dessert"]
           : L === "ru"
-          ? ["рецепт курицы", "рецепт десерта"]
+          ? ["Ñ€ĞµÑ†ĞµĞ¿Ñ‚ ĞºÑƒÑ€Ğ¸Ñ†Ñ‹", "Ñ€ĞµÑ†ĞµĞ¿Ñ‚ Ğ´ĞµÑĞµÑ€Ñ‚Ğ°"]
           : L === "ar"
-          ? ["وصفة دجاج", "وصفة حلوى"]
+          ? ["ÙˆØµÙØ© Ø¯Ø¬Ø§Ø¬", "ÙˆØµÙØ© Ø­Ù„ÙˆÙ‰"]
           : ["chicken recipe", "dessert recipe"],
       sources: e.sources || [],
       trustScore: trust ?? 75,
@@ -1384,11 +1316,11 @@ if (e.type === "weather") {
         L === "tr"
           ? ["Son dakika", "Ekonomi haberleri", "Spor haberleri"]
           : L === "fr"
-          ? ["dernières infos", "actualités économiques", "actualités sportives"]
+          ? ["derniÃ¨res infos", "actualitÃ©s Ã©conomiques", "actualitÃ©s sportives"]
           : L === "ru"
-          ? ["последние новости", "экономические новости", "спорт новости"]
+          ? ["Ğ¿Ğ¾ÑĞ»ĞµĞ´Ğ½Ğ¸Ğµ Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚Ğ¸", "ÑĞºĞ¾Ğ½Ğ¾Ğ¼Ğ¸Ñ‡ĞµÑĞºĞ¸Ğµ Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚Ğ¸", "ÑĞ¿Ğ¾Ñ€Ñ‚ Ğ½Ğ¾Ğ²Ğ¾ÑÑ‚Ğ¸"]
           : L === "ar"
-          ? ["آخر الأخبار", "أخبار الاقتصاد", "أخبار الرياضة"]
+          ? ["Ø¢Ø®Ø± Ø§Ù„Ø£Ø®Ø¨Ø§Ø±", "Ø£Ø®Ø¨Ø§Ø± Ø§Ù„Ø§Ù‚ØªØµØ§Ø¯", "Ø£Ø®Ø¨Ø§Ø± Ø§Ù„Ø±ÙŠØ§Ø¶Ø©"]
           : ["latest news", "economy news", "sports news"],
       sources: e.sources || [],
       trustScore: trust ?? 70,
@@ -1403,13 +1335,13 @@ if (e.type === "weather") {
 ${e.extract}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? ["Su kaç derecede kaynar?", "Su kaç derecede donar?"]
+          ? ["Su kaÃ§ derecede kaynar?", "Su kaÃ§ derecede donar?"]
           : L === "fr"
-          ? ["température d’ébullition de l’eau", "température de congélation de l’eau"]
+          ? ["tempÃ©rature dâ€™Ã©bullition de lâ€™eau", "tempÃ©rature de congÃ©lation de lâ€™eau"]
           : L === "ru"
-          ? ["температура кипения воды", "температура замерзания воды"]
+          ? ["Ñ‚ĞµĞ¼Ğ¿ĞµÑ€Ğ°Ñ‚ÑƒÑ€Ğ° ĞºĞ¸Ğ¿ĞµĞ½Ğ¸Ñ Ğ²Ğ¾Ğ´Ñ‹", "Ñ‚ĞµĞ¼Ğ¿ĞµÑ€Ğ°Ñ‚ÑƒÑ€Ğ° Ğ·Ğ°Ğ¼ĞµÑ€Ğ·Ğ°Ğ½Ğ¸Ñ Ğ²Ğ¾Ğ´Ñ‹"]
           : L === "ar"
-          ? ["درجة غليان الماء", "درجة تجمد الماء"]
+          ? ["Ø¯Ø±Ø¬Ø© ØºÙ„ÙŠØ§Ù† Ø§Ù„Ù…Ø§Ø¡", "Ø¯Ø±Ø¬Ø© ØªØ¬Ù…Ø¯ Ø§Ù„Ù…Ø§Ø¡"]
           : ["water boiling point", "water freezing point"],
       sources: e.sources || [],
       trustScore: trust ?? 90,
@@ -1422,13 +1354,13 @@ ${e.extract}${lowNote}`.trim(),
       answer: `${T.wiki} ${e.title}\n${e.extract}${lowNote}`.trim(),
       suggestions:
         L === "tr"
-          ? ["Daha kısa özet", "Örnek ver", "Artısı eksisi"]
+          ? ["Daha kÄ±sa Ã¶zet", "Ã–rnek ver", "ArtÄ±sÄ± eksisi"]
           : L === "fr"
-          ? ["résumé plus court", "donne un exemple", "avantages / inconvénients"]
+          ? ["rÃ©sumÃ© plus court", "donne un exemple", "avantages / inconvÃ©nients"]
           : L === "ru"
-          ? ["короче", "приведи пример", "плюсы и минусы"]
+          ? ["ĞºĞ¾Ñ€Ğ¾Ñ‡Ğµ", "Ğ¿Ñ€Ğ¸Ğ²ĞµĞ´Ğ¸ Ğ¿Ñ€Ğ¸Ğ¼ĞµÑ€", "Ğ¿Ğ»ÑÑÑ‹ Ğ¸ Ğ¼Ğ¸Ğ½ÑƒÑÑ‹"]
           : L === "ar"
-          ? ["ملخص أقصر", "أعطِ مثالًا", "إيجابيات وسلبيات"]
+          ? ["Ù…Ù„Ø®Øµ Ø£Ù‚ØµØ±", "Ø£Ø¹Ø·Ù Ù…Ø«Ø§Ù„Ù‹Ø§", "Ø¥ÙŠØ¬Ø§Ø¨ÙŠØ§Øª ÙˆØ³Ù„Ø¨ÙŠØ§Øª"]
           : ["shorter summary", "give an example", "pros and cons"],
       sources: e.sources || [],
       trustScore: trust ?? 65,
@@ -1522,19 +1454,19 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
   const q = safeString(text);
   const low = q.toLowerCase();
 
-  const wantGram = /(gram\s*alt(ı|i)n|\bgram\b)/i.test(low);
-  const wantQuarter = /(çeyrek|quarter)/i.test(low);
-  const wantHalf = /(yarım|half)/i.test(low);
+  const wantGram = /(gram\s*alt(Ä±|i)n|\bgram\b)/i.test(low);
+  const wantQuarter = /(Ã§eyrek|quarter)/i.test(low);
+  const wantHalf = /(yarÄ±m|half)/i.test(low);
   const wantFull = /\btam\b/i.test(low);
   const wantCumhuriyet = /(cumhuriyet)/i.test(low);
   const wantAta = /\bata\b/i.test(low);
-  const wantSilver = /(g[uü]m[uü]ş|silver|xag)/i.test(low);
+  const wantSilver = /(g[uÃ¼]m[uÃ¼]ÅŸ|silver|xag)/i.test(low);
   const wantOunce = /(ons|ounce|xau)/i.test(low);
 
   const wantsSpecific =
     wantGram || wantQuarter || wantHalf || wantFull || wantCumhuriyet || wantAta || wantSilver || wantOunce;
 
-  // 1) Try TR market feed (supports gram/coins) — if available.
+  // 1) Try TR market feed (supports gram/coins) â€” if available.
   try {
     const url = "https://finans.truncgil.com/today.json";
     const j = await fetchJsonCached(url, 120000); // 2 min cache
@@ -1547,22 +1479,22 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
       const k = findKey(re);
       if (!k) return null;
       const obj = j[k];
-      const buy = parseTRNumber(obj?.["Alış"] ?? obj?.["Alis"] ?? obj?.["Buying"] ?? obj?.["buying"] ?? obj?.["alis"]);
-      const sell = parseTRNumber(obj?.["Satış"] ?? obj?.["Satis"] ?? obj?.["Selling"] ?? obj?.["selling"] ?? obj?.["satis"]);
-      const chg = String(obj?.["Değişim"] ?? obj?.["Degisim"] ?? obj?.["Change"] ?? obj?.["change"] ?? "").trim();
+      const buy = parseTRNumber(obj?.["AlÄ±ÅŸ"] ?? obj?.["Alis"] ?? obj?.["Buying"] ?? obj?.["buying"] ?? obj?.["alis"]);
+      const sell = parseTRNumber(obj?.["SatÄ±ÅŸ"] ?? obj?.["Satis"] ?? obj?.["Selling"] ?? obj?.["selling"] ?? obj?.["satis"]);
+      const chg = String(obj?.["DeÄŸiÅŸim"] ?? obj?.["Degisim"] ?? obj?.["Change"] ?? obj?.["change"] ?? "").trim();
       if (buy == null && sell == null) return null;
       return { name, buy, sell, ccy, change: chg || null };
     };
 
     const itemsAll = [
-      pick("Gram Altın", /gram\s*alt[ıi]n|gram\s*gold|gram_altin|gr_altin/),
-      pick("Çeyrek Altın", /çeyrek\s*alt[ıi]n|ceyrek\s*alt[ıi]n|quarter/),
-      pick("Yarım Altın", /yar[ıi]m\s*alt[ıi]n|half/),
-      pick("Tam Altın", /\btam\s*alt[ıi]n\b|\bfull\s*gold\b/),
-      pick("Cumhuriyet Altını", /cumhuriyet/),
-      pick("Ata Altın", /\bata\b/),
-      pick("Ons Altın (XAU)", /ons|ounce|xau/ , "USD"),
-      pick("Gümüş", /g[uü]m[uü]ş|silver|xag/ , "TRY"),
+      pick("Gram AltÄ±n", /gram\s*alt[Ä±i]n|gram\s*gold|gram_altin|gr_altin/),
+      pick("Ã‡eyrek AltÄ±n", /Ã§eyrek\s*alt[Ä±i]n|ceyrek\s*alt[Ä±i]n|quarter/),
+      pick("YarÄ±m AltÄ±n", /yar[Ä±i]m\s*alt[Ä±i]n|half/),
+      pick("Tam AltÄ±n", /\btam\s*alt[Ä±i]n\b|\bfull\s*gold\b/),
+      pick("Cumhuriyet AltÄ±nÄ±", /cumhuriyet/),
+      pick("Ata AltÄ±n", /\bata\b/),
+      pick("Ons AltÄ±n (XAU)", /ons|ounce|xau/ , "USD"),
+      pick("GÃ¼mÃ¼ÅŸ", /g[uÃ¼]m[uÃ¼]ÅŸ|silver|xag/ , "TRY"),
     ].filter(Boolean);
 
     // Filter if user asked specifically
@@ -1571,12 +1503,12 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
       items = itemsAll.filter((it) => {
         const n = it.name.toLowerCase();
         if (wantGram && n.includes("gram")) return true;
-        if (wantQuarter && n.includes("çeyrek")) return true;
-        if (wantHalf && n.includes("yarım")) return true;
+        if (wantQuarter && n.includes("Ã§eyrek")) return true;
+        if (wantHalf && n.includes("yarÄ±m")) return true;
         if (wantFull && n.includes("tam")) return true;
         if (wantCumhuriyet && n.includes("cumhuriyet")) return true;
         if (wantAta && n.includes("ata")) return true;
-        if (wantSilver && n.includes("gümüş")) return true;
+        if (wantSilver && n.includes("gÃ¼mÃ¼ÅŸ")) return true;
         if (wantOunce && n.includes("ons")) return true;
         return false;
       });
@@ -1589,7 +1521,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     // Simple suggestions
     const suggestions =
       L === "tr"
-        ? ["Gram altın kaç para?", "Çeyrek altın fiyatı", "USD/TRY kuru", "Altın ons fiyatı"]
+        ? ["Gram altÄ±n kaÃ§ para?", "Ã‡eyrek altÄ±n fiyatÄ±", "USD/TRY kuru", "AltÄ±n ons fiyatÄ±"]
         : ["Gold price per gram", "Quarter gold coin price", "USD/TRY rate", "Gold ounce price"];
 
     return {
@@ -1646,7 +1578,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     const gramUsd = ounceUsd / 31.1034768;
     const gramTry = usdtry ? gramUsd * usdtry : null;
     items.push({
-      name: "Altın Ons (XAUUSD)",
+      name: "AltÄ±n Ons (XAUUSD)",
       buy: ounceUsd,
       sell: ounceUsd,
       ccy: "USD",
@@ -1656,7 +1588,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     });
     if (gramTry) {
       items.push({
-        name: "Gram Altın (spot, TRY)",
+        name: "Gram AltÄ±n (spot, TRY)",
         buy: gramTry,
         sell: gramTry,
         ccy: "TRY",
@@ -1671,7 +1603,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     sources.push({ title: "Stooq XAGUSD", url: xag.url });
     const ounceUsd = xag.close;
     items.push({
-      name: "Gümüş Ons (XAGUSD)",
+      name: "GÃ¼mÃ¼ÅŸ Ons (XAGUSD)",
       buy: ounceUsd,
       sell: ounceUsd,
       ccy: "USD",
@@ -1693,7 +1625,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
   }
 
   if (usdtry) {
-    sources.push({ title: "Frankfurter USD→TRY", url: "https://api.frankfurter.app/latest?from=USD&to=TRY" });
+    sources.push({ title: "Frankfurter USDâ†’TRY", url: "https://api.frankfurter.app/latest?from=USD&to=TRY" });
   }
 
   const updatedAt = xau?.date ? `${xau.date}${xau.time ? " " + xau.time : ""}` : null;
@@ -1707,7 +1639,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     sources,
     suggestions:
       L === "tr"
-        ? ["Gram altın kaç para?", "USD/TRY kuru", "Altın ons fiyatı", "Gümüş ons fiyatı"]
+        ? ["Gram altÄ±n kaÃ§ para?", "USD/TRY kuru", "AltÄ±n ons fiyatÄ±", "GÃ¼mÃ¼ÅŸ ons fiyatÄ±"]
         : ["Gold price per gram", "USD/TRY rate", "Gold ounce price", "Silver ounce price"],
   };
 }
@@ -1749,11 +1681,11 @@ async function getWeatherEvidence(text, lang, cityHint) {
     const temp = cw.temperature;
     const at = safeString(cw.time);
     const L = normalizeLang(lang);
-    if (L === "tr") return `${cond}, ${temp}\u00b0C • r\u00fczgar ${wind} km/s (saat: ${at})`;
-    if (L === "fr") return `${cond}, ${temp}\u00b0C • vent ${wind} km/h (\u00e0 ${at})`;
-    if (L === "ru") return `${cond}, ${temp}\u00b0C • \u0432\u0435\u0442\u0435\u0440 ${wind} \u043a\u043c/\u0447 (\u0432 ${at})`;
-    if (L === "ar") return `${cond}، ${temp}\u00b0C • \u0631\u064a\u0627\u062d ${wind} \u0643\u0645/\u0633 (\u0641\u064a ${at})`;
-    return `${cond}, ${temp}\u00b0C • wind ${wind} km/h (at ${at})`;
+    if (L === "tr") return `${cond}, ${temp}\u00b0C â€¢ r\u00fczgar ${wind} km/s (saat: ${at})`;
+    if (L === "fr") return `${cond}, ${temp}\u00b0C â€¢ vent ${wind} km/h (\u00e0 ${at})`;
+    if (L === "ru") return `${cond}, ${temp}\u00b0C â€¢ \u0432\u0435\u0442\u0435\u0440 ${wind} \u043a\u043c/\u0447 (\u0432 ${at})`;
+    if (L === "ar") return `${cond}ØŒ ${temp}\u00b0C â€¢ \u0631\u064a\u0627\u062d ${wind} \u0643\u0645/\u0633 (\u0641\u064a ${at})`;
+    return `${cond}, ${temp}\u00b0C â€¢ wind ${wind} km/h (at ${at})`;
   })();
 
   const forecast = [];
@@ -1766,7 +1698,7 @@ async function getWeatherEvidence(text, lang, cityHint) {
     for (let i = 0; i < Math.min(5, times.length); i++) {
       const d = safeString(times[i]);
       const cond = weatherCodeToText(code[i], lang);
-      const line = `${d}: ${cond} • ${tmin[i]}\u00b0 / ${tmax[i]}\u00b0 • ${pop[i] ?? "-"}%`;
+      const line = `${d}: ${cond} â€¢ ${tmin[i]}\u00b0 / ${tmax[i]}\u00b0 â€¢ ${pop[i] ?? "-"}%`;
       forecast.push(line);
     }
   } catch {}
@@ -1820,9 +1752,9 @@ async function getNewsEvidence(text, lang) {
 
 
 // ============================================================================
-// FIRSTS ENGINE (S60) — "İlkler" soruları için liste + disambiguation + kaynak
-//   Problem: "ilkler" soruları tekil entity aramasıyla saçmalar.
-//   Çözüm: (1) curated kategori index (10–50) (2) wiki list parsing (3) scope/person disambiguation
+// FIRSTS ENGINE (S60) â€” "Ä°lkler" sorularÄ± iÃ§in liste + disambiguation + kaynak
+//   Problem: "ilkler" sorularÄ± tekil entity aramasÄ±yla saÃ§malar.
+//   Ã‡Ã¶zÃ¼m: (1) curated kategori index (10â€“50) (2) wiki list parsing (3) scope/person disambiguation
 // ============================================================================
 
 const CURATED_FIRSTS_INDEX_V1 = [
@@ -1832,7 +1764,7 @@ const CURATED_FIRSTS_INDEX_V1 = [
     title: { tr: "Genel (karma)", en: "General (mixed)" },
     keywords: ["ilkler", "ilkleri", "pioneer", "firsts"],
     queries: {
-      tr: ["Türkiye'de ilkler", "Türkiye'nin ilkleri"],
+      tr: ["TÃ¼rkiye'de ilkler", "TÃ¼rkiye'nin ilkleri"],
       en: ["Turkey firsts", "firsts in Turkey"],
     },
   },
@@ -1841,58 +1773,58 @@ const CURATED_FIRSTS_INDEX_V1 = [
   {
     key: "politics_state",
     title: { tr: "Siyaset & Devlet", en: "Politics & State" },
-    keywords: ["cumhurbaşkanı", "cumhurbaskani", "başbakan", "bakan", "meclis", "anayasa", "seçim", "secim", "siyaset", "devlet", "tbmm"],
+    keywords: ["cumhurbaÅŸkanÄ±", "cumhurbaskani", "baÅŸbakan", "bakan", "meclis", "anayasa", "seÃ§im", "secim", "siyaset", "devlet", "tbmm"],
     queries: {
-      tr: ["Türkiye'de ilk cumhurbaşkanı", "Türkiye'de ilk başbakan"],
+      tr: ["TÃ¼rkiye'de ilk cumhurbaÅŸkanÄ±", "TÃ¼rkiye'de ilk baÅŸbakan"],
       en: ["first president of Turkey", "first prime minister of Turkey"],
     },
   },
   {
     key: "law_rights",
     title: { tr: "Hukuk & Haklar", en: "Law & Rights" },
-    keywords: ["hukuk", "yasa", "kanun", "mahkeme", "anayasa", "hak", "insan hakları", "insan haklari", "oy hakkı", "oy hakki"],
+    keywords: ["hukuk", "yasa", "kanun", "mahkeme", "anayasa", "hak", "insan haklarÄ±", "insan haklari", "oy hakkÄ±", "oy hakki"],
     queries: {
-      tr: ["Türkiye'de ilk anayasa", "Türkiye'de ilk kadınlara oy hakkı"],
+      tr: ["TÃ¼rkiye'de ilk anayasa", "TÃ¼rkiye'de ilk kadÄ±nlara oy hakkÄ±"],
       en: ["first constitution of Turkey", "women's suffrage in Turkey first"],
     },
   },
 
-  // Kadınların ilkleri (çok istenen)
+  // KadÄ±nlarÄ±n ilkleri (Ã§ok istenen)
   {
     key: "women_firsts",
-    title: { tr: "Kadınların İlkleri", en: "Women Pioneers" },
-    keywords: ["kadın", "kadin", "female", "woman", "hanım", "hanim"],
+    title: { tr: "KadÄ±nlarÄ±n Ä°lkleri", en: "Women Pioneers" },
+    keywords: ["kadÄ±n", "kadin", "female", "woman", "hanÄ±m", "hanim"],
     queries: {
-      tr: ["Türkiye'de ilk kadın", "Türkiye'nin ilk kadınları"],
+      tr: ["TÃ¼rkiye'de ilk kadÄ±n", "TÃ¼rkiye'nin ilk kadÄ±nlarÄ±"],
       en: ["first woman in Turkey", "first Turkish woman"],
     },
   },
 
-  // Askerî / savunma / havacılık
+  // AskerÃ® / savunma / havacÄ±lÄ±k
   {
     key: "military",
-    title: { tr: "Askerî Tarih", en: "Military" },
-    keywords: ["ordu", "asker", "komutan", "savaş", "savas", "genelkurmay", "harp", "deniz kuvvet", "hava kuvvet", "jandarma", "polis"],
+    title: { tr: "AskerÃ® Tarih", en: "Military" },
+    keywords: ["ordu", "asker", "komutan", "savaÅŸ", "savas", "genelkurmay", "harp", "deniz kuvvet", "hava kuvvet", "jandarma", "polis"],
     queries: {
-      tr: ["Türkiye'de ilk askeri", "Türkiye'de ilk general"],
+      tr: ["TÃ¼rkiye'de ilk askeri", "TÃ¼rkiye'de ilk general"],
       en: ["first in Turkish military", "first Turkish general"],
     },
   },
   {
     key: "defense_industry",
     title: { tr: "Savunma Sanayii", en: "Defense Industry" },
-    keywords: ["savunma", "sanayi", "saha", "iha", "siha", "tank", "silah", "mühimmat", "muhimmat", "roketsan", "tusaş", "tusas", "aselsan", "havelsan"],
+    keywords: ["savunma", "sanayi", "saha", "iha", "siha", "tank", "silah", "mÃ¼himmat", "muhimmat", "roketsan", "tusaÅŸ", "tusas", "aselsan", "havelsan"],
     queries: {
-      tr: ["Türkiye'de ilk yerli uçak", "Türkiye'de ilk yerli savunma sanayii"],
+      tr: ["TÃ¼rkiye'de ilk yerli uÃ§ak", "TÃ¼rkiye'de ilk yerli savunma sanayii"],
       en: ["first domestic aircraft Turkey", "first Turkish defense industry"],
     },
   },
   {
     key: "aviation_space",
-    title: { tr: "Havacılık & Uzay", en: "Aviation & Space" },
-    keywords: ["pilot", "uçak", "ucak", "havacılık", "havacilik", "hava", "savaş pilotu", "savas pilotu", "astronot", "uzay", "roket", "havaalanı", "havaalani"],
+    title: { tr: "HavacÄ±lÄ±k & Uzay", en: "Aviation & Space" },
+    keywords: ["pilot", "uÃ§ak", "ucak", "havacÄ±lÄ±k", "havacilik", "hava", "savaÅŸ pilotu", "savas pilotu", "astronot", "uzay", "roket", "havaalanÄ±", "havaalani"],
     queries: {
-      tr: ["Türkiye'de ilk pilot", "Türkiye havacılık ilkleri"],
+      tr: ["TÃ¼rkiye'de ilk pilot", "TÃ¼rkiye havacÄ±lÄ±k ilkleri"],
       en: ["first pilot in Turkey", "Turkey aviation firsts"],
     },
   },
@@ -1901,7 +1833,7 @@ const CURATED_FIRSTS_INDEX_V1 = [
     title: { tr: "Denizcilik", en: "Maritime" },
     keywords: ["gemi", "denizcilik", "liman", "donanma", "kaptan", "tersane", "feribot", "vapuru", "yolcu gemisi"],
     queries: {
-      tr: ["Türkiye'de ilk gemi", "Türkiye'de ilk denizcilik"],
+      tr: ["TÃ¼rkiye'de ilk gemi", "TÃ¼rkiye'de ilk denizcilik"],
       en: ["first ship Turkey", "Turkey maritime firsts"],
     },
   },
@@ -1910,134 +1842,134 @@ const CURATED_FIRSTS_INDEX_V1 = [
   {
     key: "science_tech",
     title: { tr: "Bilim & Teknoloji", en: "Science & Technology" },
-    keywords: ["bilim", "teknoloji", "mühendis", "muhendis", "buluş", "bulus", "laboratuvar", "ar-ge", "arge", "inovasyon", "patent"],
+    keywords: ["bilim", "teknoloji", "mÃ¼hendis", "muhendis", "buluÅŸ", "bulus", "laboratuvar", "ar-ge", "arge", "inovasyon", "patent"],
     queries: {
-      tr: ["Türkiye'de ilk bilim", "Türkiye'de ilk teknoloji"],
+      tr: ["TÃ¼rkiye'de ilk bilim", "TÃ¼rkiye'de ilk teknoloji"],
       en: ["first science in Turkey", "Turkey technology firsts"],
     },
   },
   {
     key: "computing_internet",
-    title: { tr: "Bilişim & İnternet", en: "Computing & Internet" },
-    keywords: ["bilgisayar", "internet", "yazılım", "yazilim", "program", "kod", "web", "site", "e-posta", "email", "telekom", "gsm"],
+    title: { tr: "BiliÅŸim & Ä°nternet", en: "Computing & Internet" },
+    keywords: ["bilgisayar", "internet", "yazÄ±lÄ±m", "yazilim", "program", "kod", "web", "site", "e-posta", "email", "telekom", "gsm"],
     queries: {
-      tr: ["Türkiye'de ilk bilgisayar", "Türkiye'de ilk internet"],
+      tr: ["TÃ¼rkiye'de ilk bilgisayar", "TÃ¼rkiye'de ilk internet"],
       en: ["first computer in Turkey", "first internet in Turkey"],
     },
   },
 
-  // Sağlık
+  // SaÄŸlÄ±k
   {
     key: "medicine_health",
-    title: { tr: "Tıp & Sağlık", en: "Medicine & Health" },
-    keywords: ["tıp", "tip", "hastane", "ameliyat", "aşı", "asi", "sağlık", "saglik", "doktor", "eczane"],
+    title: { tr: "TÄ±p & SaÄŸlÄ±k", en: "Medicine & Health" },
+    keywords: ["tÄ±p", "tip", "hastane", "ameliyat", "aÅŸÄ±", "asi", "saÄŸlÄ±k", "saglik", "doktor", "eczane"],
     queries: {
-      tr: ["Türkiye'de ilk hastane", "Türkiye'de ilk ameliyat"],
+      tr: ["TÃ¼rkiye'de ilk hastane", "TÃ¼rkiye'de ilk ameliyat"],
       en: ["first hospital in Turkey", "first surgery in Turkey"],
     },
   },
 
-  // Eğitim
+  // EÄŸitim
   {
     key: "education",
-    title: { tr: "Eğitim", en: "Education" },
-    keywords: ["okul", "üniversite", "universite", "lise", "eğitim", "egitim", "öğretmen", "ogretmen", "akademi", "fakülte", "fakulte"],
+    title: { tr: "EÄŸitim", en: "Education" },
+    keywords: ["okul", "Ã¼niversite", "universite", "lise", "eÄŸitim", "egitim", "Ã¶ÄŸretmen", "ogretmen", "akademi", "fakÃ¼lte", "fakulte"],
     queries: {
-      tr: ["Türkiye'de ilk üniversite", "Türkiye'de ilk okul"],
+      tr: ["TÃ¼rkiye'de ilk Ã¼niversite", "TÃ¼rkiye'de ilk okul"],
       en: ["first university in Turkey", "first school in Turkey"],
     },
   },
 
-  // Ekonomi / iş / sanayi / enerji
+  // Ekonomi / iÅŸ / sanayi / enerji
   {
     key: "economy_business",
-    title: { tr: "Ekonomi & İş Dünyası", en: "Economy & Business" },
-    keywords: ["ekonomi", "banka", "borsa", "şirket", "sirket", "sanayi", "fabrika", "ticaret", "ihracat", "ithalat", "girişim", "girisim"],
+    title: { tr: "Ekonomi & Ä°ÅŸ DÃ¼nyasÄ±", en: "Economy & Business" },
+    keywords: ["ekonomi", "banka", "borsa", "ÅŸirket", "sirket", "sanayi", "fabrika", "ticaret", "ihracat", "ithalat", "giriÅŸim", "girisim"],
     queries: {
-      tr: ["Türkiye'de ilk banka", "Türkiye'de ilk borsa"],
+      tr: ["TÃ¼rkiye'de ilk banka", "TÃ¼rkiye'de ilk borsa"],
       en: ["first bank in Turkey", "first stock exchange in Turkey"],
     },
   },
   {
     key: "industry_transport",
-    title: { tr: "Ulaşım & Altyapı", en: "Transport & Infrastructure" },
-    keywords: ["tren", "demiryolu", "metro", "otoyol", "köprü", "kopru", "tünel", "tunel", "havaalanı", "havaalani", "liman", "tramvay"],
+    title: { tr: "UlaÅŸÄ±m & AltyapÄ±", en: "Transport & Infrastructure" },
+    keywords: ["tren", "demiryolu", "metro", "otoyol", "kÃ¶prÃ¼", "kopru", "tÃ¼nel", "tunel", "havaalanÄ±", "havaalani", "liman", "tramvay"],
     queries: {
-      tr: ["Türkiye'de ilk demiryolu", "Türkiye'de ilk metro"],
+      tr: ["TÃ¼rkiye'de ilk demiryolu", "TÃ¼rkiye'de ilk metro"],
       en: ["first railway in Turkey", "first metro in Turkey"],
     },
   },
   {
     key: "energy",
     title: { tr: "Enerji", en: "Energy" },
-    keywords: ["enerji", "elektrik", "baraj", "nükleer", "nukleer", "santral", "petrol", "doğalgaz", "dogalgaz", "yenilenebilir", "güneş", "gunes", "rüzgar", "ruzgar"],
+    keywords: ["enerji", "elektrik", "baraj", "nÃ¼kleer", "nukleer", "santral", "petrol", "doÄŸalgaz", "dogalgaz", "yenilenebilir", "gÃ¼neÅŸ", "gunes", "rÃ¼zgar", "ruzgar"],
     queries: {
-      tr: ["Türkiye'de ilk elektrik", "Türkiye'de ilk baraj"],
+      tr: ["TÃ¼rkiye'de ilk elektrik", "TÃ¼rkiye'de ilk baraj"],
       en: ["first electricity in Turkey", "first dam in Turkey"],
     },
   },
 
-  // Medya / kültür-sanat
+  // Medya / kÃ¼ltÃ¼r-sanat
   {
     key: "press_media",
-    title: { tr: "Basın & Medya", en: "Press & Media" },
-    keywords: ["gazete", "dergi", "basın", "basin", "radyo", "televizyon", "tv", "yayın", "yayin", "haber"],
+    title: { tr: "BasÄ±n & Medya", en: "Press & Media" },
+    keywords: ["gazete", "dergi", "basÄ±n", "basin", "radyo", "televizyon", "tv", "yayÄ±n", "yayin", "haber"],
     queries: {
-      tr: ["Türkiye'de ilk gazete", "Türkiye'de ilk radyo"],
+      tr: ["TÃ¼rkiye'de ilk gazete", "TÃ¼rkiye'de ilk radyo"],
       en: ["first newspaper in Turkey", "first radio in Turkey"],
     },
   },
   {
     key: "cinema_tv",
     title: { tr: "Sinema & TV", en: "Cinema & TV" },
-    keywords: ["sinema", "film", "dizi", "televizyon", "tv", "yönetmen", "yonetmen", "oyuncu", "belgesel"],
+    keywords: ["sinema", "film", "dizi", "televizyon", "tv", "yÃ¶netmen", "yonetmen", "oyuncu", "belgesel"],
     queries: {
-      tr: ["Türkiye'de ilk film", "Türkiye'de ilk televizyon yayını"],
+      tr: ["TÃ¼rkiye'de ilk film", "TÃ¼rkiye'de ilk televizyon yayÄ±nÄ±"],
       en: ["first Turkish film", "first TV broadcast in Turkey"],
     },
   },
   {
     key: "music",
-    title: { tr: "Müzik", en: "Music" },
-    keywords: ["müzik", "muzik", "albüm", "album", "konser", "opera", "senfoni", "beste", "sanatçı", "sanatci"],
+    title: { tr: "MÃ¼zik", en: "Music" },
+    keywords: ["mÃ¼zik", "muzik", "albÃ¼m", "album", "konser", "opera", "senfoni", "beste", "sanatÃ§Ä±", "sanatci"],
     queries: {
-      tr: ["Türkiye'de ilk opera", "Türkiye'de ilk konser"],
+      tr: ["TÃ¼rkiye'de ilk opera", "TÃ¼rkiye'de ilk konser"],
       en: ["first opera in Turkey", "first concert in Turkey"],
     },
   },
   {
     key: "literature",
     title: { tr: "Edebiyat", en: "Literature" },
-    keywords: ["edebiyat", "roman", "şiir", "siir", "yazar", "kitap", "derleme", "yayıncılık", "yayincilik"],
+    keywords: ["edebiyat", "roman", "ÅŸiir", "siir", "yazar", "kitap", "derleme", "yayÄ±ncÄ±lÄ±k", "yayincilik"],
     queries: {
-      tr: ["Türkiye'de ilk roman", "Türkiye'de ilk edebiyat"],
+      tr: ["TÃ¼rkiye'de ilk roman", "TÃ¼rkiye'de ilk edebiyat"],
       en: ["first novel in Turkey", "Turkish literature firsts"],
     },
   },
   {
     key: "theatre",
     title: { tr: "Tiyatro", en: "Theatre" },
-    keywords: ["tiyatro", "sahne", "oyun", "aktör", "aktor", "festival", "gösteri", "gosteri"],
+    keywords: ["tiyatro", "sahne", "oyun", "aktÃ¶r", "aktor", "festival", "gÃ¶steri", "gosteri"],
     queries: {
-      tr: ["Türkiye'de ilk tiyatro", "Türkiye'de ilk sahne"],
+      tr: ["TÃ¼rkiye'de ilk tiyatro", "TÃ¼rkiye'de ilk sahne"],
       en: ["first theatre in Turkey", "Turkey theatre firsts"],
     },
   },
   {
     key: "visual_arts",
-    title: { tr: "Görsel Sanatlar", en: "Visual Arts" },
-    keywords: ["resim", "heykel", "müze", "muze", "sergi", "fotoğraf", "fotograf", "sanat", "galeri"],
+    title: { tr: "GÃ¶rsel Sanatlar", en: "Visual Arts" },
+    keywords: ["resim", "heykel", "mÃ¼ze", "muze", "sergi", "fotoÄŸraf", "fotograf", "sanat", "galeri"],
     queries: {
-      tr: ["Türkiye'de ilk müze", "Türkiye'de ilk sergi"],
+      tr: ["TÃ¼rkiye'de ilk mÃ¼ze", "TÃ¼rkiye'de ilk sergi"],
       en: ["first museum in Turkey", "first exhibition in Turkey"],
     },
   },
   {
     key: "architecture",
-    title: { tr: "Mimari & Yapı", en: "Architecture & Buildings" },
-    keywords: ["mimari", "yapı", "yapi", "bina", "gökdelen", "gokdelen", "cami", "kilise", "köprü", "kopru", "stadyum"],
+    title: { tr: "Mimari & YapÄ±", en: "Architecture & Buildings" },
+    keywords: ["mimari", "yapÄ±", "yapi", "bina", "gÃ¶kdelen", "gokdelen", "cami", "kilise", "kÃ¶prÃ¼", "kopru", "stadyum"],
     queries: {
-      tr: ["Türkiye'de ilk gökdelen", "Türkiye'de ilk stadyum"],
+      tr: ["TÃ¼rkiye'de ilk gÃ¶kdelen", "TÃ¼rkiye'de ilk stadyum"],
       en: ["first skyscraper in Turkey", "first stadium in Turkey"],
     },
   },
@@ -2046,20 +1978,20 @@ const CURATED_FIRSTS_INDEX_V1 = [
   {
     key: "sports",
     title: { tr: "Spor", en: "Sports" },
-    keywords: ["spor", "futbol", "basketbol", "voleybol", "olimpiyat", "şampiyon", "sampiyon", "rekor", "kulüp", "kulup"],
+    keywords: ["spor", "futbol", "basketbol", "voleybol", "olimpiyat", "ÅŸampiyon", "sampiyon", "rekor", "kulÃ¼p", "kulup"],
     queries: {
-      tr: ["Türkiye'de ilk spor kulübü", "Türkiye olimpiyat ilkleri"],
+      tr: ["TÃ¼rkiye'de ilk spor kulÃ¼bÃ¼", "TÃ¼rkiye olimpiyat ilkleri"],
       en: ["first sports club in Turkey", "Turkey Olympic firsts"],
     },
   },
 
-  // Çevre / turizm / gastronomi
+  // Ã‡evre / turizm / gastronomi
   {
     key: "environment",
-    title: { tr: "Çevre & Doğa", en: "Environment & Nature" },
-    keywords: ["çevre", "cevre", "doğa", "doga", "milli park", "koruma", "orman", "iklim", "deprem", "sel"],
+    title: { tr: "Ã‡evre & DoÄŸa", en: "Environment & Nature" },
+    keywords: ["Ã§evre", "cevre", "doÄŸa", "doga", "milli park", "koruma", "orman", "iklim", "deprem", "sel"],
     queries: {
-      tr: ["Türkiye'de ilk milli park", "Türkiye'de ilk çevre"],
+      tr: ["TÃ¼rkiye'de ilk milli park", "TÃ¼rkiye'de ilk Ã§evre"],
       en: ["first national park in Turkey", "environmental firsts in Turkey"],
     },
   },
@@ -2068,7 +2000,7 @@ const CURATED_FIRSTS_INDEX_V1 = [
     title: { tr: "Turizm & Gastronomi", en: "Tourism & Gastronomy" },
     keywords: ["turizm", "otel", "tatil", "gastronomi", "mutfak", "yemek", "restoran", "kebap", "kahve", "lokanta"],
     queries: {
-      tr: ["Türkiye'de ilk otel", "Türkiye'de ilk restoran"],
+      tr: ["TÃ¼rkiye'de ilk otel", "TÃ¼rkiye'de ilk restoran"],
       en: ["first hotel in Turkey", "first restaurant in Turkey"],
     },
   },
@@ -2085,11 +2017,11 @@ function detectFirstsScope(text = "", lang = "tr") {
   const n = normalizeLoose(text);
 
   // global keywords
-  if (/\b(dunya|world|global)\b/.test(n)) return { key: "world", label: lang === "tr" ? "Dünya" : "World" };
+  if (/\b(dunya|world|global)\b/.test(n)) return { key: "world", label: lang === "tr" ? "DÃ¼nya" : "World" };
 
   // Turkey keywords
   if (/\b(turkiye|turk|turkiye nin|t c|turkiye de|turkiyede)\b/.test(n)) {
-    return { key: "turkey", label: lang === "tr" ? "Türkiye" : "Turkey" };
+    return { key: "turkey", label: lang === "tr" ? "TÃ¼rkiye" : "Turkey" };
   }
 
   // light country detection (keep small; disambiguate rather than guessing)
@@ -2136,7 +2068,7 @@ function pickFirstsCategory(text = "", lang = "tr") {
       if (!k) continue;
       if (n.includes(k)) score += (k.length >= 6 ? 3 : 2);
     }
-    // tiny boost when query contains "ilk kadın" etc.
+    // tiny boost when query contains "ilk kadÄ±n" etc.
     if (c.key === "women_firsts" && /\b(il kadin|ilk kadin|female|woman)\b/.test(n)) score += 4;
     if (score > bestScore) { bestScore = score; best = c; }
   }
@@ -2202,7 +2134,7 @@ function filterFirstsItems(items = [], lang = "tr") {
     if (!x) continue;
     if (x.length < 5 || x.length > 220) continue;
     // drop obvious footnotes / nav fragments
-    if (/\b(wikipedia|vikisözlük|vikisozluk|vikiveri|wikidata)\b/i.test(x)) continue;
+    if (/\b(wikipedia|vikisÃ¶zlÃ¼k|vikisozluk|vikiveri|wikidata)\b/i.test(x)) continue;
     if (/^\[\d+\]$/.test(x)) continue;
     out.push(x);
     if (out.length >= 20) break;
@@ -2231,8 +2163,8 @@ async function getFirstsEvidence(text, lang) {
   const raw = safeString(text);
   if (!raw) return null;
 
-  // If user clicked a disambiguation option like: "ilk ... → Page Title"
-  const arrowMatch = raw.match(/(.*?)(?:->|→)\s*(.+)$/);
+  // If user clicked a disambiguation option like: "ilk ... â†’ Page Title"
+  const arrowMatch = raw.match(/(.*?)(?:->|â†’)\s*(.+)$/);
   if (arrowMatch && arrowMatch[2]) {
     const forcedTitle = safeString(arrowMatch[2]);
     const sum = await getWikiEvidence(forcedTitle, L).catch(() => null);
@@ -2245,7 +2177,7 @@ async function getFirstsEvidence(text, lang) {
         answer: sum.extract,
         trustScore: Math.max(60, Math.min(88, (sum.trustScore || 70) + 6)),
         sources: sum.sources || (forcedTitle ? [{ title: `Wikipedia: ${forcedTitle}`, url: wikipediaPageUrl(forcedTitle, L) }] : []),
-        suggestions: L === "tr" ? ["Türkiye'nin ilkleri havacılık", "Türkiye'nin ilkleri kadınlar", "Türkiye'nin ilkleri spor"] : ["Turkey firsts aviation", "Turkey firsts women", "Turkey firsts sports"],
+        suggestions: L === "tr" ? ["TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k", "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri spor"] : ["Turkey firsts aviation", "Turkey firsts women", "Turkey firsts sports"],
       };
     }
     // fallback: still return wiki
@@ -2275,35 +2207,35 @@ async function getFirstsEvidence(text, lang) {
       return {
         type: "disambiguation",
         options: [
-          { label: L === "tr" ? "Türkiye'nin ilkleri" : "Turkey firsts", desc: L === "tr" ? "Türkiye odaklı liste" : "Turkey-focused list" },
-          { label: L === "tr" ? "Dünyanın ilkleri" : "World firsts", desc: L === "tr" ? "Genel / dünya çapı" : "Global / world-wide" },
+          { label: L === "tr" ? "TÃ¼rkiye'nin ilkleri" : "Turkey firsts", desc: L === "tr" ? "TÃ¼rkiye odaklÄ± liste" : "Turkey-focused list" },
+          { label: L === "tr" ? "DÃ¼nyanÄ±n ilkleri" : "World firsts", desc: L === "tr" ? "Genel / dÃ¼nya Ã§apÄ±" : "Global / world-wide" },
         ],
         sources: [],
         trustScore: 45,
       };
     }
 
-    // single "ilk ..." question → ask country/scope
+    // single "ilk ..." question â†’ ask country/scope
     const baseQ = stripQuestionNoise(cleaned) || cleaned;
     return {
       type: "disambiguation",
       options: [
-        { label: (L === "tr" ? `Türkiye'de ${baseQ}` : `In Turkey: ${baseQ}`), desc: L === "tr" ? "Türkiye kapsamı" : "Turkey scope" },
-        { label: (L === "tr" ? `Dünya'da ${baseQ}` : `Worldwide: ${baseQ}`), desc: L === "tr" ? "Dünya kapsamı" : "World scope" },
+        { label: (L === "tr" ? `TÃ¼rkiye'de ${baseQ}` : `In Turkey: ${baseQ}`), desc: L === "tr" ? "TÃ¼rkiye kapsamÄ±" : "Turkey scope" },
+        { label: (L === "tr" ? `DÃ¼nya'da ${baseQ}` : `Worldwide: ${baseQ}`), desc: L === "tr" ? "DÃ¼nya kapsamÄ±" : "World scope" },
       ],
       sources: [],
       trustScore: 45,
     };
   }
 
-  // "Türkiye'nin ilkleri" (genel) → kategori menüsü (curated index)
+  // "TÃ¼rkiye'nin ilkleri" (genel) â†’ kategori menÃ¼sÃ¼ (curated index)
   if (scope.key === "turkey" && wantsList && isGenericTurkeyFirstsQuery(raw)) {
     const cats = CURATED_FIRSTS_INDEX_V1
       .filter((c) => c.key !== "general")
       .map((c) => {
         const t = (c.title && (c.title[L] || c.title.tr)) || c.key;
         const suggestion = L === "tr"
-          ? `Türkiye'nin ilkleri ${t}`
+          ? `TÃ¼rkiye'nin ilkleri ${t}`
           : `Turkey firsts ${t}`;
         return { title: t, suggestion };
       });
@@ -2366,18 +2298,18 @@ async function getFirstsEvidence(text, lang) {
           type: "firsts",
           mode: "single",
           scope: scope.label,
-          title: (category.title && (category.title[L] || category.title.tr)) || "İlkler",
+          title: (category.title && (category.title[L] || category.title.tr)) || "Ä°lkler",
           answer: sum.extract,
           trustScore: Math.max(55, Math.min(82, (sum.trustScore || 68) + 4)),
           sources: sum.sources || [],
           suggestions: L === "tr"
-            ? [`${scope.label} ilkleri ${((category.title && category.title.tr) || "")}`.trim(), "Türkiye'nin ilkleri kadınlar", "Türkiye'nin ilkleri havacılık"]
+            ? [`${scope.label} ilkleri ${((category.title && category.title.tr) || "")}`.trim(), "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k"]
             : [`${scope.label} firsts ${((category.title && category.title.en) || "")}`.trim(), "Turkey firsts women", "Turkey firsts aviation"],
         };
       }
     }
 
-    const catTitle = (category.title && (category.title[L] || category.title.tr)) || "İlkler";
+    const catTitle = (category.title && (category.title[L] || category.title.tr)) || "Ä°lkler";
     const trustScore = Math.max(60, Math.min(88, 62 + (uniq.length >= 6 ? 10 : uniq.length >= 3 ? 6 : 2) + (sources.length ? 6 : 0)));
 
     return {
@@ -2389,12 +2321,12 @@ async function getFirstsEvidence(text, lang) {
       trustScore,
       sources: sources.slice(0, 3),
       suggestions: L === "tr"
-        ? [`${scope.label} ilkleri ${catTitle}`.trim(), `${scope.label} ilk kadın`, `${scope.label} ilk bilim`, `${scope.label} ilk spor`]
+        ? [`${scope.label} ilkleri ${catTitle}`.trim(), `${scope.label} ilk kadÄ±n`, `${scope.label} ilk bilim`, `${scope.label} ilk spor`]
         : [`${scope.label} firsts ${catTitle}`.trim(), `${scope.label} first woman`, `${scope.label} first science`, `${scope.label} first sports`],
     };
   }
 
-  // Single mode: "ilk X kim" → search, disambiguate by page candidates, answer via forced title click
+  // Single mode: "ilk X kim" â†’ search, disambiguate by page candidates, answer via forced title click
   const baseQ = stripQuestionNoise(cleaned) || cleaned;
   const qSingle = (() => {
     if (L === "tr") return `${scope.label} ${baseQ}`;
@@ -2418,7 +2350,7 @@ async function getFirstsEvidence(text, lang) {
   // If ambiguous, offer disambiguation where clicking keeps context via arrow
   if (second && best && (best.sc - second.sc) <= 1) {
     const opts = scored.slice(0, 4).map((r) => ({
-      label: `${baseQ} → ${r.title}`,
+      label: `${baseQ} â†’ ${r.title}`,
       desc: r.snippet ? r.snippet.slice(0, 90) : "",
     }));
 
@@ -2441,7 +2373,7 @@ async function getFirstsEvidence(text, lang) {
       answer: sum.extract,
       trustScore: Math.max(60, Math.min(90, (sum.trustScore || 70) + 6)),
       sources: sum.sources || [{ title: `Wikipedia: ${best.title}`, url: wikipediaPageUrl(best.title, L) }],
-      suggestions: L === "tr" ? ["Türkiye'nin ilkleri", "Türkiye'nin ilkleri kadınlar", "Türkiye'nin ilkleri havacılık"] : ["Turkey firsts", "Turkey firsts women", "Turkey firsts aviation"],
+      suggestions: L === "tr" ? ["TÃ¼rkiye'nin ilkleri", "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k"] : ["Turkey firsts", "Turkey firsts women", "Turkey firsts aviation"],
     };
   }
 
@@ -2477,7 +2409,7 @@ async function getWikiEvidence(text, lang) {
 
   const bestTitle = safeString(best?.title || "");
   const titleLow = bestTitle.toLowerCase();
-  const stop = new Set(["nedir","ne","kim","kaç","kac","hangi","nasıl","nasil","mi","mı","mu","mü","ve","ile","ya","ya da","what","how","who","which","is","are"]);
+  const stop = new Set(["nedir","ne","kim","kaÃ§","kac","hangi","nasÄ±l","nasil","mi","mÄ±","mu","mÃ¼","ve","ile","ya","ya da","what","how","who","which","is","are"]);
   const sig = q.toLowerCase().split(/\s+/g).map((w) => w.trim()).filter((w) => w.length >= 4 && !stop.has(w));
   if (sig.length && !sig.some((w) => titleLow.includes(w))) {
     // If none of the significant query words appear in title, treat as mismatch.
@@ -2504,16 +2436,16 @@ async function getWikiEvidence(text, lang) {
 }
 
 // ============================================================================
-// STRUCTURED FACTS (Wikidata) + DISAMBIGUATION  — S60
-//   Goal: “başkent / nüfus / para birimi / resmi dil / lider / alan adı …”
-//   via Wikidata, with a safe “hangisi?” clarification flow.
+// STRUCTURED FACTS (Wikidata) + DISAMBIGUATION  â€” S60
+//   Goal: â€œbaÅŸkent / nÃ¼fus / para birimi / resmi dil / lider / alan adÄ± â€¦â€
+//   via Wikidata, with a safe â€œhangisi?â€ clarification flow.
 // ============================================================================
 
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 
 // Small deterministic overrides for very common entities (helps when search/disambiguation fails)
 const ENTITY_OVERRIDES = new Map([
-  ['turkiye', 'Q43'], ['türkiye', 'Q43'], ['turkey', 'Q43'],
+  ['turkiye', 'Q43'], ['tÃ¼rkiye', 'Q43'], ['turkey', 'Q43'],
   ['ankara', 'Q3640'], ['istanbul', 'Q406'], ['bodrum', 'Q130779'],
   ['fransa', 'Q142'], ['france', 'Q142'],
   ['almanya', 'Q183'], ['germany', 'Q183'],
@@ -2552,56 +2484,56 @@ async function wikidataGetEntityByWikiTitle(title, lang) {
 // 30+ property map (country/city/person). Keep it small-but-useful.
 const FACT_PROPERTIES = [
   // Geo / state facts
-  { key: "capital", pid: "P36", valueType: "item", labels: { tr: "Başkenti", en: "Capital", fr: "Capitale", ru: "Столица", ar: "العاصمة" },
-    kw: ["başkent", "baskent", "capital", "capitale", "столица", "العاصمة"] },
-  { key: "population", pid: "P1082", valueType: "quantity", labels: { tr: "Nüfus", en: "Population", fr: "Population", ru: "Население", ar: "عدد السكان" },
-    kw: ["nüfus", "nufus", "population", "население", "سكان", "عدد السكان"] },
-  { key: "currency", pid: "P38", valueType: "item", labels: { tr: "Para birimi", en: "Currency", fr: "Monnaie", ru: "Валюта", ar: "العملة" },
-    kw: ["para birimi", "para", "currency", "monnaie", "валюта", "العملة"] },
-  { key: "official_language", pid: "P37", valueType: "item", labels: { tr: "Resmi dil", en: "Official language", fr: "Langue officielle", ru: "Официальный язык", ar: "اللغة الرسمية" },
-    kw: ["resmi dil", "official language", "langue officielle", "официальный язык", "اللغة الرسمية"] },
-  { key: "area", pid: "P2046", valueType: "quantity", labels: { tr: "Yüzölçümü", en: "Area", fr: "Superficie", ru: "Площадь", ar: "المساحة" },
-    kw: ["yüzölçümü", "yuzolcumu", "area", "superficie", "площадь", "المساحة", "km2", "km²"] },
-  { key: "calling_code", pid: "P474", valueType: "string", labels: { tr: "Telefon kodu", en: "Calling code", fr: "Indicatif", ru: "Телефонный код", ar: "رمز الاتصال" },
-    kw: ["telefon kodu", "ülke kodu", "calling code", "indicatif", "код", "رمز الاتصال", "dial code"] },
-  { key: "tld", pid: "P78", valueType: "string", labels: { tr: "İnternet alan adı", en: "Internet TLD", fr: "Domaine Internet", ru: "Домен", ar: "نطاق الإنترنت" },
-    kw: ["alan adı", "alan adi", "tld", "domain", "domaine", "домен", "نطاق"] },
-  { key: "time_zone", pid: "P421", valueType: "item", labels: { tr: "Saat dilimi", en: "Time zone", fr: "Fuseau horaire", ru: "Часовой пояс", ar: "المنطقة الزمنية" },
-    kw: ["saat dilimi", "time zone", "fuseau", "часовой пояс", "المنطقة الزمنية"] },
-  { key: "continent", pid: "P30", valueType: "item", labels: { tr: "Kıta", en: "Continent", fr: "Continent", ru: "Континент", ar: "القارة" },
-    kw: ["kıta", "kita", "continent", "континент", "القارة"] },
-  { key: "neighbors", pid: "P47", valueType: "item", labels: { tr: "Komşular", en: "Neighbors", fr: "Voisins", ru: "Соседи", ar: "الدول المجاورة" },
-    kw: ["komşu", "komşuları", "neighbor", "neighbour", "voisin", "сосед", "المجاورة"] },
-  { key: "inception", pid: "P571", valueType: "time", labels: { tr: "Kuruluş", en: "Inception", fr: "Création", ru: "Основание", ar: "التأسيس" },
-    kw: ["kuruluş", "kurulus", "inception", "founded", "création", "основан", "تأسست"] },
-  { key: "anthem", pid: "P85", valueType: "item", labels: { tr: "Milli marş", en: "Anthem", fr: "Hymne", ru: "Гимн", ar: "النشيد" },
-    kw: ["milli marş", "marş", "anthem", "hymne", "гимн", "النشيد"] },
-  { key: "motto", pid: "P1451", valueType: "monolingual", labels: { tr: "Slogan", en: "Motto", fr: "Devise", ru: "Девиз", ar: "الشعار" },
-    kw: ["motto", "slogan", "devise", "девиз", "الشعار"] },
-  { key: "official_website", pid: "P856", valueType: "string", labels: { tr: "Resmi web", en: "Official website", fr: "Site officiel", ru: "Офиц. сайт", ar: "الموقع الرسمي" },
-    kw: ["resmi site", "resmi web", "official website", "site officiel", "официальный сайт", "الموقع الرسمي"] },
+  { key: "capital", pid: "P36", valueType: "item", labels: { tr: "BaÅŸkenti", en: "Capital", fr: "Capitale", ru: "Ğ¡Ñ‚Ğ¾Ğ»Ğ¸Ñ†Ğ°", ar: "Ø§Ù„Ø¹Ø§ØµÙ…Ø©" },
+    kw: ["baÅŸkent", "baskent", "capital", "capitale", "ÑÑ‚Ğ¾Ğ»Ğ¸Ñ†Ğ°", "Ø§Ù„Ø¹Ø§ØµÙ…Ø©"] },
+  { key: "population", pid: "P1082", valueType: "quantity", labels: { tr: "NÃ¼fus", en: "Population", fr: "Population", ru: "ĞĞ°ÑĞµĞ»ĞµĞ½Ğ¸Ğµ", ar: "Ø¹Ø¯Ø¯ Ø§Ù„Ø³ÙƒØ§Ù†" },
+    kw: ["nÃ¼fus", "nufus", "population", "Ğ½Ğ°ÑĞµĞ»ĞµĞ½Ğ¸Ğµ", "Ø³ÙƒØ§Ù†", "Ø¹Ø¯Ø¯ Ø§Ù„Ø³ÙƒØ§Ù†"] },
+  { key: "currency", pid: "P38", valueType: "item", labels: { tr: "Para birimi", en: "Currency", fr: "Monnaie", ru: "Ğ’Ğ°Ğ»ÑÑ‚Ğ°", ar: "Ø§Ù„Ø¹Ù…Ù„Ø©" },
+    kw: ["para birimi", "para", "currency", "monnaie", "Ğ²Ğ°Ğ»ÑÑ‚Ğ°", "Ø§Ù„Ø¹Ù…Ù„Ø©"] },
+  { key: "official_language", pid: "P37", valueType: "item", labels: { tr: "Resmi dil", en: "Official language", fr: "Langue officielle", ru: "ĞÑ„Ğ¸Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ·Ñ‹Ğº", ar: "Ø§Ù„Ù„ØºØ© Ø§Ù„Ø±Ø³Ù…ÙŠØ©" },
+    kw: ["resmi dil", "official language", "langue officielle", "Ğ¾Ñ„Ğ¸Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ·Ñ‹Ğº", "Ø§Ù„Ù„ØºØ© Ø§Ù„Ø±Ø³Ù…ÙŠØ©"] },
+  { key: "area", pid: "P2046", valueType: "quantity", labels: { tr: "YÃ¼zÃ¶lÃ§Ã¼mÃ¼", en: "Area", fr: "Superficie", ru: "ĞŸĞ»Ğ¾Ñ‰Ğ°Ğ´ÑŒ", ar: "Ø§Ù„Ù…Ø³Ø§Ø­Ø©" },
+    kw: ["yÃ¼zÃ¶lÃ§Ã¼mÃ¼", "yuzolcumu", "area", "superficie", "Ğ¿Ğ»Ğ¾Ñ‰Ğ°Ğ´ÑŒ", "Ø§Ù„Ù…Ø³Ø§Ø­Ø©", "km2", "kmÂ²"] },
+  { key: "calling_code", pid: "P474", valueType: "string", labels: { tr: "Telefon kodu", en: "Calling code", fr: "Indicatif", ru: "Ğ¢ĞµĞ»ĞµÑ„Ğ¾Ğ½Ğ½Ñ‹Ğ¹ ĞºĞ¾Ğ´", ar: "Ø±Ù…Ø² Ø§Ù„Ø§ØªØµØ§Ù„" },
+    kw: ["telefon kodu", "Ã¼lke kodu", "calling code", "indicatif", "ĞºĞ¾Ğ´", "Ø±Ù…Ø² Ø§Ù„Ø§ØªØµØ§Ù„", "dial code"] },
+  { key: "tld", pid: "P78", valueType: "string", labels: { tr: "Ä°nternet alan adÄ±", en: "Internet TLD", fr: "Domaine Internet", ru: "Ğ”Ğ¾Ğ¼ĞµĞ½", ar: "Ù†Ø·Ø§Ù‚ Ø§Ù„Ø¥Ù†ØªØ±Ù†Øª" },
+    kw: ["alan adÄ±", "alan adi", "tld", "domain", "domaine", "Ğ´Ğ¾Ğ¼ĞµĞ½", "Ù†Ø·Ø§Ù‚"] },
+  { key: "time_zone", pid: "P421", valueType: "item", labels: { tr: "Saat dilimi", en: "Time zone", fr: "Fuseau horaire", ru: "Ğ§Ğ°ÑĞ¾Ğ²Ğ¾Ğ¹ Ğ¿Ğ¾ÑÑ", ar: "Ø§Ù„Ù…Ù†Ø·Ù‚Ø© Ø§Ù„Ø²Ù…Ù†ÙŠØ©" },
+    kw: ["saat dilimi", "time zone", "fuseau", "Ñ‡Ğ°ÑĞ¾Ğ²Ğ¾Ğ¹ Ğ¿Ğ¾ÑÑ", "Ø§Ù„Ù…Ù†Ø·Ù‚Ø© Ø§Ù„Ø²Ù…Ù†ÙŠØ©"] },
+  { key: "continent", pid: "P30", valueType: "item", labels: { tr: "KÄ±ta", en: "Continent", fr: "Continent", ru: "ĞšĞ¾Ğ½Ñ‚Ğ¸Ğ½ĞµĞ½Ñ‚", ar: "Ø§Ù„Ù‚Ø§Ø±Ø©" },
+    kw: ["kÄ±ta", "kita", "continent", "ĞºĞ¾Ğ½Ñ‚Ğ¸Ğ½ĞµĞ½Ñ‚", "Ø§Ù„Ù‚Ø§Ø±Ø©"] },
+  { key: "neighbors", pid: "P47", valueType: "item", labels: { tr: "KomÅŸular", en: "Neighbors", fr: "Voisins", ru: "Ğ¡Ğ¾ÑĞµĞ´Ğ¸", ar: "Ø§Ù„Ø¯ÙˆÙ„ Ø§Ù„Ù…Ø¬Ø§ÙˆØ±Ø©" },
+    kw: ["komÅŸu", "komÅŸularÄ±", "neighbor", "neighbour", "voisin", "ÑĞ¾ÑĞµĞ´", "Ø§Ù„Ù…Ø¬Ø§ÙˆØ±Ø©"] },
+  { key: "inception", pid: "P571", valueType: "time", labels: { tr: "KuruluÅŸ", en: "Inception", fr: "CrÃ©ation", ru: "ĞÑĞ½Ğ¾Ğ²Ğ°Ğ½Ğ¸Ğµ", ar: "Ø§Ù„ØªØ£Ø³ÙŠØ³" },
+    kw: ["kuruluÅŸ", "kurulus", "inception", "founded", "crÃ©ation", "Ğ¾ÑĞ½Ğ¾Ğ²Ğ°Ğ½", "ØªØ£Ø³Ø³Øª"] },
+  { key: "anthem", pid: "P85", valueType: "item", labels: { tr: "Milli marÅŸ", en: "Anthem", fr: "Hymne", ru: "Ğ“Ğ¸Ğ¼Ğ½", ar: "Ø§Ù„Ù†Ø´ÙŠØ¯" },
+    kw: ["milli marÅŸ", "marÅŸ", "anthem", "hymne", "Ğ³Ğ¸Ğ¼Ğ½", "Ø§Ù„Ù†Ø´ÙŠØ¯"] },
+  { key: "motto", pid: "P1451", valueType: "monolingual", labels: { tr: "Slogan", en: "Motto", fr: "Devise", ru: "Ğ”ĞµĞ²Ğ¸Ğ·", ar: "Ø§Ù„Ø´Ø¹Ø§Ø±" },
+    kw: ["motto", "slogan", "devise", "Ğ´ĞµĞ²Ğ¸Ğ·", "Ø§Ù„Ø´Ø¹Ø§Ø±"] },
+  { key: "official_website", pid: "P856", valueType: "string", labels: { tr: "Resmi web", en: "Official website", fr: "Site officiel", ru: "ĞÑ„Ğ¸Ñ†. ÑĞ°Ğ¹Ñ‚", ar: "Ø§Ù„Ù…ÙˆÙ‚Ø¹ Ø§Ù„Ø±Ø³Ù…ÙŠ" },
+    kw: ["resmi site", "resmi web", "official website", "site officiel", "Ğ¾Ñ„Ğ¸Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ñ‹Ğ¹ ÑĞ°Ğ¹Ñ‚", "Ø§Ù„Ù…ÙˆÙ‚Ø¹ Ø§Ù„Ø±Ø³Ù…ÙŠ"] },
 
   // Leadership
-  { key: "mayor", pid: "P6", valueType: "item", labels: { tr: "Belediye başkanı", en: "Mayor", fr: "Maire", ru: "Мэр", ar: "رئيس البلدية" },
-    kw: ["belediye başkanı", "belediye baskani", "mayor", "maire", "мэр", "رئيس البلدية"] },
-  { key: "head_of_state", pid: "P35", valueType: "item", labels: { tr: "Devlet başkanı", en: "Head of state", fr: "Chef d'État", ru: "Глава государства", ar: "رئيس الدولة" },
-    kw: ["devlet başkanı", "cumhurbaşkanı", "head of state", "chef d'état", "глава государства", "رئيس الدولة"] },
-  { key: "head_of_government", pid: "P6", valueType: "item", labels: { tr: "Hükümet başkanı", en: "Head of government", fr: "Chef du gouvernement", ru: "Глава правительства", ar: "رئيس الحكومة" },
-    kw: ["başbakan", "hükümet başkanı", "head of government", "глава правительства", "رئيس الحكومة"] },
+  { key: "mayor", pid: "P6", valueType: "item", labels: { tr: "Belediye baÅŸkanÄ±", en: "Mayor", fr: "Maire", ru: "ĞœÑÑ€", ar: "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø¨Ù„Ø¯ÙŠØ©" },
+    kw: ["belediye baÅŸkanÄ±", "belediye baskani", "mayor", "maire", "Ğ¼ÑÑ€", "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø¨Ù„Ø¯ÙŠØ©"] },
+  { key: "head_of_state", pid: "P35", valueType: "item", labels: { tr: "Devlet baÅŸkanÄ±", en: "Head of state", fr: "Chef d'Ã‰tat", ru: "Ğ“Ğ»Ğ°Ğ²Ğ° Ğ³Ğ¾ÑÑƒĞ´Ğ°Ñ€ÑÑ‚Ğ²Ğ°", ar: "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø¯ÙˆÙ„Ø©" },
+    kw: ["devlet baÅŸkanÄ±", "cumhurbaÅŸkanÄ±", "head of state", "chef d'Ã©tat", "Ğ³Ğ»Ğ°Ğ²Ğ° Ğ³Ğ¾ÑÑƒĞ´Ğ°Ñ€ÑÑ‚Ğ²Ğ°", "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø¯ÙˆÙ„Ø©"] },
+  { key: "head_of_government", pid: "P6", valueType: "item", labels: { tr: "HÃ¼kÃ¼met baÅŸkanÄ±", en: "Head of government", fr: "Chef du gouvernement", ru: "Ğ“Ğ»Ğ°Ğ²Ğ° Ğ¿Ñ€Ğ°Ğ²Ğ¸Ñ‚ĞµĞ»ÑŒÑÑ‚Ğ²Ğ°", ar: "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø­ÙƒÙˆÙ…Ø©" },
+    kw: ["baÅŸbakan", "hÃ¼kÃ¼met baÅŸkanÄ±", "head of government", "Ğ³Ğ»Ğ°Ğ²Ğ° Ğ¿Ñ€Ğ°Ğ²Ğ¸Ñ‚ĞµĞ»ÑŒÑÑ‚Ğ²Ğ°", "Ø±Ø¦ÙŠØ³ Ø§Ù„Ø­ÙƒÙˆÙ…Ø©"] },
 
   // Person facts
-  { key: "birth", pid: "P569", valueType: "time", labels: { tr: "Doğum tarihi", en: "Date of birth", fr: "Naissance", ru: "Дата рождения", ar: "تاريخ الميلاد" },
-    kw: ["doğum", "dogum", "born", "date of birth", "naissance", "родился", "ميلاد"] },
-  { key: "death", pid: "P570", valueType: "time", labels: { tr: "Ölüm tarihi", en: "Date of death", fr: "Décès", ru: "Дата смерти", ar: "تاريخ الوفاة" },
-    kw: ["ölüm", "olum", "died", "death", "décès", "умер", "الوفاة"] },
-  { key: "occupation", pid: "P106", valueType: "item", labels: { tr: "Meslek", en: "Occupation", fr: "Profession", ru: "Профессия", ar: "المهنة" },
-    kw: ["meslek", "occupation", "profession", "профессия", "المهنة"] },
-  { key: "citizenship", pid: "P27", valueType: "item", labels: { tr: "Vatandaşlık", en: "Citizenship", fr: "Nationalité", ru: "Гражданство", ar: "الجنسية" },
-    kw: ["vatandaşlık", "citizenship", "nationalité", "гражданство", "الجنسية"] },
-  { key: "spouse", pid: "P26", valueType: "item", labels: { tr: "Eş", en: "Spouse", fr: "Conjoint", ru: "Супруг(а)", ar: "الزوج/الزوجة" },
-    kw: ["eşi", "eş", "spouse", "conjoint", "супруг", "الزوج"] },
-  { key: "educated_at", pid: "P69", valueType: "item", labels: { tr: "Eğitim", en: "Education", fr: "Éducation", ru: "Образование", ar: "التعليم" },
-    kw: ["eğitim", "okudu", "education", "éducation", "образование", "التعليم"] },
+  { key: "birth", pid: "P569", valueType: "time", labels: { tr: "DoÄŸum tarihi", en: "Date of birth", fr: "Naissance", ru: "Ğ”Ğ°Ñ‚Ğ° Ñ€Ğ¾Ğ¶Ğ´ĞµĞ½Ğ¸Ñ", ar: "ØªØ§Ø±ÙŠØ® Ø§Ù„Ù…ÙŠÙ„Ø§Ø¯" },
+    kw: ["doÄŸum", "dogum", "born", "date of birth", "naissance", "Ñ€Ğ¾Ğ´Ğ¸Ğ»ÑÑ", "Ù…ÙŠÙ„Ø§Ø¯"] },
+  { key: "death", pid: "P570", valueType: "time", labels: { tr: "Ã–lÃ¼m tarihi", en: "Date of death", fr: "DÃ©cÃ¨s", ru: "Ğ”Ğ°Ñ‚Ğ° ÑĞ¼ĞµÑ€Ñ‚Ğ¸", ar: "ØªØ§Ø±ÙŠØ® Ø§Ù„ÙˆÙØ§Ø©" },
+    kw: ["Ã¶lÃ¼m", "olum", "died", "death", "dÃ©cÃ¨s", "ÑƒĞ¼ĞµÑ€", "Ø§Ù„ÙˆÙØ§Ø©"] },
+  { key: "occupation", pid: "P106", valueType: "item", labels: { tr: "Meslek", en: "Occupation", fr: "Profession", ru: "ĞŸÑ€Ğ¾Ñ„ĞµÑÑĞ¸Ñ", ar: "Ø§Ù„Ù…Ù‡Ù†Ø©" },
+    kw: ["meslek", "occupation", "profession", "Ğ¿Ñ€Ğ¾Ñ„ĞµÑÑĞ¸Ñ", "Ø§Ù„Ù…Ù‡Ù†Ø©"] },
+  { key: "citizenship", pid: "P27", valueType: "item", labels: { tr: "VatandaÅŸlÄ±k", en: "Citizenship", fr: "NationalitÃ©", ru: "Ğ“Ñ€Ğ°Ğ¶Ğ´Ğ°Ğ½ÑÑ‚Ğ²Ğ¾", ar: "Ø§Ù„Ø¬Ù†Ø³ÙŠØ©" },
+    kw: ["vatandaÅŸlÄ±k", "citizenship", "nationalitÃ©", "Ğ³Ñ€Ğ°Ğ¶Ğ´Ğ°Ğ½ÑÑ‚Ğ²Ğ¾", "Ø§Ù„Ø¬Ù†Ø³ÙŠØ©"] },
+  { key: "spouse", pid: "P26", valueType: "item", labels: { tr: "EÅŸ", en: "Spouse", fr: "Conjoint", ru: "Ğ¡ÑƒĞ¿Ñ€ÑƒĞ³(Ğ°)", ar: "Ø§Ù„Ø²ÙˆØ¬/Ø§Ù„Ø²ÙˆØ¬Ø©" },
+    kw: ["eÅŸi", "eÅŸ", "spouse", "conjoint", "ÑÑƒĞ¿Ñ€ÑƒĞ³", "Ø§Ù„Ø²ÙˆØ¬"] },
+  { key: "educated_at", pid: "P69", valueType: "item", labels: { tr: "EÄŸitim", en: "Education", fr: "Ã‰ducation", ru: "ĞĞ±Ñ€Ğ°Ğ·Ğ¾Ğ²Ğ°Ğ½Ğ¸Ğµ", ar: "Ø§Ù„ØªØ¹Ù„ÙŠÙ…" },
+    kw: ["eÄŸitim", "okudu", "education", "Ã©ducation", "Ğ¾Ğ±Ñ€Ğ°Ğ·Ğ¾Ğ²Ğ°Ğ½Ğ¸Ğµ", "Ø§Ù„ØªØ¹Ù„ÙŠÙ…"] },
 ];
 
 function wikilangForWikidata(lang) {
@@ -2621,11 +2553,11 @@ function stripQuestionNoise(text) {
   const s = safeString(text).toLowerCase();
   if (!s) return "";
   const noise = [
-    "nedir", "ne", "kaç", "kim", "hangi", "nerede", "ne zaman", "nasıl",
+    "nedir", "ne", "kaÃ§", "kim", "hangi", "nerede", "ne zaman", "nasÄ±l",
     "what", "who", "which", "where", "when", "how", "tell me",
-    "من", "ما", "ماذا", "كم", "أين", "متى", "كيف",
-    "что", "кто", "где", "когда", "как", "сколько",
-    "quoi", "qui", "où", "quand", "comment",
+    "Ù…Ù†", "Ù…Ø§", "Ù…Ø§Ø°Ø§", "ÙƒÙ…", "Ø£ÙŠÙ†", "Ù…ØªÙ‰", "ÙƒÙŠÙ",
+    "Ñ‡Ñ‚Ğ¾", "ĞºÑ‚Ğ¾", "Ğ³Ğ´Ğµ", "ĞºĞ¾Ğ³Ğ´Ğ°", "ĞºĞ°Ğº", "ÑĞºĞ¾Ğ»ÑŒĞºĞ¾",
+    "quoi", "qui", "oÃ¹", "quand", "comment",
   ];
   let out = s;
   for (const w of noise) out = out.replace(new RegExp(`\\b${w}\\b`, "gi"), " ");
@@ -2653,7 +2585,7 @@ function guessEntityHint(text, prop) {
   if (prop?.kw) kill.push(...prop.kw);
 
   // Extra generic words that often pollute entity hints
-  kill.push("ülke", "şehir", "belediye", "ilçe", "district", "municipality", "country", "city", "state", "devlet", "insan", "kişi", "person");
+  kill.push("Ã¼lke", "ÅŸehir", "belediye", "ilÃ§e", "district", "municipality", "country", "city", "state", "devlet", "insan", "kiÅŸi", "person");
 
   let out = low0;
   const escapeRe = (s) => safeString(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2680,15 +2612,15 @@ function guessEntityHint(text, prop) {
   }
 
   out = out
-    .replace(/[“”"“”]/g, " ")
+    .replace(/[â€œâ€"â€œâ€]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  // Turkish possessives: Türkiye'nin -> Türkiye
-  out = out.replace(/\b(\p{L}+)(?:'nin|'nın|'nun|'nün|nin|nın|nun|nün)\b/giu, "$1");
+  // Turkish possessives: TÃ¼rkiye'nin -> TÃ¼rkiye
+  out = out.replace(/\b(\p{L}+)(?:'nin|'nÄ±n|'nun|'nÃ¼n|nin|nÄ±n|nun|nÃ¼n)\b/giu, "$1");
 
   // Remove common question particles that sometimes survive stripQuestionNoise
-  out = out.replace(/\b(nedir|ne|kim|kaç|kac|hangi|nasıl|nasil)\b/gi, " ").replace(/\s+/g, " ").trim();
+  out = out.replace(/\b(nedir|ne|kim|kaÃ§|kac|hangi|nasÄ±l|nasil)\b/gi, " ").replace(/\s+/g, " ").trim();
 
   const words = out.split(/\s+/).filter(Boolean);
   return words.slice(0, 5).join(" ").trim();
@@ -2729,13 +2661,13 @@ function scoreWikidataCandidate(cand, questionText, prop) {
   if (q.includes(label)) s += 6;
 
   // Municipality / district context
-  if (/(belediye|ilçe|ilcesi|municipality|district)/i.test(q)) {
-    if (/(municipality|district|belediye|ilçe|town|city|şehir)/i.test(desc)) s += 10;
+  if (/(belediye|ilÃ§e|ilcesi|municipality|district)/i.test(q)) {
+    if (/(municipality|district|belediye|ilÃ§e|town|city|ÅŸehir)/i.test(desc)) s += 10;
   }
 
   // Country-ish facts should prefer country / sovereign state
   if (prop?.key && COUNTRY_LIKE_PROPS.has(prop.key)) {
-    if (/(country|sovereign|state|republic|ülke|devlet|cumhuriyet)/i.test(desc)) s += 10;
+    if (/(country|sovereign|state|republic|Ã¼lke|devlet|cumhuriyet)/i.test(desc)) s += 10;
   }
 
   // Prefer candidates whose label contains important words from hint
@@ -2962,20 +2894,20 @@ async function getFactEvidence(text, lang) {
 }
 
 // ============================================================================
-// ECON (World Bank) — free macro indicators
+// ECON (World Bank) â€” free macro indicators
 // ============================================================================
 
 const WB_INDICATORS = [
-  { key: "inflation", id: "FP.CPI.TOTL.ZG", labels: { tr: "Enflasyon (TÜFE, yıllık %)", en: "Inflation (CPI, annual %)", fr: "Inflation (IPC, % annuel)", ru: "Инфляция (ИПЦ, %/год)", ar: "التضخم (سنوي %)" },
-    kw: ["enflasyon", "inflation", "tüfe", "cpi", "التضخم", "инфляц"] },
-  { key: "unemployment", id: "SL.UEM.TOTL.ZS", labels: { tr: "İşsizlik (%)", en: "Unemployment (%)", fr: "Chômage (%)", ru: "Безработица (%)", ar: "البطالة (%)" },
-    kw: ["işsizlik", "unemployment", "chômage", "безработ", "البطالة"] },
-  { key: "gdp", id: "NY.GDP.MKTP.CD", labels: { tr: "GSYİH (Cari $)", en: "GDP (current US$)", fr: "PIB (US$ courants)", ru: "ВВП (текущ. долл. США)", ar: "الناتج المحلي (دولار جاري)" },
-    kw: ["gsyih", "gdp", "gayri safi", "pib", "ввп", "الناتج"] },
-  { key: "gdp_growth", id: "NY.GDP.MKTP.KD.ZG", labels: { tr: "GSYİH büyümesi (yıllık %)", en: "GDP growth (annual %)", fr: "Croissance du PIB (% annuel)", ru: "Рост ВВП (%/год)", ar: "نمو الناتج (%)" },
-    kw: ["büyüme", "growth", "croissance", "рост", "نمو"] },
-  { key: "population", id: "SP.POP.TOTL", labels: { tr: "Nüfus", en: "Population", fr: "Population", ru: "Население", ar: "عدد السكان" },
-    kw: ["nüfus", "population", "население", "سكان"] },
+  { key: "inflation", id: "FP.CPI.TOTL.ZG", labels: { tr: "Enflasyon (TÃœFE, yÄ±llÄ±k %)", en: "Inflation (CPI, annual %)", fr: "Inflation (IPC, % annuel)", ru: "Ğ˜Ğ½Ñ„Ğ»ÑÑ†Ğ¸Ñ (Ğ˜ĞŸĞ¦, %/Ğ³Ğ¾Ğ´)", ar: "Ø§Ù„ØªØ¶Ø®Ù… (Ø³Ù†ÙˆÙŠ %)" },
+    kw: ["enflasyon", "inflation", "tÃ¼fe", "cpi", "Ø§Ù„ØªØ¶Ø®Ù…", "Ğ¸Ğ½Ñ„Ğ»ÑÑ†"] },
+  { key: "unemployment", id: "SL.UEM.TOTL.ZS", labels: { tr: "Ä°ÅŸsizlik (%)", en: "Unemployment (%)", fr: "ChÃ´mage (%)", ru: "Ğ‘ĞµĞ·Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ¸Ñ†Ğ° (%)", ar: "Ø§Ù„Ø¨Ø·Ø§Ù„Ø© (%)" },
+    kw: ["iÅŸsizlik", "unemployment", "chÃ´mage", "Ğ±ĞµĞ·Ñ€Ğ°Ğ±Ğ¾Ñ‚", "Ø§Ù„Ø¨Ø·Ø§Ù„Ø©"] },
+  { key: "gdp", id: "NY.GDP.MKTP.CD", labels: { tr: "GSYÄ°H (Cari $)", en: "GDP (current US$)", fr: "PIB (US$ courants)", ru: "Ğ’Ğ’ĞŸ (Ñ‚ĞµĞºÑƒÑ‰. Ğ´Ğ¾Ğ»Ğ». Ğ¡Ğ¨Ğ)", ar: "Ø§Ù„Ù†Ø§ØªØ¬ Ø§Ù„Ù…Ø­Ù„ÙŠ (Ø¯ÙˆÙ„Ø§Ø± Ø¬Ø§Ø±ÙŠ)" },
+    kw: ["gsyih", "gdp", "gayri safi", "pib", "Ğ²Ğ²Ğ¿", "Ø§Ù„Ù†Ø§ØªØ¬"] },
+  { key: "gdp_growth", id: "NY.GDP.MKTP.KD.ZG", labels: { tr: "GSYÄ°H bÃ¼yÃ¼mesi (yÄ±llÄ±k %)", en: "GDP growth (annual %)", fr: "Croissance du PIB (% annuel)", ru: "Ğ Ğ¾ÑÑ‚ Ğ’Ğ’ĞŸ (%/Ğ³Ğ¾Ğ´)", ar: "Ù†Ù…Ùˆ Ø§Ù„Ù†Ø§ØªØ¬ (%)" },
+    kw: ["bÃ¼yÃ¼me", "growth", "croissance", "Ñ€Ğ¾ÑÑ‚", "Ù†Ù…Ùˆ"] },
+  { key: "population", id: "SP.POP.TOTL", labels: { tr: "NÃ¼fus", en: "Population", fr: "Population", ru: "ĞĞ°ÑĞµĞ»ĞµĞ½Ğ¸Ğµ", ar: "Ø¹Ø¯Ø¯ Ø§Ù„Ø³ÙƒØ§Ù†" },
+    kw: ["nÃ¼fus", "population", "Ğ½Ğ°ÑĞµĞ»ĞµĞ½Ğ¸Ğµ", "Ø³ÙƒØ§Ù†"] },
 ];
 
 function pickWBIndicator(text, lang) {
@@ -3027,23 +2959,23 @@ async async function getEconEvidence(text, lang) {
 
   // --- Precious metals spot (Stooq) + FX conversion (Frankfurter) ---
   const metal = (() => {
-    if (/(\bxau\b|altın|altin|\bgold\b)/i.test(low)) return { key: "gold", stooq: "xauusd", tr: "Altın", en: "Gold", fr: "Or", ru: "Золото", ar: "الذهب" };
-    if (/(\bxag\b|gümüş|gumus|\bsilver\b)/i.test(low)) return { key: "silver", stooq: "xagusd", tr: "Gümüş", en: "Silver", fr: "Argent", ru: "Серебро", ar: "الفضة" };
-    if (/(\bxpt\b|platin|\bplatinum\b)/i.test(low)) return { key: "platinum", stooq: "xptusd", tr: "Platin", en: "Platinum", fr: "Platine", ru: "Платина", ar: "البلاتين" };
-    if (/(\bxpd\b|paladyum|\bpalladium\b)/i.test(low)) return { key: "palladium", stooq: "xpdusd", tr: "Paladyum", en: "Palladium", fr: "Palladium", ru: "Палладий", ar: "البلاديوم" };
+    if (/(\bxau\b|altÄ±n|altin|\bgold\b)/i.test(low)) return { key: "gold", stooq: "xauusd", tr: "AltÄ±n", en: "Gold", fr: "Or", ru: "Ğ—Ğ¾Ğ»Ğ¾Ñ‚Ğ¾", ar: "Ø§Ù„Ø°Ù‡Ø¨" };
+    if (/(\bxag\b|gÃ¼mÃ¼ÅŸ|gumus|\bsilver\b)/i.test(low)) return { key: "silver", stooq: "xagusd", tr: "GÃ¼mÃ¼ÅŸ", en: "Silver", fr: "Argent", ru: "Ğ¡ĞµÑ€ĞµĞ±Ñ€Ğ¾", ar: "Ø§Ù„ÙØ¶Ø©" };
+    if (/(\bxpt\b|platin|\bplatinum\b)/i.test(low)) return { key: "platinum", stooq: "xptusd", tr: "Platin", en: "Platinum", fr: "Platine", ru: "ĞŸĞ»Ğ°Ñ‚Ğ¸Ğ½Ğ°", ar: "Ø§Ù„Ø¨Ù„Ø§ØªÙŠÙ†" };
+    if (/(\bxpd\b|paladyum|\bpalladium\b)/i.test(low)) return { key: "palladium", stooq: "xpdusd", tr: "Paladyum", en: "Palladium", fr: "Palladium", ru: "ĞŸĞ°Ğ»Ğ»Ğ°Ğ´Ğ¸Ğ¹", ar: "Ø§Ù„Ø¨Ù„Ø§Ø¯ÙŠÙˆÙ…" };
     return null;
   })();
 
-  const isJewelry = /(bilezik|kolye|yüzük|takı|mücevher|set|küpe|22\s*ayar|24\s*ayar|14\s*ayar)/i.test(low);
+  const isJewelry = /(bilezik|kolye|yÃ¼zÃ¼k|takÄ±|mÃ¼cevher|set|kÃ¼pe|22\s*ayar|24\s*ayar|14\s*ayar)/i.test(low);
   const wantsPrice =
-    /(fiyat|price|kaç|kac|ne\s*kadar|spot|anlık|live|today|bugün|rate|tl|try|usd|eur|gbp|dolar|euro|sterlin|₺|\$|€)/i.test(low);
+    /(fiyat|price|kaÃ§|kac|ne\s*kadar|spot|anlÄ±k|live|today|bugÃ¼n|rate|tl|try|usd|eur|gbp|dolar|euro|sterlin|â‚º|\$|â‚¬)/i.test(low);
 
   if (metal && wantsPrice && !isJewelry) {
     const TROY_OUNCE_G = 31.1034768;
 
     const pickTargetCurrency = () => {
-      if (/(\btry\b|\btl\b|lira|₺)/i.test(raw)) return "TRY";
-      if (/(\beur\b|€|euro)/i.test(raw)) return "EUR";
+      if (/(\btry\b|\btl\b|lira|â‚º)/i.test(raw)) return "TRY";
+      if (/(\beur\b|â‚¬|euro)/i.test(raw)) return "EUR";
       if (/(\bgbp\b|sterlin|pound)/i.test(raw)) return "GBP";
       if (/(\busd\b|\$|dolar)/i.test(raw)) return "USD";
       return L === "tr" ? "TRY" : "USD";
@@ -3116,13 +3048,13 @@ async async function getEconEvidence(text, lang) {
       asOf,
       note:
         L === "tr"
-          ? "Not: Bu **global spot** fiyattır. Kuyumcu/banka fiyatlarında **prim, vergi, işçilik, spread** farkı olur."
+          ? "Not: Bu **global spot** fiyattÄ±r. Kuyumcu/banka fiyatlarÄ±nda **prim, vergi, iÅŸÃ§ilik, spread** farkÄ± olur."
           : L === "fr"
           ? "Note : prix **spot mondial**. Les prix bijoutiers/banques incluent **prime, taxes, frais, spread**."
           : L === "ru"
-          ? "Примечание: это **глобальная спот-цена**. В банках/ювелирах есть **премия, налоги, наценка, спред**."
+          ? "ĞŸÑ€Ğ¸Ğ¼ĞµÑ‡Ğ°Ğ½Ğ¸Ğµ: ÑÑ‚Ğ¾ **Ğ³Ğ»Ğ¾Ğ±Ğ°Ğ»ÑŒĞ½Ğ°Ñ ÑĞ¿Ğ¾Ñ‚-Ñ†ĞµĞ½Ğ°**. Ğ’ Ğ±Ğ°Ğ½ĞºĞ°Ñ…/ÑĞ²ĞµĞ»Ğ¸Ñ€Ğ°Ñ… ĞµÑÑ‚ÑŒ **Ğ¿Ñ€ĞµĞ¼Ğ¸Ñ, Ğ½Ğ°Ğ»Ğ¾Ğ³Ğ¸, Ğ½Ğ°Ñ†ĞµĞ½ĞºĞ°, ÑĞ¿Ñ€ĞµĞ´**."
           : L === "ar"
-          ? "ملاحظة: هذا سعر **فوري عالمي**. أسعار البنوك/الصاغة تشمل **علاوة، ضرائب، تكاليف، فارق سعر**."
+          ? "Ù…Ù„Ø§Ø­Ø¸Ø©: Ù‡Ø°Ø§ Ø³Ø¹Ø± **ÙÙˆØ±ÙŠ Ø¹Ø§Ù„Ù…ÙŠ**. Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø¨Ù†ÙˆÙƒ/Ø§Ù„ØµØ§ØºØ© ØªØ´Ù…Ù„ **Ø¹Ù„Ø§ÙˆØ©ØŒ Ø¶Ø±Ø§Ø¦Ø¨ØŒ ØªÙƒØ§Ù„ÙŠÙØŒ ÙØ§Ø±Ù‚ Ø³Ø¹Ø±**."
           : "Note: this is the **global spot** price. Retail/bank quotes include **premium, taxes, fees, spread**.",
       trustScore: 84,
       sources: [
@@ -3167,13 +3099,13 @@ async async function getEconEvidence(text, lang) {
     value: valText,
     trustScore: 78,
     sources: [
-      { title: `World Bank: ${country.label} — ${label}`, url: `https://data.worldbank.org/indicator/${encodeURIComponent(ind.id)}?locations=${encodeURIComponent(country.iso3)}` },
+      { title: `World Bank: ${country.label} â€” ${label}`, url: `https://data.worldbank.org/indicator/${encodeURIComponent(ind.id)}?locations=${encodeURIComponent(country.iso3)}` },
     ],
   };
 }
 
 // ============================================================================
-// SPORTS — headlines via RSS (free)
+// SPORTS â€” headlines via RSS (free)
 // ============================================================================
 
 async function getSportsEvidence(text, lang) {
@@ -3213,7 +3145,7 @@ async function getSportsEvidence(text, lang) {
 }
 
 // ============================================================================
-// SCHOLAR — PubMed + Crossref (free)
+// SCHOLAR â€” PubMed + Crossref (free)
 // ============================================================================
 
 async function getPubMedPapers(query) {
@@ -3347,11 +3279,11 @@ async function getScienceEvidence(text, lang) {
 
   // 1) Water boiling point
   if (/(\bsu\b|water)/i.test(q) && /(kayn|boil)/i.test(q)) {
-    const answerTr = "Su, deniz seviyesinde (1 atm basınçta) yaklaşık 100°C'de kaynar. Basınç azalınca (yüksek rakım) kaynama sıcaklığı düşer.";
-    const answerEn = "Water boils at about 100°C at sea level (1 atm). As pressure decreases (higher altitude), the boiling point drops.";
+    const answerTr = "Su, deniz seviyesinde (1 atm basÄ±nÃ§ta) yaklaÅŸÄ±k 100Â°C'de kaynar. BasÄ±nÃ§ azalÄ±nca (yÃ¼ksek rakÄ±m) kaynama sÄ±caklÄ±ÄŸÄ± dÃ¼ÅŸer.";
+    const answerEn = "Water boils at about 100Â°C at sea level (1 atm). As pressure decreases (higher altitude), the boiling point drops.";
     return {
       type: "science",
-      title: L === "tr" ? "Su'nun kaynama noktası" : "Boiling point of water",
+      title: L === "tr" ? "Su'nun kaynama noktasÄ±" : "Boiling point of water",
       extract: L === "tr" ? answerTr : answerEn,
       trustScore: 92,
       sources: [
@@ -3363,11 +3295,11 @@ async function getScienceEvidence(text, lang) {
 
   // 2) Water freezing point
   if (/(\bsu\b|water)/i.test(q) && /(don|freez)/i.test(q)) {
-    const answerTr = "Su, 1 atm basınçta yaklaşık 0°C'de donar (saf su). Çözeltiler/tuzluluk donma noktasını düşürür.";
-    const answerEn = "Pure water freezes at about 0°C at 1 atm. Solutes/salinity lower the freezing point.";
+    const answerTr = "Su, 1 atm basÄ±nÃ§ta yaklaÅŸÄ±k 0Â°C'de donar (saf su). Ã‡Ã¶zeltiler/tuzluluk donma noktasÄ±nÄ± dÃ¼ÅŸÃ¼rÃ¼r.";
+    const answerEn = "Pure water freezes at about 0Â°C at 1 atm. Solutes/salinity lower the freezing point.";
     return {
       type: "science",
-      title: L === "tr" ? "Su'nun donma noktası" : "Freezing point of water",
+      title: L === "tr" ? "Su'nun donma noktasÄ±" : "Freezing point of water",
       extract: L === "tr" ? answerTr : answerEn,
       trustScore: 90,
       sources: [
@@ -3714,19 +3646,6 @@ async function gatherEvidence({ text, lang, city }) {
       return await getWikiEvidence(text, L);
     }
 
-<<<<<<< HEAD
-    if (type === "wiki") {
-      const wiki = await getWikiEvidence(text, L);
-      if (wiki) return wiki;
-      return { type: "no_answer", reason: "no_wiki", trustScore: 40 };
-    }
-
-    // type === "none" (or unknown) → don't hallucinate a wiki answer
-    return { type: "no_answer", reason: "no_evidence_type", trustScore: 40 };
-  } catch (err) {
-    console.error("evidence error:", err?.message || err);
-    return { type: "no_answer", reason: "evidence_error", trustScore: 35 };
-=======
     if (type === "wiki") return await getWikiEvidence(text, L);
 
     return null;
@@ -3740,37 +3659,36 @@ async function gatherEvidence({ text, lang, city }) {
       sources: [],
       suggestions: [],
     };
->>>>>>> 2c35ef7 (chore: sync backend)
   }
 }
 
 
-// S50 — LLM cevabı sanitize
+// S50 â€” LLM cevabÄ± sanitize
 function sanitizeLLMAnswer(answer, normLocale) {
   let txt = clampText(answer, MAX_LLM_ANSWER_LENGTH);
   if (!txt) {
     return {
       en: "I prepared suitable options for you.",
-      fr: "J’ai préparé des options adaptées pour vous.",
-      ru: "Я подготовил(а) подходящие варианты для вас.",
-      ar: "لقد جهّزت لك خيارات مناسبة.",
-      tr: "Senin için uygun seçenekleri hazırladım.",
-    }[normLocale] || "Senin için uygun seçenekleri hazırladım.";
+      fr: "Jâ€™ai prÃ©parÃ© des options adaptÃ©es pour vous.",
+      ru: "Ğ¯ Ğ¿Ğ¾Ğ´Ğ³Ğ¾Ñ‚Ğ¾Ğ²Ğ¸Ğ»(Ğ°) Ğ¿Ğ¾Ğ´Ñ…Ğ¾Ğ´ÑÑ‰Ğ¸Ğµ Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚Ñ‹ Ğ´Ğ»Ñ Ğ²Ğ°Ñ.",
+      ar: "Ù„Ù‚Ø¯ Ø¬Ù‡Ù‘Ø²Øª Ù„Ùƒ Ø®ÙŠØ§Ø±Ø§Øª Ù…Ù†Ø§Ø³Ø¨Ø©.",
+      tr: "Senin iÃ§in uygun seÃ§enekleri hazÄ±rladÄ±m.",
+    }[normLocale] || "Senin iÃ§in uygun seÃ§enekleri hazÄ±rladÄ±m.";
   }
 
-  // AI kimlik cümlelerini törpüle
+  // AI kimlik cÃ¼mlelerini tÃ¶rpÃ¼le
   txt = txt.replace(/as an ai (language )?model/gi, "");
   txt = txt.replace(/i am an ai( assistant)?/gi, "");
   txt = txt.replace(/bir yapay zeka( modeli)?yim/gi, "");
 
-  // Çok boş satır, gereksiz spacing temizliği
+  // Ã‡ok boÅŸ satÄ±r, gereksiz spacing temizliÄŸi
   txt = txt.replace(/\n{3,}/g, "\n\n");
 
   return txt.trim();
 }
 
 // ============================================================================
-// LLM ÇAĞRISI — S16 (komisyon kelimesi yasak, persona aware) — S50 guard
+// LLM Ã‡AÄRISI â€” S16 (komisyon kelimesi yasak, persona aware) â€” S50 guard
 // ============================================================================
 
 async function callLLM({
@@ -3795,7 +3713,7 @@ async function callLLM({
   return "tr";
 })();
 
-  // Mesajı sert limit ile kısalt
+  // MesajÄ± sert limit ile kÄ±salt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
 
   if (!apiKey) {
@@ -3804,55 +3722,55 @@ async function callLLM({
       answer:
         ({
           en: "Sono is in limited mode right now, but I can still help with quick information.",
-          fr: "Sono est en mode limité pour le moment, mais je peux quand même aider avec des infos rapides.",
-          ru: "Сейчас Sono работает в ограниченном режиме, но я всё равно могу помочь с быстрыми справками.",
-          ar: "Sono يعمل الآن بوضع محدود، لكن يمكنني مساعدتك بمعلومات سريعة.",
-          tr: "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim.",
-        }[normLocale] || "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim."),
+          fr: "Sono est en mode limitÃ© pour le moment, mais je peux quand mÃªme aider avec des infos rapides.",
+          ru: "Ğ¡ĞµĞ¹Ñ‡Ğ°Ñ Sono Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚ Ğ² Ğ¾Ğ³Ñ€Ğ°Ğ½Ğ¸Ñ‡ĞµĞ½Ğ½Ğ¾Ğ¼ Ñ€ĞµĞ¶Ğ¸Ğ¼Ğµ, Ğ½Ğ¾ Ñ Ğ²ÑÑ‘ Ñ€Ğ°Ğ²Ğ½Ğ¾ Ğ¼Ğ¾Ğ³Ñƒ Ğ¿Ğ¾Ğ¼Ğ¾Ñ‡ÑŒ Ñ Ğ±Ñ‹ÑÑ‚Ñ€Ñ‹Ğ¼Ğ¸ ÑĞ¿Ñ€Ğ°Ğ²ĞºĞ°Ğ¼Ğ¸.",
+          ar: "Sono ÙŠØ¹Ù…Ù„ Ø§Ù„Ø¢Ù† Ø¨ÙˆØ¶Ø¹ Ù…Ø­Ø¯ÙˆØ¯ØŒ Ù„ÙƒÙ† ÙŠÙ…ÙƒÙ†Ù†ÙŠ Ù…Ø³Ø§Ø¹Ø¯ØªÙƒ Ø¨Ù…Ø¹Ù„ÙˆÙ…Ø§Øª Ø³Ø±ÙŠØ¹Ø©.",
+          tr: "Sono ÅŸu an sÄ±nÄ±rlÄ± modda Ã§alÄ±ÅŸÄ±yor ama yine de hÄ±zlÄ± bilgi verebilirim.",
+        }[normLocale] || "Sono ÅŸu an sÄ±nÄ±rlÄ± modda Ã§alÄ±ÅŸÄ±yor ama yine de hÄ±zlÄ± bilgi verebilirim."),
       suggestions:
         ({
           en: ["Tell me about a place", "Explain a concept", "Compare two things"],
-          fr: ["Parle-moi d’un lieu", "Explique un concept", "Compare deux choses"],
-          ru: ["Расскажи о месте", "Объясни понятие", "Сравни два варианта"],
-          ar: ["حدثني عن مكان", "اشرح فكرة", "قارن بين خيارين"],
-          tr: ["Bir yer hakkında bilgi ver", "Bir şeyi açıkla", "İki şeyi karşılaştır"],
+          fr: ["Parle-moi dâ€™un lieu", "Explique un concept", "Compare deux choses"],
+          ru: ["Ğ Ğ°ÑÑĞºĞ°Ğ¶Ğ¸ Ğ¾ Ğ¼ĞµÑÑ‚Ğµ", "ĞĞ±ÑŠÑÑĞ½Ğ¸ Ğ¿Ğ¾Ğ½ÑÑ‚Ğ¸Ğµ", "Ğ¡Ñ€Ğ°Ğ²Ğ½Ğ¸ Ğ´Ğ²Ğ° Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚Ğ°"],
+          ar: ["Ø­Ø¯Ø«Ù†ÙŠ Ø¹Ù† Ù…ÙƒØ§Ù†", "Ø§Ø´Ø±Ø­ ÙÙƒØ±Ø©", "Ù‚Ø§Ø±Ù† Ø¨ÙŠÙ† Ø®ÙŠØ§Ø±ÙŠÙ†"],
+          tr: ["Bir yer hakkÄ±nda bilgi ver", "Bir ÅŸeyi aÃ§Ä±kla", "Ä°ki ÅŸeyi karÅŸÄ±laÅŸtÄ±r"],
         }[normLocale] || []),
     };
   }
 
   const personaNote = {
     saver:
-      "Kullanıcı fiyat odaklı. Ekonomik, avantaj yaratılmış, uygun fiyatlı seçenekler öner.",
-    fast: "Kullanıcı hız odaklı. Hızlı adımlar ve pratik yönlendirmeler yap.",
+      "KullanÄ±cÄ± fiyat odaklÄ±. Ekonomik, avantaj yaratÄ±lmÄ±ÅŸ, uygun fiyatlÄ± seÃ§enekler Ã¶ner.",
+    fast: "KullanÄ±cÄ± hÄ±z odaklÄ±. HÄ±zlÄ± adÄ±mlar ve pratik yÃ¶nlendirmeler yap.",
     luxury:
-      "Kullanıcı premium kalite istiyor. En yüksek rating'li, güvenilir seçenekleri öne çıkar.",
+      "KullanÄ±cÄ± premium kalite istiyor. En yÃ¼ksek rating'li, gÃ¼venilir seÃ§enekleri Ã¶ne Ã§Ä±kar.",
     explorer:
-      "Kullanıcı alternatif görmek istiyor. En az 2 farklı yolu kısa anlat.",
+      "KullanÄ±cÄ± alternatif gÃ¶rmek istiyor. En az 2 farklÄ± yolu kÄ±sa anlat.",
     neutral:
-      "Kullanıcının niyeti karışık. Dengeli, rahat okunur kısa yanıtlar ver.",
+      "KullanÄ±cÄ±nÄ±n niyeti karÄ±ÅŸÄ±k. Dengeli, rahat okunur kÄ±sa yanÄ±tlar ver.",
   }[persona];
 
   const systemPrompt = `
 You are Sono, a smart assistant. The user may ask for general information or guidance.
 Rules:
 - Reply in the user's language. Target language is based on locale: ${normLocale}.
-  • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
+  â€¢ tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
 - Keep it short, clear, and helpful. No fluff.
 - Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
 
 Output format (VERY IMPORTANT):
 Return ONLY valid JSON with this exact shape:
 {"answer":"...","suggestions":["...","...","..."]}
-- answer: a short, direct answer (2–6 short sentences or 3 bullets).
-- suggestions: 2–4 short follow-up prompts the user can click.
+- answer: a short, direct answer (2â€“6 short sentences or 3 bullets).
+- suggestions: 2â€“4 short follow-up prompts the user can click.
 No markdown. No code fences. No extra keys.
 
 Context:
 - Intent: ${intent}
 - Region: ${region}
 - City: ${city}
-- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" • ")}
-Persona hint: ${persona} → ${personaNote || "balanced"}
+- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" â€¢ ")}
+Persona hint: ${persona} â†’ ${personaNote || "balanced"}
 `.trim();
 
   const requestBody = {
@@ -3889,19 +3807,19 @@ Persona hint: ${persona} → ${personaNote || "balanced"}
         provider: "error",
         answer:
           ({
-            en: "I can’t generate a text answer right now, but I can still help if you rephrase briefly.",
-            fr: "Je ne peux pas générer de réponse texte pour le moment, mais je peux aider si vous reformulez brièvement.",
-            ru: "Сейчас не получается выдать текстовый ответ, но я смогу помочь, если вы переформулируете короче.",
-            ar: "لا أستطيع إنشاء إجابة نصية الآن، لكن يمكنني المساعدة إذا أعدت صياغة السؤال باختصار.",
-            tr: "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim.",
-          }[normLocale] || "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim."),
+            en: "I canâ€™t generate a text answer right now, but I can still help if you rephrase briefly.",
+            fr: "Je ne peux pas gÃ©nÃ©rer de rÃ©ponse texte pour le moment, mais je peux aider si vous reformulez briÃ¨vement.",
+            ru: "Ğ¡ĞµĞ¹Ñ‡Ğ°Ñ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ°ĞµÑ‚ÑÑ Ğ²Ñ‹Ğ´Ğ°Ñ‚ÑŒ Ñ‚ĞµĞºÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ Ğ¾Ñ‚Ğ²ĞµÑ‚, Ğ½Ğ¾ Ñ ÑĞ¼Ğ¾Ğ³Ñƒ Ğ¿Ğ¾Ğ¼Ğ¾Ñ‡ÑŒ, ĞµÑĞ»Ğ¸ Ğ²Ñ‹ Ğ¿ĞµÑ€ĞµÑ„Ğ¾Ñ€Ğ¼ÑƒĞ»Ğ¸Ñ€ÑƒĞµÑ‚Ğµ ĞºĞ¾Ñ€Ğ¾Ñ‡Ğµ.",
+            ar: "Ù„Ø§ Ø£Ø³ØªØ·ÙŠØ¹ Ø¥Ù†Ø´Ø§Ø¡ Ø¥Ø¬Ø§Ø¨Ø© Ù†ØµÙŠØ© Ø§Ù„Ø¢Ù†ØŒ Ù„ÙƒÙ† ÙŠÙ…ÙƒÙ†Ù†ÙŠ Ø§Ù„Ù…Ø³Ø§Ø¹Ø¯Ø© Ø¥Ø°Ø§ Ø£Ø¹Ø¯Øª ØµÙŠØ§ØºØ© Ø§Ù„Ø³Ø¤Ø§Ù„ Ø¨Ø§Ø®ØªØµØ§Ø±.",
+            tr: "Åu an metin yanÄ±tÄ± Ã¼retemiyorum; soruyu daha kÄ±sa yazarsan yardÄ±mcÄ± olabilirim.",
+          }[normLocale] || "Åu an metin yanÄ±tÄ± Ã¼retemiyorum; soruyu daha kÄ±sa yazarsan yardÄ±mcÄ± olabilirim."),
         suggestions:
           ({
             en: ["Summarize this topic", "Give key points", "How does it work?"],
-            fr: ["Résume ce sujet", "Donne les points clés", "Comment ça marche ?"],
-            ru: ["Кратко о теме", "Дай ключевые пункты", "Как это работает?"],
-            ar: ["لخّص الموضوع", "أعطني النقاط الأساسية", "كيف يعمل ذلك؟"],
-            tr: ["Konuyu özetle", "Ana maddeleri ver", "Nasıl çalışır?"],
+            fr: ["RÃ©sume ce sujet", "Donne les points clÃ©s", "Comment Ã§a marche ?"],
+            ru: ["ĞšÑ€Ğ°Ñ‚ĞºĞ¾ Ğ¾ Ñ‚ĞµĞ¼Ğµ", "Ğ”Ğ°Ğ¹ ĞºĞ»ÑÑ‡ĞµĞ²Ñ‹Ğµ Ğ¿ÑƒĞ½ĞºÑ‚Ñ‹", "ĞšĞ°Ğº ÑÑ‚Ğ¾ Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚?"],
+            ar: ["Ù„Ø®Ù‘Øµ Ø§Ù„Ù…ÙˆØ¶ÙˆØ¹", "Ø£Ø¹Ø·Ù†ÙŠ Ø§Ù„Ù†Ù‚Ø§Ø· Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©", "ÙƒÙŠÙ ÙŠØ¹Ù…Ù„ Ø°Ù„ÙƒØŸ"],
+            tr: ["Konuyu Ã¶zetle", "Ana maddeleri ver", "NasÄ±l Ã§alÄ±ÅŸÄ±r?"],
           }[normLocale] || []),
       };
     }
@@ -3911,11 +3829,11 @@ Persona hint: ${persona} → ${personaNote || "balanced"}
       data?.choices?.[0]?.message?.content ||
       ({
         en: '{"answer":"I prepared options for you.","suggestions":["Summarize this topic","Give key points","How does it work?"]}',
-        fr: '{"answer":"J’ai préparé des options pour vous.","suggestions":["Résume ce sujet","Donne les points clés","Comment ça marche ?"]}',
-        ru: '{"answer":"Я подготовил(а) варианты для вас.","suggestions":["Кратко о теме","Дай ключевые пункты","Как это работает?"]}',
-        ar: '{"answer":"لقد جهّزت لك خيارات.","suggestions":["لخّص الموضوع","أعطني النقاط الأساسية","كيف يعمل ذلك؟"]}',
-        tr: '{"answer":"Senin için seçenekleri hazırladım.","suggestions":["Konuyu özetle","Ana maddeleri ver","Nasıl çalışır?"]}',
-      }[normLocale] || '{"answer":"Senin için seçenekleri hazırladım.","suggestions":[]}');
+        fr: '{"answer":"Jâ€™ai prÃ©parÃ© des options pour vous.","suggestions":["RÃ©sume ce sujet","Donne les points clÃ©s","Comment Ã§a marche ?"]}',
+        ru: '{"answer":"Ğ¯ Ğ¿Ğ¾Ğ´Ğ³Ğ¾Ñ‚Ğ¾Ğ²Ğ¸Ğ»(Ğ°) Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚Ñ‹ Ğ´Ğ»Ñ Ğ²Ğ°Ñ.","suggestions":["ĞšÑ€Ğ°Ñ‚ĞºĞ¾ Ğ¾ Ñ‚ĞµĞ¼Ğµ","Ğ”Ğ°Ğ¹ ĞºĞ»ÑÑ‡ĞµĞ²Ñ‹Ğµ Ğ¿ÑƒĞ½ĞºÑ‚Ñ‹","ĞšĞ°Ğº ÑÑ‚Ğ¾ Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚?"]}',
+        ar: '{"answer":"Ù„Ù‚Ø¯ Ø¬Ù‡Ù‘Ø²Øª Ù„Ùƒ Ø®ÙŠØ§Ø±Ø§Øª.","suggestions":["Ù„Ø®Ù‘Øµ Ø§Ù„Ù…ÙˆØ¶ÙˆØ¹","Ø£Ø¹Ø·Ù†ÙŠ Ø§Ù„Ù†Ù‚Ø§Ø· Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©","ÙƒÙŠÙ ÙŠØ¹Ù…Ù„ Ø°Ù„ÙƒØŸ"]}',
+        tr: '{"answer":"Senin iÃ§in seÃ§enekleri hazÄ±rladÄ±m.","suggestions":["Konuyu Ã¶zetle","Ana maddeleri ver","NasÄ±l Ã§alÄ±ÅŸÄ±r?"]}',
+      }[normLocale] || '{"answer":"Senin iÃ§in seÃ§enekleri hazÄ±rladÄ±m.","suggestions":[]}');
 
     // Try to parse JSON output {answer, suggestions}
     let parsed = null;
@@ -3947,39 +3865,39 @@ Persona hint: ${persona} → ${personaNote || "balanced"}
 
     return { provider: data?.model || "openai", answer, suggestions };
   } catch (err) {
-    console.error("LLM çağrı hatası:", err);
+    console.error("LLM Ã§aÄŸrÄ± hatasÄ±:", err);
 
     return {
       provider: "exception",
       answer:
         ({
-          en: "I couldn’t retrieve a text answer right now. Try again in a moment.",
-          fr: "Je n’ai pas pu récupérer une réponse texte. Réessayez dans un instant.",
-          ru: "Не удалось получить текстовый ответ. Попробуйте ещё раз чуть позже.",
-          ar: "تعذّر الحصول على إجابة نصية الآن. جرّب مرة أخرى بعد قليل.",
-          tr: "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin.",
-        }[normLocale] || "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin."),
+          en: "I couldnâ€™t retrieve a text answer right now. Try again in a moment.",
+          fr: "Je nâ€™ai pas pu rÃ©cupÃ©rer une rÃ©ponse texte. RÃ©essayez dans un instant.",
+          ru: "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ¸Ñ‚ÑŒ Ñ‚ĞµĞºÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ Ğ¾Ñ‚Ğ²ĞµÑ‚. ĞŸĞ¾Ğ¿Ñ€Ğ¾Ğ±ÑƒĞ¹Ñ‚Ğµ ĞµÑ‰Ñ‘ Ñ€Ğ°Ğ· Ñ‡ÑƒÑ‚ÑŒ Ğ¿Ğ¾Ğ·Ğ¶Ğµ.",
+          ar: "ØªØ¹Ø°Ù‘Ø± Ø§Ù„Ø­ØµÙˆÙ„ Ø¹Ù„Ù‰ Ø¥Ø¬Ø§Ø¨Ø© Ù†ØµÙŠØ© Ø§Ù„Ø¢Ù†. Ø¬Ø±Ù‘Ø¨ Ù…Ø±Ø© Ø£Ø®Ø±Ù‰ Ø¨Ø¹Ø¯ Ù‚Ù„ÙŠÙ„.",
+          tr: "Åu an metin yanÄ±tÄ±nda sorun oluÅŸtu. Biraz sonra tekrar deneyin.",
+        }[normLocale] || "Åu an metin yanÄ±tÄ±nda sorun oluÅŸtu. Biraz sonra tekrar deneyin."),
       suggestions:
         ({
           en: ["Ask in one sentence", "Give context", "What exactly do you want to know?"],
-          fr: ["Pose une seule phrase", "Donne un peu de contexte", "Qu’est-ce que tu veux savoir exactement ?"],
-          ru: ["Спроси одним предложением", "Дай контекст", "Что именно ты хочешь узнать?"],
-          ar: ["اسأل بجملة واحدة", "أضف بعض السياق", "ما الذي تريد معرفته تحديدًا؟"],
-          tr: ["Tek cümleyle sor", "Biraz bağlam ver", "Tam olarak neyi öğrenmek istiyorsun?"],
+          fr: ["Pose une seule phrase", "Donne un peu de contexte", "Quâ€™est-ce que tu veux savoir exactement ?"],
+          ru: ["Ğ¡Ğ¿Ñ€Ğ¾ÑĞ¸ Ğ¾Ğ´Ğ½Ğ¸Ğ¼ Ğ¿Ñ€ĞµĞ´Ğ»Ğ¾Ğ¶ĞµĞ½Ğ¸ĞµĞ¼", "Ğ”Ğ°Ğ¹ ĞºĞ¾Ğ½Ñ‚ĞµĞºÑÑ‚", "Ğ§Ñ‚Ğ¾ Ğ¸Ğ¼ĞµĞ½Ğ½Ğ¾ Ñ‚Ñ‹ Ñ…Ğ¾Ñ‡ĞµÑˆÑŒ ÑƒĞ·Ğ½Ğ°Ñ‚ÑŒ?"],
+          ar: ["Ø§Ø³Ø£Ù„ Ø¨Ø¬Ù…Ù„Ø© ÙˆØ§Ø­Ø¯Ø©", "Ø£Ø¶Ù Ø¨Ø¹Ø¶ Ø§Ù„Ø³ÙŠØ§Ù‚", "Ù…Ø§ Ø§Ù„Ø°ÙŠ ØªØ±ÙŠØ¯ Ù…Ø¹Ø±ÙØªÙ‡ ØªØ­Ø¯ÙŠØ¯Ù‹Ø§ØŸ"],
+          tr: ["Tek cÃ¼mleyle sor", "Biraz baÄŸlam ver", "Tam olarak neyi Ã¶ÄŸrenmek istiyorsun?"],
         }[normLocale] || []),
     };
   }
 }
 
 // ============================================================================
-// GET RESULTS — S16 (runAdapters triple-safe) — KORUNDU
+// GET RESULTS â€” S16 (runAdapters triple-safe) â€” KORUNDU
 // ============================================================================
 
 async function getResults(query, region = "TR") {
   const cleanQuery = safeString(query);
   const normRegion = safeString(region || "TR").toUpperCase();
 
-  console.log("🔍 getResults çağrıldı:", { query: cleanQuery, region: normRegion });
+  console.log("ğŸ” getResults Ã§aÄŸrÄ±ldÄ±:", { query: cleanQuery, region: normRegion });
 
   if (!cleanQuery) return [];
 
@@ -3998,7 +3916,7 @@ async function getResults(query, region = "TR") {
 
     return [];
   } catch (error) {
-    console.error("❌ getResults ana hata:", error);
+    console.error("âŒ getResults ana hata:", error);
   }
 
   // 2) Hafif fallback
@@ -4008,15 +3926,15 @@ async function getResults(query, region = "TR") {
     if (adapted && Array.isArray(adapted.items)) return adapted.items;
     if (adapted && Array.isArray(adapted.results)) return adapted.results;
   } catch (fallbackErr) {
-    console.error("❌ getResults fallback hata:", fallbackErr);
+    console.error("âŒ getResults fallback hata:", fallbackErr);
   }
 
-  // 3) En kötü ihtimalle boş
+  // 3) En kÃ¶tÃ¼ ihtimalle boÅŸ
   return [];
 }
 
 // ============================================================================
-// S50 — AI FIREWALL (Hafif Anti-Flood, dev’de kapalı)
+// S50 â€” AI FIREWALL (Hafif Anti-Flood, devâ€™de kapalÄ±)
 // ============================================================================
 
 const aiFloodMap = new Map();
@@ -4034,7 +3952,7 @@ function gcAiFlood(now = Date.now()) {
 }
 
 function aiFirewall(req, res, next) {
-  if (!IS_PROD) return next(); // dev’de sıkma
+  if (!IS_PROD) return next(); // devâ€™de sÄ±kma
 
   const ip = getClientIp(req);
   const now = Date.now();
@@ -4054,7 +3972,7 @@ function aiFirewall(req, res, next) {
 }
 
 // ============================================================================
-// POST /api/ai — Ana Sono AI endpoint’i — S16 → S50 güçlendirilmiş
+// POST /api/ai â€” Ana Sono AI endpointâ€™i â€” S16 â†’ S50 gÃ¼Ã§lendirilmiÅŸ
 // ============================================================================
 
 async function handleAiChat(req, res) {
@@ -4086,7 +4004,7 @@ async function handleAiChat(req, res) {
     const ip = getClientIp(req);
     const diagOn = safeString(req.query && req.query.diag) === "1";
 
-    // Boş mesaj için hızlı cevap (frontend için) — KORUNDU
+    // BoÅŸ mesaj iÃ§in hÄ±zlÄ± cevap (frontend iÃ§in) â€” KORUNDU
     if (!text) {
       return res.json({
         ok: true,
@@ -4094,19 +4012,19 @@ async function handleAiChat(req, res) {
         persona: "neutral",
         answer:
           ({
-            en: "Tell me what you need — I can search products/services or answer questions.",
-            fr: "Dites-moi ce dont vous avez besoin — je peux chercher des produits/services ou répondre à vos questions.",
-            ru: "Скажите, что вам нужно — я могу искать товары/услуги или отвечать на вопросы.",
-            ar: "قل لي ما الذي تحتاجه — يمكنني البحث عن منتج/خدمة أو الإجابة عن الأسئلة.",
-            tr: "Ne aradığını yaz — ürün/hizmet arayabilir ya da sorularını cevaplayabilirim.",
-          }[lang] || "Ne aradığını yaz — ürün/hizmet arayabilir ya da sorularını cevaplayabilirim."),
+            en: "Tell me what you need â€” I can search products/services or answer questions.",
+            fr: "Dites-moi ce dont vous avez besoin â€” je peux chercher des produits/services ou rÃ©pondre Ã  vos questions.",
+            ru: "Ğ¡ĞºĞ°Ğ¶Ğ¸Ñ‚Ğµ, Ñ‡Ñ‚Ğ¾ Ğ²Ğ°Ğ¼ Ğ½ÑƒĞ¶Ğ½Ğ¾ â€” Ñ Ğ¼Ğ¾Ğ³Ñƒ Ğ¸ÑĞºĞ°Ñ‚ÑŒ Ñ‚Ğ¾Ğ²Ğ°Ñ€Ñ‹/ÑƒÑĞ»ÑƒĞ³Ğ¸ Ğ¸Ğ»Ğ¸ Ğ¾Ñ‚Ğ²ĞµÑ‡Ğ°Ñ‚ÑŒ Ğ½Ğ° Ğ²Ğ¾Ğ¿Ñ€Ğ¾ÑÑ‹.",
+            ar: "Ù‚Ù„ Ù„ÙŠ Ù…Ø§ Ø§Ù„Ø°ÙŠ ØªØ­ØªØ§Ø¬Ù‡ â€” ÙŠÙ…ÙƒÙ†Ù†ÙŠ Ø§Ù„Ø¨Ø­Ø« Ø¹Ù† Ù…Ù†ØªØ¬/Ø®Ø¯Ù…Ø© Ø£Ùˆ Ø§Ù„Ø¥Ø¬Ø§Ø¨Ø© Ø¹Ù† Ø§Ù„Ø£Ø³Ø¦Ù„Ø©.",
+            tr: "Ne aradÄ±ÄŸÄ±nÄ± yaz â€” Ã¼rÃ¼n/hizmet arayabilir ya da sorularÄ±nÄ± cevaplayabilirim.",
+          }[lang] || "Ne aradÄ±ÄŸÄ±nÄ± yaz â€” Ã¼rÃ¼n/hizmet arayabilir ya da sorularÄ±nÄ± cevaplayabilirim."),
         suggestions:
           ({
             en: ["Find the cheapest option", "Tell me about a place", "Explain a concept"],
-            fr: ["Trouve l’option la moins chère", "Parle-moi d’un lieu", "Explique un concept"],
-            ru: ["Найди самый дешевый вариант", "Расскажи о месте", "Объясни понятие"],
-            ar: ["اعثر على الأرخص", "حدثني عن مكان", "اشرح فكرة"],
-            tr: ["En ucuzunu bul", "Bir yer hakkında bilgi ver", "Bir şeyi açıkla"],
+            fr: ["Trouve lâ€™option la moins chÃ¨re", "Parle-moi dâ€™un lieu", "Explique un concept"],
+            ru: ["ĞĞ°Ğ¹Ğ´Ğ¸ ÑĞ°Ğ¼Ñ‹Ğ¹ Ğ´ĞµÑˆĞµĞ²Ñ‹Ğ¹ Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚", "Ğ Ğ°ÑÑĞºĞ°Ğ¶Ğ¸ Ğ¾ Ğ¼ĞµÑÑ‚Ğµ", "ĞĞ±ÑŠÑÑĞ½Ğ¸ Ğ¿Ğ¾Ğ½ÑÑ‚Ğ¸Ğµ"],
+            ar: ["Ø§Ø¹Ø«Ø± Ø¹Ù„Ù‰ Ø§Ù„Ø£Ø±Ø®Øµ", "Ø­Ø¯Ø«Ù†ÙŠ Ø¹Ù† Ù…ÙƒØ§Ù†", "Ø§Ø´Ø±Ø­ ÙÙƒØ±Ø©"],
+            tr: ["En ucuzunu bul", "Bir yer hakkÄ±nda bilgi ver", "Bir ÅŸeyi aÃ§Ä±kla"],
           }[lang] || []),
         intent: "mixed",
         cards: { best: null, aiSmart: [], others: [] },
@@ -4116,51 +4034,13 @@ async function handleAiChat(req, res) {
     const intent = detectIntent(text);
 
 	const modeNorm = safeString(mode).toLowerCase();
-	// mode=chat/info/... → sadece sohbet/info; adapter çalıştırma (kredi yakma) YASAK
+	// mode=chat/info/... â†’ sadece sohbet/info; adapter Ã§alÄ±ÅŸtÄ±rma (kredi yakma) YASAK
 	const noSearchMode =
 	  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
-	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence üret
+	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence Ã¼ret
 	const shouldEvidence = noSearchMode || intent === "info";
-<<<<<<< HEAD
-	// Evidence type (none/wiki/weather/fx/...) for guardrails
-	const eType0 = detectEvidenceType(text, lang);
-
-	// Guardrail: In chat/info mode, do NOT invent product comparisons.
-	if (noSearchMode && (intent === "product" || intent === "mixed") && eType0 === "none") {
-		const L = normalizeLang(lang);
-		const msg =
-			L === "tr"
-				? "Bu soru **ürün/hizmet fiyat karşılaştırması** gibi duruyor. Bilgi modunda sallama yapmayacağım.\n\n✅ Çözüm: **Ürün/Hizmet Ara** moduna geçip aynı cümleyi arat — vitrinde en uygun/en güvenilir seçenekleri listelerim."
-				: L === "fr"
-				? "Cette question ressemble à une **comparaison de prix produit/service**. En mode info, je ne vais pas inventer de prix.\n\n✅ Solution : passe en mode **Recherche Produit/Service** et lance la même requête — je liste les options les plus fiables et les moins chères dans la vitrine."
-				: L === "ru"
-				? "Похоже, это **сравнение цен на товар/услугу**. В информационном режиме я не буду придумывать цены.\n\n✅ Решение: переключись в режим **Поиск товара/услуги** и задай тот же запрос — в витрине покажу самые выгодные и надежные варианты."
-				: L === "ar"
-				? "يبدو أن هذا السؤال **مقارنة أسعار لمنتج/خدمة**. في وضع المعلومات لن أختلق أسعارًا.\n\n✅ الحل: انتقل إلى وضع **بحث المنتج/الخدمة** واطرح نفس الجملة — سأعرض لك الخيارات الأرخص والأكثر موثوقية في الواجهة."
-				: "This looks like a **product/service price comparison**. In info mode I won’t make up prices.\n\n✅ Fix: switch to **Product/Service Search** mode and run the same query — I’ll list the most reliable and cheapest options in the showcase.";
-
-		const latencyMs = Date.now() - startedAt;
-		const out = {
-			ok: true,
-			provider: "system",
-			persona: "neutral",
-			answer: msg,
-			suggestions: [text],
-			sources: [],
-			trustScore: 92,
-			intent: "product",
-			cards: { best: null, aiSmart: [], others: [] },
-			meta: { latencyMs, locale: normLocale, mode: modeNorm, didSearch: false, trustScore: 92 },
-		};
-		return res.json(diagOn ? { ...out, diag: { ip, intent, mode: modeNorm, noSearchMode, shouldEvidence, didSearch: false, evidenceType: eType0, evidenceConfidence: null, resultsCount: 0, openaiKey: !!process.env.OPENAI_API_KEY } } : out);
-	}
-
-	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
-	const didSearch = !shouldEvidence && (intent === "product" || intent === "mixed");
-=======
-	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
+	// ÃœrÃ¼n + hizmet + belirsiz(mixed) iÃ§in vitrin aramasÄ±
 	const didSearch = !shouldEvidence && (intent === "product" || intent === "service" || intent === "mixed");
->>>>>>> 2c35ef7 (chore: sync backend)
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
@@ -4223,9 +4103,9 @@ if (shouldEvidence) {
 
     const latencyMs = Date.now() - startedAt;
 
-    // S50 — tek satır JSON telemetri
+    // S50 â€” tek satÄ±r JSON telemetri
     console.log(
-      "🤖 SonoAI S50:",
+      "ğŸ¤– SonoAI S50:",
       JSON.stringify({
         userId: userId || null,
         ip,
@@ -4241,7 +4121,7 @@ if (shouldEvidence) {
       })
     );
 
-    // Response shape → FRONTEND ile %100 uyumlu (S16 ile aynı alanlar)
+    // Response shape â†’ FRONTEND ile %100 uyumlu (S16 ile aynÄ± alanlar)
     return res.json({
       ok: true,
       provider: llm.provider,
@@ -4275,3 +4155,4 @@ router.post("/", aiFirewall, handleAiChat);
 router.post("/chat", aiFirewall, handleAiChat);
 
 export default router;
+
