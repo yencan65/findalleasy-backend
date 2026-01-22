@@ -190,138 +190,39 @@ async function updateUserMemory(userId, ip, payload = {}) {
 // ============================================================================
 
 function detectIntent(text = "") {
-  const t = safeString(text).toLowerCase().trim();
-  if (!t) return "mixed";
+  const low = safeString(text).toLowerCase().trim();
+  if (!low) return "info";
 
-  // Ürün niyeti: fiyat/indirim/model/teknik özellikler
-  // Not: otel/uçak/bilet gibi hizmet kelimeleri ürün sayılmasın.
+  // Evidence-first overrides (these are not product price comparisons)
+  try {
+    const et = detectEvidenceType(low);
+    if (["weather", "fx", "econ", "news", "poi", "travel", "recipe"].includes(et)) return "info";
+  } catch (_) {}
+
   const productWords = [
-    "en ucuz",
-    "en uygun",
-    "fiyat",
-    "kaç para",
-    "indirim",
-    "kampanya",
-    "kupon",
-    "stok",
-    "kargo",
-    "garanti",
-    "model",
-    "gb",
-    "ram",
-    "ssd",
-    "iphone",
-    "samsung",
-    "xiaomi",
-    "dyson",
-    "airpods",
-    "playstation",
-    "ps5",
-    "laptop",
-    "telefon",
-    "tablet",
-    "kulaklık",
-    "televizyon",
-    "tv",
-    "buzdolabı",
-    "çamaşır",
-    "bulaşık",
-    "klima",
-    "kombi",
-    "monitör",
-    "ekran kartı",
-    "gpu",
-    "rtx",
-    "rx",
+    "en ucuz", "en uygun", "en iyi fiyat", "indirim", "kampanya", "kupon",
+    "fiyat", "fiyatı", "kaç tl", "kaç lira", "ne kadar", "satın al", "sipariş",
+    "link", "nereden al", "nereden alınır", "stok", "taksit", "kargo", "bedava kargo",
+    "hepsiburada", "trendyol", "n11", "amazon", "akakçe", "cimri", "epey",
+    "otel fiyat", "uçak bileti", "kiralık araba", "rent a car", "rezervasyon", "booking",
+    // service-ish
+    "otel", "uçak", "bilet", "araba kiralama", "kiralık araç", "tur", "sigorta", "kredi", "kredi kartı",
+    "internet", "fiber", "gsm", "tarife", "restoran", "mekan", "doktor", "hastane", "randevu",
+    "kurs", "eğitim", "emlak", "kiralık", "satılık",
   ];
 
-  const serviceWords = [
-    "otel",
-    "uçak",
-    "bilet",
-    "araba kiralama",
-    "kiralık araç",
-    "rent a car",
-    "tur",
-    "sigorta",
-    "kredi",
-    "kredi kartı",
-    "internet",
-    "fiber",
-    "gsm",
-    "tarife",
-    "restoran",
-    "mekan",
-    "doktor",
-    "hastane",
-    "randevu",
-    "kurs",
-    "eğitim",
-    "emlak",
-    "kiralık",
-    "satılık",
-  ];
-
-  // Bilgi niyeti: hava/döviz/haber/wiki-coğrafya/rota/yakın yer/tarif
   const infoWords = [
-    "hava durumu",
-    "kaç derece",
-    "sıcaklık",
-    "yağmur",
-    "yağış",
-    "rüzgar",
-    "nem",
-    "uv",
-    "forecast",
-    "weather",
-    "döviz",
-    "kur",
-    "usd",
-    "eur",
-    "euro",
-    "dolar",
-    "sterlin",
-    "exchange rate",
-    "haber",
-    "son dakika",
-    "gündem",
-    "news",
-    "wikipedia",
-    "wiki",
-    "kimdir",
-    "nedir",
-    "ne demek",
-    "nerede",
-    "konum",
-    "harita",
-    "nüfus",
-    "rakım",
-    "yüzölçüm",
-    "enlem",
-    "boylam",
-    "gezilecek",
-    "rota",
-    "itinerary",
-    "yakınımda",
-    "near me",
-    "en yakın",
-    "tarif",
-    "recipe",
+    "nedir", "kimdir", "nerede", "nasıl", "neden", "tarih", "özellik", "tarif", "hava durumu",
+    "kur", "döviz", "haber", "wiki", "gezi", "rota", "yakındaki"
   ];
 
-  const hasProduct = productWords.some((w) => t.includes(w));
-  if (hasProduct) return "product";
+  const hasProduct = productWords.some((w) => low.includes(w));
+  const hasInfo = infoWords.some((w) => low.includes(w));
 
-  const hasService = serviceWords.some((w) => t.includes(w));
-  if (hasService) return "service";
-
-  const hasInfo = infoWords.some((w) => t.includes(w));
-  if (hasInfo) return "info";
-
-  // Soru formu: bu tip mesajları bilgi niyeti say.
-  if (/[?]/.test(t) || /\b(nasıl|neden|ne zaman|ne kadar|hangi|kaç|kim|nerede)\b/.test(t)) return "info";
-
-  return "mixed";
+  if (hasProduct && !hasInfo) return "product";
+  if (hasInfo && !hasProduct) return "info";
+  if (hasProduct && hasInfo) return "mixed";
+  return "info";
 }
 // ============================================================================
 function detectPersona(text = "", memorySnapshot = {}) {
@@ -641,7 +542,7 @@ function pickWikiLang(lang) {
 
 function detectEvidenceType(text, lang = "tr") {
   const low = safeString(text).toLowerCase();
-  if (!low) return "wiki";
+  if (!low) return "none";
 
   // 1) High-priority utility intents
   // Note: In Turkish, "kur" is ambiguous (kurallar/kurulum/kur...) so FX detection must be strict.
@@ -676,7 +577,7 @@ if (
   if (/(kaynar|donar|erir|kaynama\s*noktası|donma\s*noktası|erime\s*noktası|boiling\s*point|freezing\s*point|melting\s*point|kaç\s*derece|\b°\s*c\b|\bdeg(?:ree)?\b)/i.test(low)) return "science";
 
   // 2) Economy / macro indicators (also common commodities keywords)
-  if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b|altın|gold|xau|ons\s*altın|gram\s*altın)/i.test(low)) return "econ";
+  if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b|altın|altin|gold|xau|ons\s*altın|gram\s*altın|gümüş|gumus|silver|xag|platin|platinum|xpt|paladyum|palladium|xpd)/i.test(low)) return "econ";
 
   // 3) Sports (headlines / fixtures)
   if (hasSportWord) return "sports";
@@ -698,7 +599,16 @@ if (
 
   if (/(haber|gündem|son\s*haber|news|headline|latest|новости|الأخبار)/i.test(low)) return "news";
 
-  return "wiki";
+    // 7) General knowledge / definitions (wiki-like) vs unknown
+  const wikiish =
+    /(\b(nedir|kimdir|nerede|ne zaman|tarih\b|tarihi\b|özellik(ler)?|hakkında|anlamı|tanım|biyografi)\b)/i.test(low) ||
+    /(\b(what is|who is|where is|history of|definition of|biography of)\b)/i.test(low) ||
+    /(\b(c’est quoi|qui est|où est|histoire de|définition de)\b)/i.test(low) ||
+    /(\b(что такое|кто такой|где находится|история)\b)/i.test(low) ||
+    /(\b(ما هو|من هو|أين|تاريخ)\b)/i.test(low);
+
+  if (wikiish) return "wiki";
+  return "none";
 }
 
 
@@ -968,7 +878,16 @@ function buildEvidenceAnswer(e, lang) {
   if (e.type === "need_city") {
     return {
       answer: T.needCity,
-      suggestions: L === "tr" ? ["Van hava durumu", "Istanbul gezilecek yerler"] : ["London weather", "Paris things to do"],
+      suggestions:
+        L === "tr"
+          ? ["Van hava durumu", "İstanbul gezilecek yerler"]
+          : L === "fr"
+          ? ["météo Van", "Istanbul à visiter"]
+          : L === "ru"
+          ? ["погода Ван", "что посмотреть в Стамбуле"]
+          : L === "ar"
+          ? ["طقس فان", "أماكن للزيارة في إسطنبول"]
+          : ["London weather", "Paris things to do"],
       sources: [],
       trustScore: 40,
     };
@@ -1003,10 +922,37 @@ function buildEvidenceAnswer(e, lang) {
 
   if (e.type === "clarify") {
     const kind = safeString(e.kind);
-    const prompt = kind === "country" ? T.needCountry : (L === "tr" ? "Hangi kişi/ülke/şehir?" : "Which person/country/city?");
+    const prompt = kind === "country"
+      ? T.needCountry
+      : L === "tr"
+      ? "Hangi kişi/ülke/şehir?"
+      : L === "fr"
+      ? "Quelle personne/pays/ville ?"
+      : L === "ru"
+      ? "Какого человека/страну/город?"
+      : L === "ar"
+      ? "أي شخص/دولة/مدينة؟"
+      : "Which person/country/city?";
+
     const sugg = kind === "country"
-      ? (L === "tr" ? ["Türkiye", "Almanya", "ABD"] : ["Turkey", "Germany", "USA"])
-      : (L === "tr" ? ["Türkiye", "Istanbul", "Albert Einstein"] : ["Turkey", "Istanbul", "Albert Einstein"]);
+      ? (L === "tr"
+          ? ["Türkiye", "Almanya", "ABD"]
+          : L === "fr"
+          ? ["Turquie", "Allemagne", "États-Unis"]
+          : L === "ru"
+          ? ["Турция", "Германия", "США"]
+          : L === "ar"
+          ? ["تركيا", "ألمانيا", "الولايات المتحدة"]
+          : ["Turkey", "Germany", "USA"])
+      : (L === "tr"
+          ? ["Türkiye", "İstanbul", "Albert Einstein"]
+          : L === "fr"
+          ? ["Turquie", "Istanbul", "Albert Einstein"]
+          : L === "ru"
+          ? ["Турция", "Стамбул", "Альберт Эйнштейн"]
+          : L === "ar"
+          ? ["تركيا", "إسطنبول", "ألبرت أينشتاين"]
+          : ["Turkey", "Istanbul", "Albert Einstein"]);
     return {
       answer: prompt,
       suggestions: sugg,
@@ -1018,7 +964,16 @@ function buildEvidenceAnswer(e, lang) {
   if (e.type === "no_answer") {
     return {
       answer: `${T.noAnswer}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Daha net yaz", "Kaynak isteyen soru"] : ["Be more specific", "Add context"],
+      suggestions:
+        L === "tr"
+          ? ["Daha net yaz", "Kaynak isteyen soru"]
+          : L === "fr"
+          ? ["Sois plus précis", "Ajoute du contexte"]
+          : L === "ru"
+          ? ["Сформулируй точнее", "Добавь контекст"]
+          : L === "ar"
+          ? ["اكتب بشكل أوضح", "أضف سياقًا"]
+          : ["Be more specific", "Add context"],
       sources: e.sources || [],
       trustScore: trust ?? 40,
     };
@@ -1079,17 +1034,77 @@ ${body}${lowNote}`.trim(),
     const val = e.value || "";
     return {
       answer: `${T.fact} ${ent}\n${prop}: ${val}${lowNote}`.trim(),
-      suggestions: L === "tr" ? [`${ent} nüfus`, `${ent} para birimi`, `${ent} resmi dil`] : [`${ent} population`, `${ent} currency`, `${ent} official language`],
+      suggestions:
+        L === "tr"
+          ? [`${ent} nüfus`, `${ent} para birimi`, `${ent} resmi dil`]
+          : L === "fr"
+          ? [`population ${ent}`, `monnaie ${ent}`, `langue officielle ${ent}`]
+          : L === "ru"
+          ? [`население ${ent}`, `валюта ${ent}`, `официальный язык ${ent}`]
+          : L === "ar"
+          ? [`عدد سكان ${ent}`, `عملة ${ent}`, `اللغة الرسمية ${ent}`]
+          : [`${ent} population`, `${ent} currency`, `${ent} official language`],
       sources: e.sources || [],
       trustScore: trust ?? 88,
     };
   }
 
   if (e.type === "econ") {
+    // Metals / spot prices
+    if (e.kind === "metals") {
+      const asOf = safeString(e.asOf || "");
+      const head =
+        L === "tr"
+          ? `Emtia (spot) — ${safeString(e.metal)}`
+          : L === "fr"
+          ? `Matières premières (spot) — ${safeString(e.metal)}`
+          : L === "ru"
+          ? `Сырьё (spot) — ${safeString(e.metal)}`
+          : L === "ar"
+          ? `سلع (فوري) — ${safeString(e.metal)}`
+          : `Commodities (spot) — ${safeString(e.metal)}`;
+
+      const lines = [];
+      if (e.ounce?.text) lines.push(`1 oz: ${safeString(e.ounce.text)}${asOf ? ` (${asOf})` : ""}`);
+      if (e.gram?.text) lines.push(`1 g: ${safeString(e.gram.text)}`);
+      if (e.note) lines.push(`
+${safeString(e.note)}`);
+
+      return {
+        answer: `${T.econ}
+${head}
+${lines.join("
+")}${lowNote}`.trim(),
+        suggestions:
+          L === "tr"
+            ? ["Gram altın fiyatı", "Gümüş fiyatı", "USD/TRY"]
+            : L === "fr"
+            ? ["prix de l'or au gramme", "prix de l'argent", "USD vers TRY"]
+            : L === "ru"
+            ? ["цена золота за грамм", "цена серебра", "USD к TRY"]
+            : L === "ar"
+            ? ["سعر الذهب للغرام", "سعر الفضة", "USD إلى TRY"]
+            : ["gold price per gram", "silver price", "USD to TRY"],
+        sources: e.sources || [],
+        trustScore: trust ?? 84,
+      };
+    }
+
     const line = `${e.country || ""} — ${e.indicator || ""}: ${e.value || ""}${e.year ? ` (${e.year})` : ""}`.trim();
+    const country = safeString(e.country || (L === "tr" ? "Türkiye" : "Turkey"));
     return {
-      answer: `${T.econ}\n${line}${lowNote}`.trim(),
-      suggestions: L === "tr" ? [`${e.country || "Türkiye"} enflasyon`, `${e.country || "Türkiye"} işsizlik`, `${e.country || "Türkiye"} gsyih`] : [`${e.country || "Turkey"} inflation`, `${e.country || "Turkey"} unemployment`, `${e.country || "Turkey"} gdp`],
+      answer: `${T.econ}
+${line}${lowNote}`.trim(),
+      suggestions:
+        L === "tr"
+          ? [`${country} enflasyon`, `${country} işsizlik`, `${country} gsyih`]
+          : L === "fr"
+          ? [`inflation ${country}`, `chômage ${country}`, `PIB ${country}`]
+          : L === "ru"
+          ? [`инфляция ${country}`, `безработица ${country}`, `ВВП ${country}`]
+          : L === "ar"
+          ? [`تضخم ${country}`, `بطالة ${country}`, `الناتج المحلي ${country}`]
+          : [`${country} inflation`, `${country} unemployment`, `${country} gdp`],
       sources: e.sources || [],
       trustScore: trust ?? 78,
     };
@@ -1099,7 +1114,16 @@ ${body}${lowNote}`.trim(),
     const lines = (e.items || []).slice(0, 5).map((x, i) => `${i + 1}) ${x.title}\n${x.url}`);
     return {
       answer: `${T.sports}\n${lines.join("\n\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Galatasaray haber", "Fenerbahçe haber", "Süper Lig puan durumu"] : ["Premier League news", "UEFA Champions League", "NBA news"],
+      suggestions:
+        L === "tr"
+          ? ["Galatasaray haber", "Fenerbahçe haber", "Süper Lig puan durumu"]
+          : L === "fr"
+          ? ["actu Ligue 1", "Ligue des champions", "actu NBA"]
+          : L === "ru"
+          ? ["новости футбола", "Лига чемпионов", "новости НБА"]
+          : L === "ar"
+          ? ["أخبار كرة القدم", "دوري أبطال أوروبا", "أخبار NBA"]
+          : ["Premier League news", "UEFA Champions League", "NBA news"],
       sources: e.sources || [],
       trustScore: trust ?? 68,
     };
@@ -1109,7 +1133,16 @@ ${body}${lowNote}`.trim(),
     const lines = (e.items || []).slice(0, 5).map((x, i) => `${i + 1}) ${x.title}${x.year ? ` (${x.year})` : ""}${x.source ? ` — ${x.source}` : ""}\n${x.url}`);
     return {
       answer: `${T.scholar}\n${lines.join("\n\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Bu konuda meta-analiz", "Randomized trial", "Yan etkiler"] : ["meta analysis", "randomized trial", "side effects"],
+      suggestions:
+        L === "tr"
+          ? ["Bu konuda meta-analiz", "Randomized trial", "Yan etkiler"]
+          : L === "fr"
+          ? ["méta-analyse", "essai randomisé", "effets secondaires"]
+          : L === "ru"
+          ? ["мета-анализ", "рандомизированное исследование", "побочные эффекты"]
+          : L === "ar"
+          ? ["تحليل تلوي", "تجربة عشوائية", "آثار جانبية"]
+          : ["meta analysis", "randomized trial", "side effects"],
       sources: e.sources || [],
       trustScore: trust ?? 72,
     };
@@ -1120,7 +1153,16 @@ ${body}${lowNote}`.trim(),
     for (const row of e.rates || []) lines.push(`${row.pair}: ${row.value}`);
     return {
       answer: `${T.fx}\n${lines.join("\n")}`.trim(),
-      suggestions: L === "tr" ? ["USD/TRY", "EUR/TRY", "GBP/TRY"] : ["USD to TRY", "EUR to TRY"],
+      suggestions:
+        L === "tr"
+          ? ["USD/TRY", "EUR/TRY", "GBP/TRY"]
+          : L === "fr"
+          ? ["USD vers TRY", "EUR vers TRY", "GBP vers TRY"]
+          : L === "ru"
+          ? ["USD к TRY", "EUR к TRY", "GBP к TRY"]
+          : L === "ar"
+          ? ["USD إلى TRY", "EUR إلى TRY", "GBP إلى TRY"]
+          : ["USD to TRY", "EUR to TRY", "GBP to TRY"],
       sources: e.sources || [],
       trustScore: trust ?? 80,
     };
@@ -1135,7 +1177,16 @@ ${body}${lowNote}`.trim(),
     }
     return {
       answer: `${T.weather} ${e.city}\n${lines.join("\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? [`${e.city} yar\u0131n hava`, `${e.city} 5 g\u00fcnl\u00fck hava`] : [`${e.city} weather tomorrow`, `${e.city} 5 day forecast`],
+      suggestions:
+        L === "tr"
+          ? [`${e.city} yarın hava`, `${e.city} 5 günlük hava`]
+          : L === "fr"
+          ? [`météo ${e.city} demain`, `prévisions ${e.city} 5 jours`]
+          : L === "ru"
+          ? [`погода ${e.city} завтра`, `прогноз ${e.city} на 5 дней`]
+          : L === "ar"
+          ? [`طقس ${e.city} غدًا`, `توقعات ${e.city} لمدة 5 أيام`]
+          : [`${e.city} weather tomorrow`, `${e.city} 5 day forecast`],
       sources: e.sources || [],
       trustScore: trust ?? 85,
     };
@@ -1145,7 +1196,16 @@ ${body}${lowNote}`.trim(),
     const lines = (e.items || []).slice(0, 10).map((x, i) => `${i + 1}) ${x.name}${x.note ? ` — ${x.note}` : ""}\n${x.url}`);
     return {
       answer: `${T.poi} ${e.city}\n${lines.join("\n\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Yak\u0131n\u0131mdaki kafe", "Yak\u0131n\u0131mdaki restoran"] : ["nearby cafes", "nearby restaurants"],
+      suggestions:
+        L === "tr"
+          ? ["Yakınımdaki kafe", "Yakınımdaki restoran"]
+          : L === "fr"
+          ? ["cafés à proximité", "restaurants à proximité"]
+          : L === "ru"
+          ? ["кафе рядом", "рестораны рядом"]
+          : L === "ar"
+          ? ["مقاهي قريبة", "مطاعم قريبة"]
+          : ["nearby cafes", "nearby restaurants"],
       sources: e.sources || [],
       trustScore: trust ?? 80,
     };
@@ -1168,7 +1228,16 @@ ${body}${lowNote}`.trim(),
     const header = `${T.travel} ${e.city}`;
     return {
       answer: `${header}\n\n${blocks.join("\n\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? [`${e.city} gezilecek yerler`, `${e.city} yeme i\u00e7me`] : [`${e.city} things to do`, `${e.city} where to eat`],
+      suggestions:
+        L === "tr"
+          ? [`${e.city} gezilecek yerler`, `${e.city} yeme içme`]
+          : L === "fr"
+          ? [`${e.city} à visiter`, `où manger à ${e.city}`]
+          : L === "ru"
+          ? [`что посмотреть в ${e.city}`, `где поесть в ${e.city}`]
+          : L === "ar"
+          ? [`أماكن للزيارة في ${e.city}`, `أين تأكل في ${e.city}`]
+          : [`${e.city} things to do`, `${e.city} where to eat`],
       sources: e.sources || [],
       trustScore: trust ?? 78,
     };
@@ -1190,7 +1259,16 @@ ${body}${lowNote}`.trim(),
     }
     return {
       answer: `${T.recipe} ${e.title}\n\n${parts.join("\n\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Tavuk tarifi", "Tatli tarifi"] : ["chicken recipe", "dessert recipe"],
+      suggestions:
+        L === "tr"
+          ? ["Tavuk tarifi", "Tatlı tarifi"]
+          : L === "fr"
+          ? ["recette de poulet", "recette de dessert"]
+          : L === "ru"
+          ? ["рецепт курицы", "рецепт десерта"]
+          : L === "ar"
+          ? ["وصفة دجاج", "وصفة حلوى"]
+          : ["chicken recipe", "dessert recipe"],
       sources: e.sources || [],
       trustScore: trust ?? 75,
     };
@@ -1201,7 +1279,16 @@ ${body}${lowNote}`.trim(),
     const lines = items.map((x, i) => `${i + 1}) ${x.title}`);
     return {
       answer: `${T.news}\n${lines.join("\n")}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Son dakika", "Ekonomi haberleri", "Spor haberleri"] : ["latest news", "economy news", "sports news"],
+      suggestions:
+        L === "tr"
+          ? ["Son dakika", "Ekonomi haberleri", "Spor haberleri"]
+          : L === "fr"
+          ? ["dernières infos", "actualités économiques", "actualités sportives"]
+          : L === "ru"
+          ? ["последние новости", "экономические новости", "спорт новости"]
+          : L === "ar"
+          ? ["آخر الأخبار", "أخبار الاقتصاد", "أخبار الرياضة"]
+          : ["latest news", "economy news", "sports news"],
       sources: e.sources || [],
       trustScore: trust ?? 70,
     };
@@ -1213,7 +1300,16 @@ ${body}${lowNote}`.trim(),
     return {
       answer: `${T.science} ${e.title}
 ${e.extract}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Su kaç derecede kaynar?", "Su kaç derecede donar?"] : ["water boiling point", "water freezing point"],
+      suggestions:
+        L === "tr"
+          ? ["Su kaç derecede kaynar?", "Su kaç derecede donar?"]
+          : L === "fr"
+          ? ["température d’ébullition de l’eau", "température de congélation de l’eau"]
+          : L === "ru"
+          ? ["температура кипения воды", "температура замерзания воды"]
+          : L === "ar"
+          ? ["درجة غليان الماء", "درجة تجمد الماء"]
+          : ["water boiling point", "water freezing point"],
       sources: e.sources || [],
       trustScore: trust ?? 90,
     };
@@ -1223,7 +1319,16 @@ ${e.extract}${lowNote}`.trim(),
   if (e.type === "wiki") {
     return {
       answer: `${T.wiki} ${e.title}\n${e.extract}${lowNote}`.trim(),
-      suggestions: L === "tr" ? ["Daha k\u0131sa \u00f6zet", "\u00d6rnek ver", "Art\u0131s\u0131 eksisi"] : ["shorter summary", "give an example", "pros and cons"],
+      suggestions:
+        L === "tr"
+          ? ["Daha kısa özet", "Örnek ver", "Artısı eksisi"]
+          : L === "fr"
+          ? ["résumé plus court", "donne un exemple", "avantages / inconvénients"]
+          : L === "ru"
+          ? ["короче", "приведи пример", "плюсы и минусы"]
+          : L === "ar"
+          ? ["ملخص أقصر", "أعطِ مثالًا", "إيجابيات وسلبيات"]
+          : ["shorter summary", "give an example", "pros and cons"],
       sources: e.sources || [],
       trustScore: trust ?? 65,
     };
@@ -2576,26 +2681,119 @@ async function getWorldBankLatest(iso3, indicatorId) {
   };
 }
 
-async function getEconEvidence(text, lang) {
+async async function getEconEvidence(text, lang) {
   const L = normalizeLang(lang);
-  const low = safeString(text).toLowerCase();
+  const raw = safeString(text);
+  const low = raw.toLowerCase();
 
-  // Gold/precious metals prices need live market data; avoid wrong Wikipedia definitions.
-  if (/(altın|altin|\bgold\b|\bxau\b)/i.test(low) && /(fiyat|price|kaç|kac|ne kadar|tl|try)/i.test(low)) {
+  // --- Precious metals spot (Stooq) + FX conversion (Frankfurter) ---
+  const metal = (() => {
+    if (/(\bxau\b|altın|altin|\bgold\b)/i.test(low)) return { key: "gold", stooq: "xauusd", tr: "Altın", en: "Gold", fr: "Or", ru: "Золото", ar: "الذهب" };
+    if (/(\bxag\b|gümüş|gumus|\bsilver\b)/i.test(low)) return { key: "silver", stooq: "xagusd", tr: "Gümüş", en: "Silver", fr: "Argent", ru: "Серебро", ar: "الفضة" };
+    if (/(\bxpt\b|platin|\bplatinum\b)/i.test(low)) return { key: "platinum", stooq: "xptusd", tr: "Platin", en: "Platinum", fr: "Platine", ru: "Платина", ar: "البلاتين" };
+    if (/(\bxpd\b|paladyum|\bpalladium\b)/i.test(low)) return { key: "palladium", stooq: "xpdusd", tr: "Paladyum", en: "Palladium", fr: "Palladium", ru: "Палладий", ar: "البلاديوم" };
+    return null;
+  })();
+
+  const isJewelry = /(bilezik|kolye|yüzük|takı|mücevher|set|küpe|22\s*ayar|24\s*ayar|14\s*ayar)/i.test(low);
+  const wantsPrice =
+    /(fiyat|price|kaç|kac|ne\s*kadar|spot|anlık|live|today|bugün|rate|tl|try|usd|eur|gbp|dolar|euro|sterlin|₺|\$|€)/i.test(low);
+
+  if (metal && wantsPrice && !isJewelry) {
+    const TROY_OUNCE_G = 31.1034768;
+
+    const pickTargetCurrency = () => {
+      if (/(\btry\b|\btl\b|lira|₺)/i.test(raw)) return "TRY";
+      if (/(\beur\b|€|euro)/i.test(raw)) return "EUR";
+      if (/(\bgbp\b|sterlin|pound)/i.test(raw)) return "GBP";
+      if (/(\busd\b|\$|dolar)/i.test(raw)) return "USD";
+      return L === "tr" ? "TRY" : "USD";
+    };
+
+    const target = pickTargetCurrency();
+
+    const stooqUrl = `https://stooq.com/q/l/?s=${encodeURIComponent(metal.stooq)}&f=sd2t2ohlcv&h&e=csv`;
+    const csv = await fetchTextCached(stooqUrl, 2 * 60 * 1000);
+
+    const parseStooqQuote = (txt) => {
+      const lines = String(txt || "").trim().split(/\r?\n/).filter(Boolean);
+      if (lines.length < 2) return null;
+      const head = lines[0].split(",").map((x) => x.trim());
+      const row = lines[1].split(",").map((x) => x.trim());
+      const idxDate = head.findIndex((h) => h.toLowerCase() === "date");
+      const idxTime = head.findIndex((h) => h.toLowerCase() === "time");
+      const idxClose = head.findIndex((h) => h.toLowerCase() === "close");
+      const closeStr = row[idxClose >= 0 ? idxClose : row.length - 1];
+      const close = Number(String(closeStr || "").replace(",", "."));
+      if (!Number.isFinite(close)) return null;
+      return { close, date: row[idxDate] || "", time: row[idxTime] || "" };
+    };
+
+    const q = parseStooqQuote(csv);
+    if (!q) {
+      return {
+        type: "no_answer",
+        reason: "no_metal_quote",
+        trustScore: 55,
+        sources: [
+          { title: "Stooq CSV quote", url: stooqUrl },
+        ],
+      };
+    }
+
+    const ounceUsd = q.close;
+    const asOf = [q.date, q.time].filter(Boolean).join(" ").trim();
+
+    let fxRate = 1;
+    let fxUrl = null;
+    if (target !== "USD") {
+      fxUrl = `https://api.frankfurter.app/latest?from=USD&to=${encodeURIComponent(target)}`;
+      const fx = await fetchJsonCached(fxUrl, 2 * 60 * 1000);
+      const r = fx?.rates?.[target];
+      if (Number.isFinite(Number(r))) fxRate = Number(r);
+    }
+
+    const ounce = ounceUsd * fxRate;
+    const gram = ounce / TROY_OUNCE_G;
+
+    const loc = L === "tr" ? "tr-TR" : L === "fr" ? "fr-FR" : L === "ru" ? "ru-RU" : L === "ar" ? "ar-EG" : "en-US";
+    const fmt = (v) => {
+      try {
+        return new Intl.NumberFormat(loc, { style: "currency", currency: target, maximumFractionDigits: target === "JPY" ? 0 : 2 }).format(v);
+      } catch {
+        return `${Number(v).toFixed(2)} ${target}`;
+      }
+    };
+
+    const metalLabel = metal[L] || metal.en || metal.tr;
+
     return {
       type: "econ",
-      indicator: L === "tr" ? "Gram altın fiyatı (anlık)" : "Gold price (live)",
-      country: L === "tr" ? "Türkiye" : "Turkey",
-      year: L === "tr" ? "anlık" : "live",
-      value: L === "tr"
-        ? "Bu bilgi canlı piyasa verisi gerektirir. Güvenilir fiyat için Borsa İstanbul / bankalar / lisanslı veri sağlayıcı kaynağı gerekir."
-        : "This requires live market data (exchange/authorized data provider).",
-      trustScore: 45,
+      kind: "metals",
+      metal: metalLabel,
+      currency: target,
+      ounce: { value: ounce, text: `${fmt(ounce)} / oz` },
+      gram: { value: gram, text: `${fmt(gram)} / g` },
+      asOf,
+      note:
+        L === "tr"
+          ? "Not: Bu **global spot** fiyattır. Kuyumcu/banka fiyatlarında **prim, vergi, işçilik, spread** farkı olur."
+          : L === "fr"
+          ? "Note : prix **spot mondial**. Les prix bijoutiers/banques incluent **prime, taxes, frais, spread**."
+          : L === "ru"
+          ? "Примечание: это **глобальная спот-цена**. В банках/ювелирах есть **премия, налоги, наценка, спред**."
+          : L === "ar"
+          ? "ملاحظة: هذا سعر **فوري عالمي**. أسعار البنوك/الصاغة تشمل **علاوة، ضرائب، تكاليف، فارق سعر**."
+          : "Note: this is the **global spot** price. Retail/bank quotes include **premium, taxes, fees, spread**.",
+      trustScore: 84,
       sources: [
-        { title: "Borsa İstanbul", url: "https://www.borsaistanbul.com" },
+        { title: `Stooq: ${metal.stooq.toUpperCase()} quote (CSV)`, url: stooqUrl },
+        ...(fxUrl ? [{ title: "Frankfurter (ECB rates)", url: fxUrl }] : []),
       ],
     };
   }
+
+  // --- World Bank indicators (macro) ---
   const ind = pickWBIndicator(text, L);
   if (!ind) return null;
 
@@ -3171,9 +3369,14 @@ async function gatherEvidence({ text, lang, city }) {
     if (type === "sports") return await getSportsEvidence(text, L);
     if (type === "scholar") return await getScholarEvidence(text, L);
 
-    const wiki = await getWikiEvidence(text, L);
-    if (wiki) return wiki;
-    return { type: "no_answer", reason: "no_wiki", trustScore: 40 };
+    if (type === "wiki") {
+      const wiki = await getWikiEvidence(text, L);
+      if (wiki) return wiki;
+      return { type: "no_answer", reason: "no_wiki", trustScore: 40 };
+    }
+
+    // type === "none" (or unknown) → don't hallucinate a wiki answer
+    return { type: "no_answer", reason: "no_evidence_type", trustScore: 40 };
   } catch (err) {
     console.error("evidence error:", err?.message || err);
     return { type: "no_answer", reason: "evidence_error", trustScore: 35 };
@@ -3557,8 +3760,41 @@ async function handleAiChat(req, res) {
 	  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
 	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence üret
 	const shouldEvidence = noSearchMode || intent === "info";
+	// Evidence type (none/wiki/weather/fx/...) for guardrails
+	const eType0 = detectEvidenceType(text, lang);
+
+	// Guardrail: In chat/info mode, do NOT invent product comparisons.
+	if (noSearchMode && (intent === "product" || intent === "mixed") && eType0 === "none") {
+		const L = normalizeLang(lang);
+		const msg =
+			L === "tr"
+				? "Bu soru **ürün/hizmet fiyat karşılaştırması** gibi duruyor. Bilgi modunda sallama yapmayacağım.\n\n✅ Çözüm: **Ürün/Hizmet Ara** moduna geçip aynı cümleyi arat — vitrinde en uygun/en güvenilir seçenekleri listelerim."
+				: L === "fr"
+				? "Cette question ressemble à une **comparaison de prix produit/service**. En mode info, je ne vais pas inventer de prix.\n\n✅ Solution : passe en mode **Recherche Produit/Service** et lance la même requête — je liste les options les plus fiables et les moins chères dans la vitrine."
+				: L === "ru"
+				? "Похоже, это **сравнение цен на товар/услугу**. В информационном режиме я не буду придумывать цены.\n\n✅ Решение: переключись в режим **Поиск товара/услуги** и задай тот же запрос — в витрине покажу самые выгодные и надежные варианты."
+				: L === "ar"
+				? "يبدو أن هذا السؤال **مقارنة أسعار لمنتج/خدمة**. في وضع المعلومات لن أختلق أسعارًا.\n\n✅ الحل: انتقل إلى وضع **بحث المنتج/الخدمة** واطرح نفس الجملة — سأعرض لك الخيارات الأرخص والأكثر موثوقية في الواجهة."
+				: "This looks like a **product/service price comparison**. In info mode I won’t make up prices.\n\n✅ Fix: switch to **Product/Service Search** mode and run the same query — I’ll list the most reliable and cheapest options in the showcase.";
+
+		const latencyMs = Date.now() - startedAt;
+		const out = {
+			ok: true,
+			provider: "system",
+			persona: "neutral",
+			answer: msg,
+			suggestions: [text],
+			sources: [],
+			trustScore: 92,
+			intent: "product",
+			cards: { best: null, aiSmart: [], others: [] },
+			meta: { latencyMs, locale: normLocale, mode: modeNorm, didSearch: false, trustScore: 92 },
+		};
+		return res.json(diagOn ? { ...out, diag: { ip, intent, mode: modeNorm, noSearchMode, shouldEvidence, didSearch: false, evidenceType: eType0, evidenceConfidence: null, resultsCount: 0, openaiKey: !!process.env.OPENAI_API_KEY } } : out);
+	}
+
 	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
-	const didSearch = !shouldEvidence && (intent === "product" || intent === "service" || intent === "mixed");
+	const didSearch = !shouldEvidence && (intent === "product" || intent === "mixed");
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
