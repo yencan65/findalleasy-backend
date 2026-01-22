@@ -1,11 +1,9 @@
 {
-  "name": "findalleasy-backend",
+"name": "findalleasy-backend",
   "version": "2.2.1",
   "type": "module",
+  "engines": { "node": ">=18" },
   "main": "server.js",
-  "engines": {
-    "node": "20.x"
-  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
