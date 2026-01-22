@@ -13,3 +13,6 @@ build/
 *.zip
 desktop.ini
 _tmp_*
+
+*.bak
+
