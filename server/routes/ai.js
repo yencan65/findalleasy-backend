@@ -189,6 +189,7 @@ async function updateUserMemory(userId, ip, payload = {}) {
 // INTENT DETECT — S16 (KORUNDU, sadece hijyen)
 // ============================================================================
 
+<<<<<<< HEAD
 function detectIntent(text = "") {
   const low = safeString(text).toLowerCase().trim();
   if (!low) return "info";
@@ -219,6 +220,32 @@ function detectIntent(text = "") {
   const hasProduct = productWords.some((w) => low.includes(w));
   const hasInfo = infoWords.some((w) => low.includes(w));
 
+=======
+function detectIntent(text, lang = "tr") {
+  const raw = safeString(text);
+  const low = raw.toLowerCase().trim();
+  if (!low) return "mixed";
+
+  // Evidence-first overrides: if we can answer with real-world evidence, treat as info.
+  const eType = detectEvidenceType(raw, lang);
+  if (eType && eType !== "none") return "info";
+
+  // Product intent should be explicit (price / purchase / marketplace).
+  const buyOrMarket =
+    /(satın\s*al|sipariş|nereden\s*al|buy|purchase|order|where\s*to\s*buy|acheter|où\s*acheter|купить|где\s*купить|اشتر|شراء|من\s*أين)/i.test(low) ||
+    /(hepsiburada|trendyol|n11|amazon|akakçe|cimri|epey|booking|expedia)/i.test(low);
+
+  const priceish =
+    /(fiyat|kaç\s*para|ne\s*kadar|en\s*uygun|en\s*ucuz|ucuz|ekonomik|uygun\s*fiyat|indirim|kampanya|price|cost|how\s*much|cheapest|discount|deal|prix|combien|moins\s*cher|цена|сколько|дешевле|скидк|سعر|كم|أرخص|خصم)/i.test(low);
+
+  const infoish =
+    /[?؟]/.test(raw) ||
+    /(nedir|ne\s*demek|açıkla|anlat|bilgi|hakkında|tarih|kimdir|nasıl|neden|where|what|who|why|how|explain|information|guide|history|qu['’]est-ce|c['’]est\s*quoi|comment|pourquoi|où|quand|expliquer|что\s*такое|кто|где|когда|почему|как|объясни|ما|ماذا|من|أين|متى|لماذا|كيف|اشرح|معلومات)/i.test(low);
+
+  const hasProduct = buyOrMarket || priceish;
+  const hasInfo = infoish;
+
+>>>>>>> 2c35ef7 (chore: sync backend)
   if (hasProduct && !hasInfo) return "product";
   if (hasInfo && !hasProduct) return "info";
   if (hasProduct && hasInfo) return "mixed";
@@ -541,25 +568,42 @@ function pickWikiLang(lang) {
 }
 
 function detectEvidenceType(text, lang = "tr") {
+<<<<<<< HEAD
   const low = safeString(text).toLowerCase();
+=======
+  const low = safeString(text).toLowerCase().trim();
+>>>>>>> 2c35ef7 (chore: sync backend)
   if (!low) return "none";
 
-  // 1) High-priority utility intents
-  // Note: In Turkish, "kur" is ambiguous (kurallar/kurulum/kur...) so FX detection must be strict.
-  const hasRuleWord = /(kural|kurallar|kuralları|rules)/i.test(low);
-  const hasSportWord = /(\bspor\b|futbol|basketbol|voleybol|uefa|fifa|şampiyonlar\s*ligi|champions\s*league|premier\s*league|la\s*liga|serie\s*a|bundesliga|\bnba\b|\bmaç\b|fikstür|puan\s*durumu|transfer)/i.test(low);
+  const L = normalizeLang(lang);
 
-  // Sports rules questions should go to Wikipedia-style explanations, not FX or headlines.
-  if (hasSportWord && hasRuleWord) return "wiki";
+  // Weather
+  if (/(hava\s*durumu|weather|météo|погода|طقس)/i.test(low)) return "weather";
 
+  // News
+  if (/(haber|news|actualité|новост|أخبار)/i.test(low)) return "news";
+
+  // Travel / itinerary / plan
+  if (/(gezi|rota|travel|itinerary|itin(é|e)raire|путешеств|маршрут|سفر|خطة)/i.test(low))
+    return "travel";
+
+  // Recipe
+  if (/(tarif|recipe|recette|рецепт|وصفة)/i.test(low)) return "recipe";
+
+  // POI / nearby / food / restaurants, etc.
   if (
-    !hasRuleWord &&
-    /(doviz|döviz|exchange\s*rate|\bfx\b|\busd\b|\beur\b|\bgbp\b|\bdolar\b|\beuro\b|\bsterlin\b|usd\/try|eur\/try|gbp\/try|döviz\s*kuru|doviz\s*kuru|dolar\s*kuru|euro\s*kuru|sterlin\s*kuru|курс|الصرف)/i.test(low)
-  ) return "fx";
-  if (/(hava\s*durumu|hava\s*nasil|sicaklik|weather|temperature|forecast|погода|الطقس)/i.test(low)) return "weather";
-  if (/(tarif|tarifi|malzeme|recipe|ingredients|recette|ingrédients|рецепт|ингредиент|وصفة|مكونات)/i.test(low)) return "recipe";
+    /(yakın(ımda)?|nearby|à\s*proximité|рядом|بالقرب|nerede|where\s*(is|are)|restoran|restaurant|cafe|kafe|otel|hotel|müze|museum|park|kahvaltı)/i.test(
+      low
+    )
+  )
+    return "poi";
 
+  // FX vs metals
+  const fxish = /(d[öo]viz|kur|usd|eur|gbp|try|exchange\s*rate|taux|курс|سعر\s*الصرف)/i.test(
+    low
+  );
 
+<<<<<<< HEAD
 
 // 1a) "İlkler / firsts" (liste mantığı) — avoid "ilk yardım / first aid"
 const isFirstAid = /(ilk\s*yardım|first\s*aid)/i.test(low);
@@ -578,27 +622,41 @@ if (
 
   // 2) Economy / macro indicators (also common commodities keywords)
   if (/(gdp|gayri\s*safi|milli\s*gelir|\bgsyih\b|enflasyon|inflation|tüfe|cpi|işsizlik|unemployment|faiz|interest\s*rate|borç|debt|bütçe|budget|\bimf\b|world\s*bank|\becb\b|altın|altin|gold|xau|ons\s*altın|gram\s*altın|gümüş|gumus|silver|xag|platin|platinum|xpt|paladyum|palladium|xpd)/i.test(low)) return "econ";
+=======
+  const metalish =
+    /(gram\s*alt(ı|i)n|alt(ı|i)n|g[uü]m[uü]ş|gold|silver|xau|xag|platin|platinum|palladyum|palladium|xpt|xpd|ons|ounce|çeyrek|yarım|tam|cumhuriyet|ata)/i.test(
+      low
+    );
 
-  // 3) Sports (headlines / fixtures)
-  if (hasSportWord) return "sports";
+  if (metalish) return "metals";
+  if (fxish) return "fx";
+>>>>>>> 2c35ef7 (chore: sync backend)
 
-  // 4) Scholarly / evidence-based / medical-ish requests
-  if (/(pubmed|\bdoi\b|crossref|randomi[sz]ed|meta[-\s]*analiz|systematic\s*review|peer\s*reviewed|hakemli|makale|araştırma|çalışma|clinical\s*trial|psikoloji|psikiyatr|hastalık|tedavi|belirti|ilaç|tıp|medical)/i.test(low)) return "scholar";
+  // Firsts (curiosity / trivia)
+  if (/(ilk\s*(uçuş|insan|kadın|erkek|robot|uydu)|first\s*(flight|human|woman|man|robot|satellite))/i.test(low))
+    return "firsts";
 
-  // 5) Structured facts (Wikidata)
-  const factHint = /(başkent|capital|nüfus|population|para\s*birimi|currency|resmi\s*dil|official\s*language|yüzölçümü|area|\bkm\s*2\b|\bkm2\b|başkan|başbakan|lider|head\s*of\s*state|head\s*of\s*government|telefon\s*kodu|calling\s*code|alan\s*adı|tld|domain|saat\s*dilimi|time\s*zone|kıta|continent|komşu|neighbor|kuruluş|inception|milli\s*marş|anthem|motto|resmi\s*site|official\s*website|doğum|ölüm|meslek|occupation|vatandaşlık|citizenship)/i.test(low);
-  const qWord = /(nedir|ne|kaç|kim|hangi|what|who|which|how\s*many|tell\s*me|list|give\s*me)/i.test(low);
-  if (factHint && (qWord || /\?$/.test(low) || low.split(/\s+/).filter(Boolean).length <= 6)) return "fact";
+  // Science-ish
+  if (/(bilim|science|physics|kimya|chemistry|uzay|space|astronomy|astrofizik|astrophysics|nöro|neuro|yapay\s*zeka|ai|machine\s*learning)/i.test(low))
+    return "science";
 
-  // 6) Nearby / travel / news (existing)
-  const nearby = /(yakınımda|yakında|near\s*me|nearby|рядом|поблизости|قريب\s*مني)/i.test(low);
-  const place  = /(mekan|kafe|cafe|restaurant|restoran|kahvaltı|brunch|where\s*to\s*eat|où\s*manger|где\s*поесть|مطعم|قهوة)/i.test(low);
-  const travel = /(gezilecek|rota|itinerary|things\s*to\s*do|places\s*to\s*visit|travel|sahil|beach|plaj|tekne|boat|marina|маршрут|что\s*посмотреть|رحلة|شاطئ|قارب)/i.test(low);
-  if (nearby || place) return "poi";
-  if (travel) return "travel";
+  // Econ / macro (non-FX, non-metals): GDP, inflation, unemployment etc.
+  if (
+    /(enflasyon|inflation|gdp|büyüme|growth|işsizlik|unemployment|faiz|interest\s*rate|cpi|ppi|market\s*cap|borsa|index|endeks|tüfe|üfe)/i.test(
+      low
+    )
+  )
+    return "econ";
 
-  if (/(haber|gündem|son\s*haber|news|headline|latest|новости|الأخبار)/i.test(low)) return "news";
+  // Sports results, tables etc.
+  if (/(maç|fikstür|puan\s*durumu|league\s*table|standings|score|результат|النتيجة)/i.test(low))
+    return "sports";
 
+  // Scholar-style request
+  if (/(makale|paper|journal|doi|arxiv|pubmed|akademik|scholar)/i.test(low))
+    return "scholar";
+
+<<<<<<< HEAD
     // 7) General knowledge / definitions (wiki-like) vs unknown
   const wikiish =
     /(\b(nedir|kimdir|nerede|ne zaman|tarih\b|tarihi\b|özellik(ler)?|hakkında|anlamı|tanım|biyografi)\b)/i.test(low) ||
@@ -606,6 +664,18 @@ if (
     /(\b(c’est quoi|qui est|où est|histoire de|définition de)\b)/i.test(low) ||
     /(\b(что такое|кто такой|где находится|история)\b)/i.test(low) ||
     /(\b(ما هو|من هو|أين|تاريخ)\b)/i.test(low);
+=======
+  // Fact / quick lookup
+  if (/(nüfus|population|alanı|area|başkent|capital|yükseklik|elevation|kuruluş|founded|kurucu)/i.test(low))
+    return "fact";
+
+  // Wiki-ish (only if question looks like it)
+  const wikiish =
+    /[?؟]/.test(text) ||
+    /(nedir|ne\s*demek|kimdir|hakkında|tarih(çe|i)?|nerede|nasıl|neden|what\s*is|who\s*is|where|when|why|how|explain|define|definition|guide|history|qu['’]est-ce|c['’]est\s*quoi|comment|pourquoi|où|quand|что\s*такое|кто|где|когда|почему|как|ما|ماذا|من|أين|متى|لماذا|كيف)/i.test(
+      low
+    );
+>>>>>>> 2c35ef7 (chore: sync backend)
 
   if (wikiish) return "wiki";
   return "none";
@@ -1168,7 +1238,38 @@ ${line}${lowNote}`.trim(),
     };
   }
 
-  if (e.type === "weather") {
+  
+  if (e.type === "metals") {
+    const items = Array.isArray(e.items) ? e.items : [];
+    const updatedAt = String(e.updatedAt || "").trim();
+
+    const lines = items
+      .slice(0, 10)
+      .map((it) => {
+        const buy = it.buyText || (typeof it.buy === "number" ? String(it.buy) : "");
+        const sell = it.sellText || (typeof it.sell === "number" ? String(it.sell) : "");
+        const ccy = String(it.ccy || "").trim();
+        const label = String(it.name || "").trim() || "—";
+        if (buy && sell) return `• ${label}: ${T.buy || "Buy"} ${buy} / ${T.sell || "Sell"} ${sell}${ccy ? " " + ccy : ""}`;
+        if (sell) return `• ${label}: ${sell}${ccy ? " " + ccy : ""}`;
+        if (buy) return `• ${label}: ${buy}${ccy ? " " + ccy : ""}`;
+        return `• ${label}`;
+      })
+      .join("\n");
+
+    const head = T.metals || (L === "tr" ? "Güncel altın/metal fiyatları:" : "Live precious metals prices:");
+    const upd = updatedAt ? `\n${T.updated || "Updated:"} ${updatedAt}` : "";
+
+    return {
+      answer: `${head}${upd}\n${lines}`.trim(),
+      sources: Array.isArray(e.sources) ? e.sources.slice(0, 5) : [],
+      confidence: typeof e.trustScore === "number" ? Math.max(0.35, Math.min(0.95, e.trustScore / 100)) : 0.7,
+      meta: { trustScore: typeof e.trustScore === "number" ? e.trustScore : 70, type: "metals" },
+      suggestions: Array.isArray(e.suggestions) ? e.suggestions.slice(0, 4) : [],
+    };
+  }
+
+if (e.type === "weather") {
     const lines = [];
     if (e.now) lines.push(e.now);
     if (Array.isArray(e.forecast) && e.forecast.length) {
@@ -1374,6 +1475,244 @@ async function getFxEvidence(text, lang) {
     sources: [{ title: "Frankfurter (ECB rates)", url: "https://www.frankfurter.app/" }],
   };
 }
+
+function parseTRNumber(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  // Example: "3.456,78" or "3,456.78" or "3456.78"
+  // Strategy:
+  // - remove spaces and currency symbols
+  let x = s.replace(/\s+/g, "").replace(/[^\d,.\-]/g, "");
+  // If both separators exist, assume the last one is decimal.
+  const lastComma = x.lastIndexOf(",");
+  const lastDot = x.lastIndexOf(".");
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) {
+      // comma decimal, dot thousands
+      x = x.replace(/\./g, "").replace(",", ".");
+    } else {
+      // dot decimal, comma thousands
+      x = x.replace(/,/g, "");
+    }
+  } else if (lastComma >= 0 && lastDot < 0) {
+    // comma decimal (TR)
+    x = x.replace(/\./g, "").replace(",", ".");
+  } else {
+    // dot decimal or integer
+    x = x.replace(/,/g, "");
+  }
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatNumber(n, lang = "tr", digits = 2) {
+  try {
+    if (typeof n !== "number" || !Number.isFinite(n)) return null;
+    return n.toLocaleString(lang.startsWith("tr") ? "tr-TR" : "en-US", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+  } catch {
+    return String(n);
+  }
+}
+
+async function getMetalsEvidence({ text, lang = "tr" }) {
+  const L = normalizeLang(lang);
+  const q = safeString(text);
+  const low = q.toLowerCase();
+
+  const wantGram = /(gram\s*alt(ı|i)n|\bgram\b)/i.test(low);
+  const wantQuarter = /(çeyrek|quarter)/i.test(low);
+  const wantHalf = /(yarım|half)/i.test(low);
+  const wantFull = /\btam\b/i.test(low);
+  const wantCumhuriyet = /(cumhuriyet)/i.test(low);
+  const wantAta = /\bata\b/i.test(low);
+  const wantSilver = /(g[uü]m[uü]ş|silver|xag)/i.test(low);
+  const wantOunce = /(ons|ounce|xau)/i.test(low);
+
+  const wantsSpecific =
+    wantGram || wantQuarter || wantHalf || wantFull || wantCumhuriyet || wantAta || wantSilver || wantOunce;
+
+  // 1) Try TR market feed (supports gram/coins) — if available.
+  try {
+    const url = "https://finans.truncgil.com/today.json";
+    const j = await fetchJsonCached(url, 120000); // 2 min cache
+
+    const keys = Object.keys(j || {});
+    const findKey = (re) =>
+      keys.find((k) => re.test(String(k).toLowerCase())) || null;
+
+    const pick = (name, re, ccy = "TRY") => {
+      const k = findKey(re);
+      if (!k) return null;
+      const obj = j[k];
+      const buy = parseTRNumber(obj?.["Alış"] ?? obj?.["Alis"] ?? obj?.["Buying"] ?? obj?.["buying"] ?? obj?.["alis"]);
+      const sell = parseTRNumber(obj?.["Satış"] ?? obj?.["Satis"] ?? obj?.["Selling"] ?? obj?.["selling"] ?? obj?.["satis"]);
+      const chg = String(obj?.["Değişim"] ?? obj?.["Degisim"] ?? obj?.["Change"] ?? obj?.["change"] ?? "").trim();
+      if (buy == null && sell == null) return null;
+      return { name, buy, sell, ccy, change: chg || null };
+    };
+
+    const itemsAll = [
+      pick("Gram Altın", /gram\s*alt[ıi]n|gram\s*gold|gram_altin|gr_altin/),
+      pick("Çeyrek Altın", /çeyrek\s*alt[ıi]n|ceyrek\s*alt[ıi]n|quarter/),
+      pick("Yarım Altın", /yar[ıi]m\s*alt[ıi]n|half/),
+      pick("Tam Altın", /\btam\s*alt[ıi]n\b|\bfull\s*gold\b/),
+      pick("Cumhuriyet Altını", /cumhuriyet/),
+      pick("Ata Altın", /\bata\b/),
+      pick("Ons Altın (XAU)", /ons|ounce|xau/ , "USD"),
+      pick("Gümüş", /g[uü]m[uü]ş|silver|xag/ , "TRY"),
+    ].filter(Boolean);
+
+    // Filter if user asked specifically
+    let items = itemsAll;
+    if (wantsSpecific) {
+      items = itemsAll.filter((it) => {
+        const n = it.name.toLowerCase();
+        if (wantGram && n.includes("gram")) return true;
+        if (wantQuarter && n.includes("çeyrek")) return true;
+        if (wantHalf && n.includes("yarım")) return true;
+        if (wantFull && n.includes("tam")) return true;
+        if (wantCumhuriyet && n.includes("cumhuriyet")) return true;
+        if (wantAta && n.includes("ata")) return true;
+        if (wantSilver && n.includes("gümüş")) return true;
+        if (wantOunce && n.includes("ons")) return true;
+        return false;
+      });
+      // If filter killed everything, fall back to all.
+      if (!items.length) items = itemsAll;
+    }
+
+    const updatedAt = String(j?.Update_Date || j?.update_date || j?.updated || "").trim();
+
+    // Simple suggestions
+    const suggestions =
+      L === "tr"
+        ? ["Gram altın kaç para?", "Çeyrek altın fiyatı", "USD/TRY kuru", "Altın ons fiyatı"]
+        : ["Gold price per gram", "Quarter gold coin price", "USD/TRY rate", "Gold ounce price"];
+
+    return {
+      type: "metals",
+      query: q,
+      updatedAt: updatedAt || null,
+      items: items.map((it) => ({
+        ...it,
+        buyText: it.buy != null ? formatNumber(it.buy, L, it.ccy === "USD" ? 2 : 2) : null,
+        sellText: it.sell != null ? formatNumber(it.sell, L, it.ccy === "USD" ? 2 : 2) : null,
+      })),
+      trustScore: 85,
+      sources: [
+        {
+          title: "Truncgil Finans (today.json)",
+          url,
+        },
+      ],
+      suggestions,
+    };
+  } catch {
+    // Ignore and fall back to global spot sources below
+  }
+
+  // 2) Fallback: global spot (Stooq) + FX (Frankfurter)
+  const fetchStooqClose = async (symbol) => {
+    const url = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&h&e=csv`;
+    const csv = await fetchTextCached(url, 120000);
+    const lines = String(csv || "").trim().split(/\r?\n/);
+    if (lines.length < 2) return null;
+    const cols = lines[1].split(",");
+    // header: Symbol,Date,Time,Open,High,Low,Close,Volume
+    const close = parseTRNumber(cols?.[6] ?? "");
+    const date = String(cols?.[1] ?? "");
+    const time = String(cols?.[2] ?? "");
+    return { close, date, time, url };
+  };
+
+  let usdtry = null;
+  try {
+    const fx = await fetchJsonCached("https://api.frankfurter.app/latest?from=USD&to=TRY", 120000);
+    usdtry = typeof fx?.rates?.TRY === "number" ? fx.rates.TRY : parseTRNumber(fx?.rates?.TRY);
+  } catch {}
+
+  const xau = await fetchStooqClose("xauusd");
+  const xag = await fetchStooqClose("xagusd");
+
+  const items = [];
+  const sources = [];
+
+  if (xau?.close) {
+    sources.push({ title: "Stooq XAUUSD", url: xau.url });
+    const ounceUsd = xau.close;
+    const gramUsd = ounceUsd / 31.1034768;
+    const gramTry = usdtry ? gramUsd * usdtry : null;
+    items.push({
+      name: "Altın Ons (XAUUSD)",
+      buy: ounceUsd,
+      sell: ounceUsd,
+      ccy: "USD",
+      change: null,
+      buyText: formatNumber(ounceUsd, L, 2),
+      sellText: formatNumber(ounceUsd, L, 2),
+    });
+    if (gramTry) {
+      items.push({
+        name: "Gram Altın (spot, TRY)",
+        buy: gramTry,
+        sell: gramTry,
+        ccy: "TRY",
+        change: null,
+        buyText: formatNumber(gramTry, L, 2),
+        sellText: formatNumber(gramTry, L, 2),
+      });
+    }
+  }
+
+  if (xag?.close) {
+    sources.push({ title: "Stooq XAGUSD", url: xag.url });
+    const ounceUsd = xag.close;
+    items.push({
+      name: "Gümüş Ons (XAGUSD)",
+      buy: ounceUsd,
+      sell: ounceUsd,
+      ccy: "USD",
+      change: null,
+      buyText: formatNumber(ounceUsd, L, 2),
+      sellText: formatNumber(ounceUsd, L, 2),
+    });
+  }
+
+  if (!items.length) {
+    return {
+      type: "no_answer",
+      query: q,
+      trustScore: 35,
+      reason: "metals_fetch_failed",
+      sources,
+      suggestions: L === "tr" ? ["Tekrar dene", "USD/TRY kuru"] : ["Try again", "USD/TRY rate"],
+    };
+  }
+
+  if (usdtry) {
+    sources.push({ title: "Frankfurter USD→TRY", url: "https://api.frankfurter.app/latest?from=USD&to=TRY" });
+  }
+
+  const updatedAt = xau?.date ? `${xau.date}${xau.time ? " " + xau.time : ""}` : null;
+
+  return {
+    type: "metals",
+    query: q,
+    updatedAt,
+    items,
+    trustScore: 70,
+    sources,
+    suggestions:
+      L === "tr"
+        ? ["Gram altın kaç para?", "USD/TRY kuru", "Altın ons fiyatı", "Gümüş ons fiyatı"]
+        : ["Gold price per gram", "USD/TRY rate", "Gold ounce price", "Silver ounce price"],
+  };
+}
+
+
 
 async function geocodeCity(city, lang) {
   const name = safeString(city);
@@ -3349,26 +3688,33 @@ async function gatherEvidence({ text, lang, city }) {
   const L = normalizeLang(lang);
   const type = detectEvidenceType(text, L);
 
+  // If no evidence type detected, let the LLM handle it (no random wiki fallbacks).
+  if (!type || type === "none") return null;
+
   try {
-    if (type === "fx") return await getFxEvidence(text, L);
-    if (type === "weather") return await getWeatherEvidence(text, L, city);
-    if (type === "recipe") return await getRecipeEvidence(text, L);
+    if (type === "weather") return await getWeatherEvidence({ text, lang: L, city });
+    if (type === "fx") return await getFxEvidence({ text, lang: L });
+    if (type === "metals") return await getMetalsEvidence({ text, lang: L });
+    if (type === "news") return await getNewsEvidence({ text, lang: L });
+    if (type === "travel") return await getTravelEvidence({ text, lang: L });
+    if (type === "poi") return await getPOIEvidence({ text, lang: L, city });
+    if (type === "recipe") return await getRecipeEvidence({ text, lang: L });
+    if (type === "fact") return await getFactEvidence({ text, lang: L });
+    if (type === "econ") return await getEconEvidence({ text, lang: L });
+    if (type === "sports") return await getSportsEvidence({ text, lang: L });
+    if (type === "firsts") return await getFirstsEvidence({ text, lang: L });
+    if (type === "scholar") return await getScholarEvidence({ text, lang: L });
 
     if (type === "firsts") return await getFirstsEvidence(text, L);
 
     if (type === "science") {
-      const se = await getScienceEvidence(text, L);
-      if (se) return se;
-      // fallthrough to wiki if not covered by deterministic facts
+      const s = await getScienceEvidence({ text, lang: L });
+      if (s) return s;
+      // Science queries can safely fall back to wiki if we couldn't fetch structured science evidence.
+      return await getWikiEvidence(text, L);
     }
-    if (type === "poi") return await getPoiEvidence(text, L, city);
-    if (type === "travel") return await getTravelEvidence(text, L, city);
-    if (type === "news") return await getNewsEvidence(text, L);
-    if (type === "fact") return await getFactEvidence(text, L);
-    if (type === "econ") return await getEconEvidence(text, L);
-    if (type === "sports") return await getSportsEvidence(text, L);
-    if (type === "scholar") return await getScholarEvidence(text, L);
 
+<<<<<<< HEAD
     if (type === "wiki") {
       const wiki = await getWikiEvidence(text, L);
       if (wiki) return wiki;
@@ -3380,6 +3726,21 @@ async function gatherEvidence({ text, lang, city }) {
   } catch (err) {
     console.error("evidence error:", err?.message || err);
     return { type: "no_answer", reason: "evidence_error", trustScore: 35 };
+=======
+    if (type === "wiki") return await getWikiEvidence(text, L);
+
+    return null;
+  } catch (e) {
+    // Don't hallucinate: return a safe "no_answer" evidence payload.
+    return {
+      type: "no_answer",
+      query: safeString(text),
+      trustScore: 35,
+      reason: String(e?.message || e || "evidence_error"),
+      sources: [],
+      suggestions: [],
+    };
+>>>>>>> 2c35ef7 (chore: sync backend)
   }
 }
 
@@ -3760,6 +4121,7 @@ async function handleAiChat(req, res) {
 	  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
 	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence üret
 	const shouldEvidence = noSearchMode || intent === "info";
+<<<<<<< HEAD
 	// Evidence type (none/wiki/weather/fx/...) for guardrails
 	const eType0 = detectEvidenceType(text, lang);
 
@@ -3795,6 +4157,10 @@ async function handleAiChat(req, res) {
 
 	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
 	const didSearch = !shouldEvidence && (intent === "product" || intent === "mixed");
+=======
+	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
+	const didSearch = !shouldEvidence && (intent === "product" || intent === "service" || intent === "mixed");
+>>>>>>> 2c35ef7 (chore: sync backend)
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
