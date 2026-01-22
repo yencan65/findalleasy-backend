@@ -1073,8 +1073,7 @@ ${safeString(e.note)}`);
       return {
         answer: `${T.econ}
 ${head}
-${lines.join("
-")}${lowNote}`.trim(),
+${lines.join("\n")}${lowNote}`.trim(),
         suggestions:
           L === "tr"
             ? ["Gram altın fiyatı", "Gümüş fiyatı", "USD/TRY"]
@@ -2681,7 +2680,7 @@ async function getWorldBankLatest(iso3, indicatorId) {
   };
 }
 
-async async function getEconEvidence(text, lang) {
+async function getEconEvidence(text, lang) {
   const L = normalizeLang(lang);
   const raw = safeString(text);
   const low = raw.toLowerCase();
