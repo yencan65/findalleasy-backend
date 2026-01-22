@@ -1,4 +1,4 @@
-﻿// server/routes/ai.js
+// server/routes/ai.js
 // ============================================================================
 //   SONO AI â€” S50 ULTRA OMEGA ROUTE (FINAL FINAL FORM)
 //   â€¢ Intent Engine v3 (S16 core + hijyen gÃ¼Ã§lendirme)
