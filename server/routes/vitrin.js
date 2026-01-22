@@ -16,6 +16,42 @@ const VITRIN_ENGINE_TIMEOUT_MS = (() => {
   return Number.isFinite(n) ? Math.max(1500, Math.min(20000, n)) : 6500;
 })();
 
+const S200_FALLBACK_TIMEOUT_MS = (() => {
+  const n = Number(process.env.S200_FALLBACK_TIMEOUT_MS || 4800);
+  return Number.isFinite(n) ? Math.max(1500, Math.min(20000, n)) : 4800;
+})();
+
+const S200_SCORE_TIMEOUT_MS = (() => {
+  const n = Number(process.env.S200_SCORE_TIMEOUT_MS || 1200);
+  return Number.isFinite(n) ? Math.max(300, Math.min(8000, n)) : 1200;
+})();
+
+function buildSearchLinks(q) {
+  const query = String(q || "").trim();
+  if (!query) return [];
+  const enc = encodeURIComponent(query);
+  return [
+    { merchant: "hepsiburada", url: `https://www.hepsiburada.com/ara?q=${enc}` },
+    { merchant: "trendyol", url: `https://www.trendyol.com/sr?q=${enc}` },
+    { merchant: "n11", url: `https://www.n11.com/arama?q=${enc}` },
+    { merchant: "akakce", url: `https://www.akakce.com/arama/?q=${enc}` },
+    { merchant: "cimri", url: `https://www.cimri.com/arama?q=${enc}` },
+    { merchant: "amazon", url: `https://www.amazon.com.tr/s?k=${enc}` },
+    { merchant: "google", url: `https://www.google.com/search?q=${enc}` },
+  ];
+}
+
+function withTimeout(promise, ms, label = "timeout") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(label)), ms)
+    ),
+  ]);
+}
+
+})();
+
 function getQ(req) {
   return (
     (req.query.q != null ? String(req.query.q) : "") ||
@@ -171,16 +207,20 @@ if (!best) {
       _meta: { source: "vitrin_dynamic_route", region, locale, group: cat },
     };
 
-    const fb = await applyS200FallbackIfEmpty({
-      req,
-      result: base,
-      q,
-      group: cat,
-      region,
-      locale,
-      limit: 20,
-      reason: "VITRIN_DYNAMIC_EMPTY_OR_TIMEOUT",
-    });
+    const fb = await withTimeout(
+      applyS200FallbackIfEmpty({
+        req,
+        result: base,
+        q,
+        group: cat,
+        region,
+        locale,
+        limit: 20,
+        reason: "VITRIN_DYNAMIC_EMPTY_OR_TIMEOUT",
+      }),
+      S200_FALLBACK_TIMEOUT_MS,
+      "s200_fallback_timeout"
+    );
 
     let fitems = Array.isArray(fb?.items)
       ? fb.items
@@ -189,7 +229,11 @@ if (!best) {
       : [];
 
     try {
-      fitems = await scoreAndFuseS200(fitems, { query: q, group: cat, region });
+      fitems = await withTimeout(
+        scoreAndFuseS200(fitems, { query: q, group: cat, region }),
+        S200_SCORE_TIMEOUT_MS,
+        "s200_score_timeout"
+      );
     } catch {}
 
     best = fitems[0] || null;
@@ -226,7 +270,7 @@ if (!best) {
         smart: [],
         others: [],
       },
-      _meta: meta,
+      _meta: { ...(meta || {}), searchLinks: buildSearchLinks(q) },
     });
   } catch (err) {
     return reply({
