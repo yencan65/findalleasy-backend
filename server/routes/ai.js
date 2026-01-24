@@ -553,14 +553,13 @@ function detectEvidenceType(text, lang = "tr") {
   // Recipe
   if (/(tarif|recipe|recette|Ñ€ĞµÑ†ĞµĞ¿Ñ‚|ÙˆØµÙØ©)/i.test(low)) return "recipe";
 
-  // POI / nearby places
-  // IMPORTANT: Don't treat generic food/topic queries (e.g., "Van kahvaltÄ±sÄ±") as POI unless the user
-  // explicitly asks for a location/nearby/address/directions.
-  const hasNear = /(yakÄ±n(Ä±mda)?|yakÄ±nda|yakÄ±nlar(d|da)|near\s*me|nearby|Ã \s*proximitÃ©|autour\s*de\s*moi|Ñ€ÑĞ´Ğ¾Ğ¼|Ð²Ð¾ÐºÑ€ÑƒÐ³|Ø¨Ø§Ù„Ù‚Ø±Ø¨|Ù‚Ø±ÙŠØ¨\s*Ù…Ù†ÙŠ)/i.test(low);
-  const hasWhere = /(nerede|nereye|adres|konum|yol\s*tarifi|nasÄ±l\s*giderim|where\s*(is|are)|address|directions|how\s*to\s*get|oÃ¹|adresse|itinÃ©raire|Ğ³Ğ´Ğµ|ĞºĞ°Ğº\s*Ğ´Ğ¾Ğ±Ñ€Ğ°Ñ‚ÑŒÑÑ|Ø£ÙŠÙ†|Ø¹Ù†ÙˆØ§Ù†|Ø§Ø±Ø´Ø§Ø¯Ø§Øª)/i.test(low);
-  const placeWord = /(restoran|restaurant|cafe|kafe|bar|otel|hotel|mÃ¼ze|museum|park|plaj|beach|avm|mall|kale|castle)/i.test(low);
-  const breakfastWord = /(kahvaltÄ±|breakfast)/i.test(low);
-  if ((hasNear || hasWhere) && (placeWord || breakfastWord)) return "poi";
+  // POI / nearby / food / restaurants, etc.
+  if (
+    /(yakÄ±n(Ä±mda)?|nearby|Ã \s*proximitÃ©|Ñ€ÑĞ´Ğ¾Ğ¼|Ø¨Ø§Ù„Ù‚Ø±Ø¨|nerede|where\s*(is|are)|restoran|restaurant|cafe|kafe|otel|hotel|mÃ¼ze|museum|park|kahvaltÄ±)/i.test(
+      low
+    )
+  )
+    return "poi";
 
   // FX vs metals
   const fxish = /(d[Ã¶o]viz|kur|usd|eur|gbp|try|exchange\s*rate|taux|ĞºÑƒÑ€Ñ|Ø³Ø¹Ø±\s*Ø§Ù„ØµØ±Ù)/i.test(
@@ -754,6 +753,10 @@ function buildEvidenceAnswer(e, lang) {
       science: "Bilim bilgisi:",
       fact: "K\u0131sa ger\u00e7ek:",
       econ: "Ekonomi:",
+      metals: "Güncel altın ve değerli maden fiyatları:",
+      updated: "Güncelleme:",
+      buy: "Alış",
+      sell: "Satış",
       sports: "Spor:",
       scholar: "Bilimsel kaynaklar:",
       needCity: "Hangi \u015fehir/b\u00f6lge i\u00e7in? (\u00d6rn: Van hava durumu)",
@@ -780,6 +783,10 @@ function buildEvidenceAnswer(e, lang) {
       science: "Science:",
       fact: "Fact:",
       econ: "Economy:",
+      metals: "Gold & precious metals (TRY):",
+      updated: "Updated:",
+      buy: "Buy",
+      sell: "Sell",
       sports: "Sports:",
       scholar: "Scholarly sources:",
       needCity: "Which city/area? (e.g., London weather)",
@@ -806,6 +813,10 @@ function buildEvidenceAnswer(e, lang) {
       science: "Science :",
       fact: "Fait :",
       econ: "\u00c9conomie :",
+      metals: "Or et m\u00e9taux pr\u00e9cieux :",
+      updated: "Mise \u00e0 jour :",
+      buy: "Achat",
+      sell: "Vente",
       sports: "Sport :",
       scholar: "Sources scientifiques :",
       needCity: "Quelle ville / r\u00e9gion ? (ex. Paris m\u00e9t\u00e9o)",
@@ -832,6 +843,10 @@ function buildEvidenceAnswer(e, lang) {
       science: "\u041d\u0430\u0443\u043a\u0430:",
       fact: "\u0424\u0430\u043a\u0442:",
       econ: "\u042d\u043a\u043e\u043d\u043e\u043c\u0438\u043a\u0430:",
+      metals: "\u0417\u043e\u043b\u043e\u0442\u043e \u0438 \u0434\u0440\u0430\u0433\u043e\u0446\u0435\u043d\u043d\u044b\u0435 \u043c\u0435\u0442\u0430\u043b\u043b\u044b:",
+      updated: "\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e:",
+      buy: "\u041f\u043e\u043a\u0443\u043f\u043a\u0430",
+      sell: "\u041f\u0440\u043e\u0434\u0430\u0436\u0430",
       sports: "\u0421\u043f\u043e\u0440\u0442:",
       scholar: "\u041d\u0430\u0443\u0447\u043d\u044b\u0435 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u0438:",
       needCity: "\u041a\u0430\u043a\u043e\u0439 \u0433\u043e\u0440\u043e\u0434/\u0440\u0430\u0439\u043e\u043d? (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u041c\u043e\u0441\u043a\u0432\u0430 \u043f\u043e\u0433\u043e\u0434\u0430)",
@@ -858,6 +873,10 @@ function buildEvidenceAnswer(e, lang) {
       science: "\u0645\u0639\u0644\u0648\u0645\u0629 \u0639\u0644\u0645\u064a\u0629:",
       fact: "\u062d\u0642\u064a\u0642\u0629:",
       econ: "\u0627\u0642\u062a\u0635\u0627\u062f:",
+      metals: "\u0623\u0633\u0639\u0627\u0631 \u0627\u0644\u0630\u0647\u0628 \u0648\u0627\u0644\u0645\u0639\u0627\u062f\u0646:",
+      updated: "\u062a\u062d\u062f\u064a\u062b:",
+      buy: "\u0634\u0631\u0627\u0621",
+      sell: "\u0628\u064a\u0639",
       sports: "\u0631\u064a\u0627\u0636\u0629:",
       scholar: "\u0645\u0635\u0627\u062f\u0631 \u0639\u0644\u0645\u064a\u0629:",
       needCity: "\u0623\u064a \u0645\u062f\u064a\u0646\u0629/\u0645\u0646\u0637\u0642\u0629\u061f (\u0645\u062b\u0627\u0644: \u0637\u0642\u0633 \u0625\u0633\u0637\u0646\u0628\u0648\u0644)",
@@ -967,8 +986,16 @@ function buildEvidenceAnswer(e, lang) {
   if (e.type === "no_answer") {
     return {
       answer: `${T.noAnswer}${lowNote}`.trim(),
-      // If we couldn't find a reliable answer, don't show clickable suggestions that may mislead.
-      suggestions: [],
+      suggestions:
+        L === "tr"
+          ? ["Daha net yaz", "Kaynak isteyen soru"]
+          : L === "fr"
+          ? ["Sois plus prÃ©cis", "Ajoute du contexte"]
+          : L === "ru"
+          ? ["Ğ¡Ñ„Ğ¾Ñ€Ğ¼ÑƒĞ»Ğ¸Ñ€ÑƒĞ¹ Ñ‚Ğ¾Ñ‡Ğ½ĞµĞµ", "Ğ”Ğ¾Ğ±Ğ°Ğ²ÑŒ ĞºĞ¾Ğ½Ñ‚ĞµĞºÑÑ‚"]
+          : L === "ar"
+          ? ["Ø§ÙƒØªØ¨ Ø¨Ø´ÙƒÙ„ Ø£ÙˆØ¶Ø­", "Ø£Ø¶Ù Ø³ÙŠØ§Ù‚Ù‹Ø§"]
+          : ["Be more specific", "Add context"],
       sources: e.sources || [],
       trustScore: trust ?? 40,
     };
@@ -1068,7 +1095,8 @@ ${safeString(e.note)}`);
       return {
         answer: `${T.econ}
 ${head}
-${lines.join("\n")}${lowNote}`.trim(),
+${lines.join("
+")}${lowNote}`.trim(),
         suggestions:
           L === "tr"
             ? ["Gram altÄ±n fiyatÄ±", "GÃ¼mÃ¼ÅŸ fiyatÄ±", "USD/TRY"]
@@ -2944,7 +2972,7 @@ async function getWorldBankLatest(iso3, indicatorId) {
   };
 }
 
-async function getEconEvidence(text, lang) {
+async async function getEconEvidence(text, lang) {
   const L = normalizeLang(lang);
   const raw = safeString(text);
   const low = raw.toLowerCase();
@@ -3611,46 +3639,33 @@ async function getTravelEvidence(text, lang, cityHint) {
 async function gatherEvidence({ text, lang, city }) {
   const L = normalizeLang(lang);
   const type = detectEvidenceType(text, L);
-
-  // If no evidence type detected, let the LLM handle it (no random wiki fallbacks).
-  if (!type || type === "none") return null;
+  const safeCity = safeString(city) || inferCity(text, L);
 
   try {
-    if (type === "weather") return await getWeatherEvidence({ text, lang: L, city });
-    if (type === "fx") return await getFxEvidence({ text, lang: L });
-    if (type === "metals") return await getMetalsEvidence({ text, lang: L });
-    if (type === "news") return await getNewsEvidence({ text, lang: L });
-    if (type === "travel") return await getTravelEvidence({ text, lang: L });
-    if (type === "poi") return await getPOIEvidence({ text, lang: L, city });
-    if (type === "recipe") return await getRecipeEvidence({ text, lang: L });
-    if (type === "fact") return await getFactEvidence({ text, lang: L });
-    if (type === "econ") return await getEconEvidence({ text, lang: L });
-    if (type === "sports") return await getSportsEvidence({ text, lang: L });
-    if (type === "firsts") return await getFirstsEvidence({ text, lang: L });
-    if (type === "scholar") return await getScholarEvidence({ text, lang: L });
-
-    if (type === "firsts") return await getFirstsEvidence(text, L);
-
-    if (type === "science") {
-      const s = await getScienceEvidence({ text, lang: L });
-      if (s) return s;
-      // Science queries can safely fall back to wiki if we couldn't fetch structured science evidence.
-      return await getWikiEvidence(text, L);
+    switch (type) {
+      case "fx":
+        return await getFxEvidence(text, L);
+      case "weather":
+        return await getWeatherEvidence(text, L, safeCity);
+      case "news":
+        return await getNewsEvidence(text, L);
+      case "wiki":
+        return await getWikiEvidence(text, L);
+      case "travel":
+        return await getTravelEvidence(text, L);
+      case "poi":
+        return await getPoiEvidence(text, L, safeCity);
+      case "metals":
+        return await getMetalsEvidence(text, L);
+      case "recipe":
+        return await getRecipeEvidence(text, L);
+      case "firsts":
+        return await getFirstsEvidence(text, L);
+      default:
+        return null;
     }
-
-    if (type === "wiki") return await getWikiEvidence(text, L);
-
-    return null;
   } catch (e) {
-    // Don't hallucinate: return a safe "no_answer" evidence payload.
-    return {
-      type: "no_answer",
-      query: safeString(text),
-      trustScore: 35,
-      reason: String(e?.message || e || "evidence_error"),
-      sources: [],
-      suggestions: [],
-    };
+    return null;
   }
 }
 
@@ -3747,10 +3762,7 @@ You are Sono, a smart assistant. The user may ask for general information or gui
 Rules:
 - Reply in the user's language. Target language is based on locale: ${normLocale}.
   â€¢ tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
-- Answer the user's question directly; do not change topic.
-- Sound like a natural chat (friendly, human), but stay concise.
-- CRITICAL: Do not invent facts. If you are not confident, say so and ask a clarifying question.
-  Avoid making up exact dates, numbers, or quotes.
+- Keep it short, clear, and helpful. No fluff.
 - Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
 
 Output format (VERY IMPORTANT):
@@ -4026,7 +4038,7 @@ async function handleAiChat(req, res) {
       });
     }
 
-    const intent = detectIntent(text);
+    const intent = detectIntent(text, lang);
 
 	const modeNorm = safeString(mode).toLowerCase();
 	// mode=chat/info/... â†’ sadece sohbet/info; adapter Ã§alÄ±ÅŸtÄ±rma (kredi yakma) YASAK
