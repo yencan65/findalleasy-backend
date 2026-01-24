@@ -3707,79 +3707,229 @@ async function callLLM({
   memorySnapshot,
   persona,
 }) {
+  // --- Provider selection ---
+  // Prefer Cloudflare Workers AI if configured (cheaper / simpler).
+  // Env (any of these work):
+  // - WORKERS_AI_BASE_URL = https://xxxx.workers.dev   (or full .../chat)
+  // - WORKERS_AI_TOKEN    = same secret as Worker CHAT_TOKEN
+  const workerBase = safeString(
+    process.env.WORKERS_AI_BASE_URL ||
+      process.env.CF_WORKERS_AI_BASE_URL ||
+      process.env.CF_WORKERS_AI_URL ||
+      process.env.WORKERS_AI_URL ||
+      process.env.CF_WORKER_URL
+  );
+
+  const workerToken = safeString(
+    process.env.WORKERS_AI_TOKEN ||
+      process.env.CF_WORKERS_AI_TOKEN ||
+      process.env.WORKERS_AI_CHAT_TOKEN ||
+      process.env.CF_CHAT_TOKEN ||
+      process.env.WORKER_CHAT_TOKEN
+  );
+
   const apiKey = safeString(process.env.OPENAI_API_KEY);
   const baseUrl =
     safeString(process.env.OPENAI_BASE_URL) || "https://api.openai.com/v1";
 
   const normLocale = (() => {
-  const l = safeString(locale || "tr").toLowerCase();
-  if (l.startsWith("en")) return "en";
-  if (l.startsWith("fr")) return "fr";
-  if (l.startsWith("ru")) return "ru";
-  if (l.startsWith("ar")) return "ar";
-  return "tr";
-})();
+    const l = safeString(locale || "tr").toLowerCase();
+    if (l.startsWith("en")) return "en";
+    if (l.startsWith("fr")) return "fr";
+    if (l.startsWith("ru")) return "ru";
+    if (l.startsWith("ar")) return "ar";
+    return "tr";
+  })();
 
-  // MesajÄ± sert limit ile kÄ±salt
+  // Mesajı sert limit ile kısalt
   const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
 
-  if (!apiKey) {
+  // Tek bir parse yolu: model JSON döndürse de döndürmese de toparla
+  function parseModelOutput(rawText, providerName = "llm") {
+    const fallbackJson =
+      ({
+        en: '{"answer":"I prepared options for you.","suggestions":["Summarize this topic","Give key points","How does it work?"]}',
+        fr: '{"answer":"J’ai préparé des options pour vous.","suggestions":["Résume ce sujet","Donne les points clés","Comment ça marche ?"]}',
+        ru: '{"answer":"Я подготовил(а) варианты для вас.","suggestions":["Кратко о теме","Дай ключевые пункты","Как это работает?"]}',
+        ar: '{"answer":"لقد جهزت لك خيارات.","suggestions":["لخّص الموضوع","أعطني النقاط الأساسية","كيف يعمل ذلك؟"]}',
+        tr: '{"answer":"Senin için seçenekleri hazırladım.","suggestions":["Konuyu özetle","Ana maddeleri ver","Nasıl çalışır?"]}',
+      }[normLocale] || '{"answer":"Senin için seçenekleri hazırladım.","suggestions":[]}');
+
+    const raw = safeString(rawText) || fallbackJson;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // salvage: extract first {...} block
+      try {
+        const s = String(raw || "");
+        const i = s.indexOf("{");
+        const j = s.lastIndexOf("}");
+        if (i >= 0 && j > i) parsed = JSON.parse(s.slice(i, j + 1));
+      } catch {
+        parsed = null;
+      }
+    }
+
+    const answer = sanitizeLLMAnswer(
+      safeString(parsed?.answer) || safeString(raw),
+      normLocale
+    );
+
+    const suggestions = Array.isArray(parsed?.suggestions)
+      ? parsed.suggestions
+          .map((x) => safeString(x))
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+
+    return { provider: providerName, answer, suggestions };
+  }
+
+  // Eğer ne Worker ne OpenAI var → fallback
+  const hasWorkers = !!workerBase && !!workerToken;
+  const hasOpenAI = !!apiKey;
+
+  if (!hasWorkers && !hasOpenAI) {
     return {
       provider: "fallback",
       answer:
         ({
           en: "Sono is in limited mode right now, but I can still help with quick information.",
-          fr: "Sono est en mode limitÃ© pour le moment, mais je peux quand mÃªme aider avec des infos rapides.",
-          ru: "Ğ¡ĞµĞ¹Ñ‡Ğ°Ñ Sono Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚ Ğ² Ğ¾Ğ³Ñ€Ğ°Ğ½Ğ¸Ñ‡ĞµĞ½Ğ½Ğ¾Ğ¼ Ñ€ĞµĞ¶Ğ¸Ğ¼Ğµ, Ğ½Ğ¾ Ñ Ğ²ÑÑ‘ Ñ€Ğ°Ğ²Ğ½Ğ¾ Ğ¼Ğ¾Ğ³Ñƒ Ğ¿Ğ¾Ğ¼Ğ¾Ñ‡ÑŒ Ñ Ğ±Ñ‹ÑÑ‚Ñ€Ñ‹Ğ¼Ğ¸ ÑĞ¿Ñ€Ğ°Ğ²ĞºĞ°Ğ¼Ğ¸.",
-          ar: "Sono ÙŠØ¹Ù…Ù„ Ø§Ù„Ø¢Ù† Ø¨ÙˆØ¶Ø¹ Ù…Ø­Ø¯ÙˆØ¯ØŒ Ù„ÙƒÙ† ÙŠÙ…ÙƒÙ†Ù†ÙŠ Ù…Ø³Ø§Ø¹Ø¯ØªÙƒ Ø¨Ù…Ø¹Ù„ÙˆÙ…Ø§Øª Ø³Ø±ÙŠØ¹Ø©.",
-          tr: "Sono ÅŸu an sÄ±nÄ±rlÄ± modda Ã§alÄ±ÅŸÄ±yor ama yine de hÄ±zlÄ± bilgi verebilirim.",
-        }[normLocale] || "Sono ÅŸu an sÄ±nÄ±rlÄ± modda Ã§alÄ±ÅŸÄ±yor ama yine de hÄ±zlÄ± bilgi verebilirim."),
+          fr: "Sono est en mode limité pour le moment, mais je peux quand même aider avec des infos rapides.",
+          ru: "Сейчас Sono работает в ограниченном режиме, но я всё равно могу помочь с быстрыми справками.",
+          ar: "Sono يعمل الآن بوضع محدود، لكن يمكنني مساعدتك بمعلومات سريعة.",
+          tr: "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim.",
+        }[normLocale] ||
+          "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim."),
       suggestions:
         ({
           en: ["Tell me about a place", "Explain a concept", "Compare two things"],
-          fr: ["Parle-moi dâ€™un lieu", "Explique un concept", "Compare deux choses"],
-          ru: ["Ğ Ğ°ÑÑĞºĞ°Ğ¶Ğ¸ Ğ¾ Ğ¼ĞµÑÑ‚Ğµ", "ĞĞ±ÑŠÑÑĞ½Ğ¸ Ğ¿Ğ¾Ğ½ÑÑ‚Ğ¸Ğµ", "Ğ¡Ñ€Ğ°Ğ²Ğ½Ğ¸ Ğ´Ğ²Ğ° Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚Ğ°"],
-          ar: ["Ø­Ø¯Ø«Ù†ÙŠ Ø¹Ù† Ù…ÙƒØ§Ù†", "Ø§Ø´Ø±Ø­ ÙÙƒØ±Ø©", "Ù‚Ø§Ø±Ù† Ø¨ÙŠÙ† Ø®ÙŠØ§Ø±ÙŠÙ†"],
-          tr: ["Bir yer hakkÄ±nda bilgi ver", "Bir ÅŸeyi aÃ§Ä±kla", "Ä°ki ÅŸeyi karÅŸÄ±laÅŸtÄ±r"],
+          fr: ["Parle-moi d’un lieu", "Explique un concept", "Compare deux choses"],
+          ru: ["Расскажи о месте", "Объясни понятие", "Сравни два варианта"],
+          ar: ["حدثني عن مكان", "اشرح فكرة", "قارن بين خيارين"],
+          tr: ["Bir yer hakkında bilgi ver", "Bir şeyi açıkla", "İki şeyi karşılaştır"],
         }[normLocale] || []),
     };
   }
 
   const personaNote = {
     saver:
-      "KullanÄ±cÄ± fiyat odaklÄ±. Ekonomik, avantaj yaratÄ±lmÄ±ÅŸ, uygun fiyatlÄ± seÃ§enekler Ã¶ner.",
-    fast: "KullanÄ±cÄ± hÄ±z odaklÄ±. HÄ±zlÄ± adÄ±mlar ve pratik yÃ¶nlendirmeler yap.",
+      "Kullanıcı fiyat odaklı. Ekonomik, avantaj yaratılmış, uygun fiyatlı seçenekler öner.",
+    fast: "Kullanıcı hız odaklı. Hızlı adımlar ve pratik yönlendirmeler yap.",
     luxury:
-      "KullanÄ±cÄ± premium kalite istiyor. En yÃ¼ksek rating'li, gÃ¼venilir seÃ§enekleri Ã¶ne Ã§Ä±kar.",
+      "Kullanıcı premium kalite istiyor. En yüksek rating'li, güvenilir seçenekleri öne çıkar.",
     explorer:
-      "KullanÄ±cÄ± alternatif gÃ¶rmek istiyor. En az 2 farklÄ± yolu kÄ±sa anlat.",
+      "Kullanıcı alternatif görmek istiyor. En az 2 farklı yolu kısa anlat.",
     neutral:
-      "KullanÄ±cÄ±nÄ±n niyeti karÄ±ÅŸÄ±k. Dengeli, rahat okunur kÄ±sa yanÄ±tlar ver.",
+      "Kullanıcının niyeti karışık. Dengeli, rahat okunur kısa yanıtlar ver.",
   }[persona];
 
   const systemPrompt = `
 You are Sono, a smart assistant. The user may ask for general information or guidance.
 Rules:
 - Reply in the user's language. Target language is based on locale: ${normLocale}.
-  â€¢ tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
+  • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
 - Keep it short, clear, and helpful. No fluff.
 - Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
 
 Output format (VERY IMPORTANT):
 Return ONLY valid JSON with this exact shape:
 {"answer":"...","suggestions":["...","...","..."]}
-- answer: a short, direct answer (2â€“6 short sentences or 3 bullets).
-- suggestions: 2â€“4 short follow-up prompts the user can click.
+- answer: a short, direct answer (2–6 short sentences or 3 bullets).
+- suggestions: 2–4 short follow-up prompts the user can click.
 No markdown. No code fences. No extra keys.
 
 Context:
 - Intent: ${intent}
 - Region: ${region}
 - City: ${city}
-- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" â€¢ ")}
-Persona hint: ${persona} â†’ ${personaNote || "balanced"}
+- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" • ")}
+Persona hint: ${persona} → ${personaNote || "balanced"}
 `.trim();
 
+  // --- 1) Workers AI path (preferred if configured) ---
+  if (hasWorkers) {
+    const chatUrl = (() => {
+      const b = workerBase.replace(/\/+$/, "");
+      return b.endsWith("/chat") ? b : `${b}/chat`;
+    })();
+
+    try {
+      const res = await fetchWithTimeout(chatUrl, {
+        method: "POST",
+        timeout: 15000,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${workerToken}`,
+          // geri uyumluluk / debug kolaylığı:
+          "X-Chat-Token": workerToken,
+        },
+        body: JSON.stringify({
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: safeMessage },
+          ],
+        }),
+      });
+
+      if (!res || !res.ok) {
+        let text = "";
+        try {
+          text = await res.text();
+        } catch {}
+        console.error("Workers AI HTTP error:", res?.status, text);
+        // Worker patlarsa OpenAI'ye düş (varsa)
+        if (!hasOpenAI) {
+          return {
+            provider: "workers-ai-error",
+            answer:
+              ({
+                en: "I can’t generate a text answer right now. Try again in a moment.",
+                fr: "Je ne peux pas générer de réponse texte pour le moment. Réessayez dans un instant.",
+                ru: "Сейчас не получается выдать текстовый ответ. Попробуйте ещё раз чуть позже.",
+                ar: "لا أستطيع إنشاء إجابة نصية الآن. جرّب مرة أخرى بعد قليل.",
+                tr: "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin.",
+              }[normLocale] ||
+                "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin."),
+            suggestions:
+              ({
+                en: ["Ask in one sentence", "Give context", "What exactly do you want to know?"],
+                fr: ["Pose une seule phrase", "Donne un peu de contexte", "Qu’est-ce que tu veux savoir exactement ?"],
+                ru: ["Спроси одним предложением", "Дай контекст", "Что именно ты хочешь узнать?"],
+                ar: ["اسأل بجملة واحدة", "أضف بعض السياق", "ما الذي تريد معرفته تحديدًا؟"],
+                tr: ["Tek cümleyle sor", "Biraz bağlam ver", "Tam olarak neyi öğrenmek istiyorsun?"],
+              }[normLocale] || []),
+          };
+        }
+      } else {
+        const data = await res.json().catch(() => null);
+        if (data && data.ok === true) {
+          const rawAnswer =
+            data.answer ??
+            data.response ??
+            data.output_text ??
+            (typeof data === "string" ? data : JSON.stringify(data));
+          return parseModelOutput(rawAnswer, data.model || "workers-ai");
+        }
+
+        // ok:false geldiyse
+        if (!hasOpenAI) {
+          return parseModelOutput(
+            safeString(data?.error) || "",
+            "workers-ai-error"
+          );
+        }
+      }
+    } catch (err) {
+      console.error("Workers AI çağrı hatası:", err);
+      if (!hasOpenAI) return parseModelOutput("", "workers-ai-exception");
+      // OpenAI'ye düş
+    }
+  }
+
+  // --- 2) OpenAI path (fallback) ---
   const requestBody = {
     model: safeString(process.env.OPENAI_MODEL) || "gpt-4.1-mini",
     messages: [
@@ -3805,28 +3955,26 @@ Persona hint: ${persona} â†’ ${personaNote || "balanced"}
       let text = "";
       try {
         text = await res.text();
-      } catch {
-        // yut
-      }
+      } catch {}
       console.error("LLM HTTP error:", res?.status, text);
-
       return {
-        provider: "error",
+        provider: "openai-error",
         answer:
           ({
-            en: "I canâ€™t generate a text answer right now, but I can still help if you rephrase briefly.",
-            fr: "Je ne peux pas gÃ©nÃ©rer de rÃ©ponse texte pour le moment, mais je peux aider si vous reformulez briÃ¨vement.",
-            ru: "Ğ¡ĞµĞ¹Ñ‡Ğ°Ñ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ°ĞµÑ‚ÑÑ Ğ²Ñ‹Ğ´Ğ°Ñ‚ÑŒ Ñ‚ĞµĞºÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ Ğ¾Ñ‚Ğ²ĞµÑ‚, Ğ½Ğ¾ Ñ ÑĞ¼Ğ¾Ğ³Ñƒ Ğ¿Ğ¾Ğ¼Ğ¾Ñ‡ÑŒ, ĞµÑĞ»Ğ¸ Ğ²Ñ‹ Ğ¿ĞµÑ€ĞµÑ„Ğ¾Ñ€Ğ¼ÑƒĞ»Ğ¸Ñ€ÑƒĞµÑ‚Ğµ ĞºĞ¾Ñ€Ğ¾Ñ‡Ğµ.",
-            ar: "Ù„Ø§ Ø£Ø³ØªØ·ÙŠØ¹ Ø¥Ù†Ø´Ø§Ø¡ Ø¥Ø¬Ø§Ø¨Ø© Ù†ØµÙŠØ© Ø§Ù„Ø¢Ù†ØŒ Ù„ÙƒÙ† ÙŠÙ…ÙƒÙ†Ù†ÙŠ Ø§Ù„Ù…Ø³Ø§Ø¹Ø¯Ø© Ø¥Ø°Ø§ Ø£Ø¹Ø¯Øª ØµÙŠØ§ØºØ© Ø§Ù„Ø³Ø¤Ø§Ù„ Ø¨Ø§Ø®ØªØµØ§Ø±.",
-            tr: "Åu an metin yanÄ±tÄ± Ã¼retemiyorum; soruyu daha kÄ±sa yazarsan yardÄ±mcÄ± olabilirim.",
-          }[normLocale] || "Åu an metin yanÄ±tÄ± Ã¼retemiyorum; soruyu daha kÄ±sa yazarsan yardÄ±mcÄ± olabilirim."),
+            en: "I can’t generate a text answer right now, but I can still help if you rephrase briefly.",
+            fr: "Je ne peux pas générer de réponse texte pour le moment, mais je peux aider si vous reformulez brièvement.",
+            ru: "Сейчас не получается выдать текстовый ответ, но я смогу помочь, если вы переформулируете короче.",
+            ar: "لا أستطيع إنشاء إجابة نصية الآن، لكن يمكنني المساعدة إذا أعدت صياغة السؤال باختصار.",
+            tr: "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim.",
+          }[normLocale] ||
+            "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim."),
         suggestions:
           ({
             en: ["Summarize this topic", "Give key points", "How does it work?"],
-            fr: ["RÃ©sume ce sujet", "Donne les points clÃ©s", "Comment Ã§a marche ?"],
-            ru: ["ĞšÑ€Ğ°Ñ‚ĞºĞ¾ Ğ¾ Ñ‚ĞµĞ¼Ğµ", "Ğ”Ğ°Ğ¹ ĞºĞ»ÑÑ‡ĞµĞ²Ñ‹Ğµ Ğ¿ÑƒĞ½ĞºÑ‚Ñ‹", "ĞšĞ°Ğº ÑÑ‚Ğ¾ Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚?"],
-            ar: ["Ù„Ø®Ù‘Øµ Ø§Ù„Ù…ÙˆØ¶ÙˆØ¹", "Ø£Ø¹Ø·Ù†ÙŠ Ø§Ù„Ù†Ù‚Ø§Ø· Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©", "ÙƒÙŠÙ ÙŠØ¹Ù…Ù„ Ø°Ù„ÙƒØŸ"],
-            tr: ["Konuyu Ã¶zetle", "Ana maddeleri ver", "NasÄ±l Ã§alÄ±ÅŸÄ±r?"],
+            fr: ["Résume ce sujet", "Donne les points clés", "Comment ça marche ?"],
+            ru: ["Кратко о теме", "Дай ключевые пункты", "Как это работает?"],
+            ar: ["لخّص الموضوع", "أعطني النقاط الأساسية", "كيف يعمل ذلك؟"],
+            tr: ["Konuyu özetle", "Ana maddeleri ver", "Nasıl çalışır?"],
           }[normLocale] || []),
       };
     }
@@ -3834,65 +3982,12 @@ Persona hint: ${persona} â†’ ${personaNote || "balanced"}
     const data = await res.json().catch(() => null);
     const rawAnswer =
       data?.choices?.[0]?.message?.content ||
-      ({
-        en: '{"answer":"I prepared options for you.","suggestions":["Summarize this topic","Give key points","How does it work?"]}',
-        fr: '{"answer":"Jâ€™ai prÃ©parÃ© des options pour vous.","suggestions":["RÃ©sume ce sujet","Donne les points clÃ©s","Comment Ã§a marche ?"]}',
-        ru: '{"answer":"Ğ¯ Ğ¿Ğ¾Ğ´Ğ³Ğ¾Ñ‚Ğ¾Ğ²Ğ¸Ğ»(Ğ°) Ğ²Ğ°Ñ€Ğ¸Ğ°Ğ½Ñ‚Ñ‹ Ğ´Ğ»Ñ Ğ²Ğ°Ñ.","suggestions":["ĞšÑ€Ğ°Ñ‚ĞºĞ¾ Ğ¾ Ñ‚ĞµĞ¼Ğµ","Ğ”Ğ°Ğ¹ ĞºĞ»ÑÑ‡ĞµĞ²Ñ‹Ğµ Ğ¿ÑƒĞ½ĞºÑ‚Ñ‹","ĞšĞ°Ğº ÑÑ‚Ğ¾ Ñ€Ğ°Ğ±Ğ¾Ñ‚Ğ°ĞµÑ‚?"]}',
-        ar: '{"answer":"Ù„Ù‚Ø¯ Ø¬Ù‡Ù‘Ø²Øª Ù„Ùƒ Ø®ÙŠØ§Ø±Ø§Øª.","suggestions":["Ù„Ø®Ù‘Øµ Ø§Ù„Ù…ÙˆØ¶ÙˆØ¹","Ø£Ø¹Ø·Ù†ÙŠ Ø§Ù„Ù†Ù‚Ø§Ø· Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ©","ÙƒÙŠÙ ÙŠØ¹Ù…Ù„ Ø°Ù„ÙƒØŸ"]}',
-        tr: '{"answer":"Senin iÃ§in seÃ§enekleri hazÄ±rladÄ±m.","suggestions":["Konuyu Ã¶zetle","Ana maddeleri ver","NasÄ±l Ã§alÄ±ÅŸÄ±r?"]}',
-      }[normLocale] || '{"answer":"Senin iÃ§in seÃ§enekleri hazÄ±rladÄ±m.","suggestions":[]}');
+      (typeof data === "string" ? data : JSON.stringify(data || ""));
 
-    // Try to parse JSON output {answer, suggestions}
-    let parsed = null;
-    try {
-      parsed = JSON.parse(rawAnswer);
-    } catch {
-      // salvage: extract first {...} block
-      try {
-        const s = String(rawAnswer || "");
-        const i = s.indexOf("{");
-        const j = s.lastIndexOf("}");
-        if (i >= 0 && j > i) parsed = JSON.parse(s.slice(i, j + 1));
-      } catch {
-        parsed = null;
-      }
-    }
-
-    const answer = sanitizeLLMAnswer(
-      safeString(parsed?.answer) || safeString(rawAnswer),
-      normLocale
-    );
-
-    const suggestions = Array.isArray(parsed?.suggestions)
-      ? parsed.suggestions
-          .map((x) => safeString(x))
-          .filter(Boolean)
-          .slice(0, 4)
-      : [];
-
-    return { provider: data?.model || "openai", answer, suggestions };
+    return parseModelOutput(rawAnswer, data?.model || "openai");
   } catch (err) {
-    console.error("LLM Ã§aÄŸrÄ± hatasÄ±:", err);
-
-    return {
-      provider: "exception",
-      answer:
-        ({
-          en: "I couldnâ€™t retrieve a text answer right now. Try again in a moment.",
-          fr: "Je nâ€™ai pas pu rÃ©cupÃ©rer une rÃ©ponse texte. RÃ©essayez dans un instant.",
-          ru: "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ¸Ñ‚ÑŒ Ñ‚ĞµĞºÑÑ‚Ğ¾Ğ²Ñ‹Ğ¹ Ğ¾Ñ‚Ğ²ĞµÑ‚. ĞŸĞ¾Ğ¿Ñ€Ğ¾Ğ±ÑƒĞ¹Ñ‚Ğµ ĞµÑ‰Ñ‘ Ñ€Ğ°Ğ· Ñ‡ÑƒÑ‚ÑŒ Ğ¿Ğ¾Ğ·Ğ¶Ğµ.",
-          ar: "ØªØ¹Ø°Ù‘Ø± Ø§Ù„Ø­ØµÙˆÙ„ Ø¹Ù„Ù‰ Ø¥Ø¬Ø§Ø¨Ø© Ù†ØµÙŠØ© Ø§Ù„Ø¢Ù†. Ø¬Ø±Ù‘Ø¨ Ù…Ø±Ø© Ø£Ø®Ø±Ù‰ Ø¨Ø¹Ø¯ Ù‚Ù„ÙŠÙ„.",
-          tr: "Åu an metin yanÄ±tÄ±nda sorun oluÅŸtu. Biraz sonra tekrar deneyin.",
-        }[normLocale] || "Åu an metin yanÄ±tÄ±nda sorun oluÅŸtu. Biraz sonra tekrar deneyin."),
-      suggestions:
-        ({
-          en: ["Ask in one sentence", "Give context", "What exactly do you want to know?"],
-          fr: ["Pose une seule phrase", "Donne un peu de contexte", "Quâ€™est-ce que tu veux savoir exactement ?"],
-          ru: ["Ğ¡Ğ¿Ñ€Ğ¾ÑĞ¸ Ğ¾Ğ´Ğ½Ğ¸Ğ¼ Ğ¿Ñ€ĞµĞ´Ğ»Ğ¾Ğ¶ĞµĞ½Ğ¸ĞµĞ¼", "Ğ”Ğ°Ğ¹ ĞºĞ¾Ğ½Ñ‚ĞµĞºÑÑ‚", "Ğ§Ñ‚Ğ¾ Ğ¸Ğ¼ĞµĞ½Ğ½Ğ¾ Ñ‚Ñ‹ Ñ…Ğ¾Ñ‡ĞµÑˆÑŒ ÑƒĞ·Ğ½Ğ°Ñ‚ÑŒ?"],
-          ar: ["Ø§Ø³Ø£Ù„ Ø¨Ø¬Ù…Ù„Ø© ÙˆØ§Ø­Ø¯Ø©", "Ø£Ø¶Ù Ø¨Ø¹Ø¶ Ø§Ù„Ø³ÙŠØ§Ù‚", "Ù…Ø§ Ø§Ù„Ø°ÙŠ ØªØ±ÙŠØ¯ Ù…Ø¹Ø±ÙØªÙ‡ ØªØ­Ø¯ÙŠØ¯Ù‹Ø§ØŸ"],
-          tr: ["Tek cÃ¼mleyle sor", "Biraz baÄŸlam ver", "Tam olarak neyi Ã¶ÄŸrenmek istiyorsun?"],
-        }[normLocale] || []),
-    };
+    console.error("LLM çağrı hatası:", err);
+    return parseModelOutput("", "openai-exception");
   }
 }
 
