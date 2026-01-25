@@ -1,3 +1,90 @@
+async function getScholarEvidence(text, lang) {
+  const L = normalizeLang(lang);
+  const q = (compactWords(text, 10) || safeString(text)).trim();
+  if (!q) return null;
+
+  // 1) PubMed
+  try {
+    const term = encodeURIComponent(q);
+    const esUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${term}&retmode=json&retmax=5&sort=relevance`;
+    const es = await fetchJsonCached(esUrl, 6 * 60 * 60 * 1000);
+    const ids = es?.esearchresult?.idlist || [];
+    if (Array.isArray(ids) && ids.length) {
+      const sumUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${encodeURIComponent(ids.join(","))}&retmode=json`;
+      const sum = await fetchJsonCached(sumUrl, 6 * 60 * 60 * 1000);
+      const uids = sum?.result?.uids || [];
+      const items = [];
+
+      for (const id of uids.slice(0, 5)) {
+        const row = sum?.result?.[id];
+        const title = safeString(row?.title || "");
+        const source = safeString(row?.fulljournalname || row?.source || "");
+        const pub = safeString(row?.pubdate || "");
+        const year = (pub.match(/\b(19|20)\d{2}\b/) || [])[0] || "";
+        if (!title) continue;
+        items.push({
+          title,
+          year,
+          source,
+          url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+        });
+      }
+
+      if (items.length) {
+        return {
+          type: "scholar",
+          query: q,
+          items,
+          trustScore: 74,
+          sources: [{ title: "PubMed", url: "https://pubmed.ncbi.nlm.nih.gov/" }],
+        };
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // 2) Crossref fallback
+   // 2) Crossref fallback
+  try {
+    const url = `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=5`;
+    const cr = await fetchJsonCached(url, 6 * 60 * 60 * 1000);
+    const arr = cr?.message?.items || [];
+    const items = [];
+
+    for (const it of arr.slice(0, 5)) {
+      const title = safeString(Array.isArray(it?.title) ? it.title[0] : it?.title);
+      if (!title) continue;
+
+      const year =
+        safeString(it?.issued?.["date-parts"]?.[0]?.[0]) ||
+        safeString(it?.created?.["date-parts"]?.[0]?.[0]) ||
+        "";
+
+      const source = safeString(Array.isArray(it?.["container-title"]) ? it["container-title"][0] : it?.["container-title"]);
+      const doi = safeString(it?.DOI || "");
+      const link = safeString(it?.URL || (doi ? `https://doi.org/${doi}` : ""));
+
+      items.push({ title, year, source, url: link });
+    }
+
+    if (items.length) {
+      return {
+        type: "scholar",
+        query: q,
+        items,
+        trustScore: 70,
+        sources: [{ title: "Crossref", url: "https://api.crossref.org/" }],
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+
 // patched
 //bunun düzeltilmiş eksik hatalrı giderilmiş komple zip olarak gönder // server/routes/ai.js
 // ============================================================================
@@ -15,7 +102,7 @@ import fetch from "node-fetch"; // S20: Node sürümünden bağımsız stabil fe
 import { runAdapters } from "../core/adapterEngine.js";
 
 const router = express.Router();
-const IS_PROD = process.env.NODE_ENV === "production";
+const IS_PROD = process.env.NODE_ENV === "production";// düzeltilmiş vitrin tetikleme mantığı
 
 // ============================================================================
 // GLOBAL SABİTLER — S50
@@ -3197,91 +3284,6 @@ async function getSportsEvidence(text, lang) {
 // ============================================================================
 // SCHOLAR — PubMed + Crossref (free)
 // ============================================================================
-async function getScholarEvidence(text, lang) {
-  const L = normalizeLang(lang);
-  const q = (compactWords(text, 10) || safeString(text)).trim();
-  if (!q) return null;
-
-  // 1) PubMed
-  try {
-    const term = encodeURIComponent(q);
-    const esUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${term}&retmode=json&retmax=5&sort=relevance`;
-    const es = await fetchJsonCached(esUrl, 6 * 60 * 60 * 1000);
-    const ids = es?.esearchresult?.idlist || [];
-    if (Array.isArray(ids) && ids.length) {
-      const sumUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${encodeURIComponent(ids.join(","))}&retmode=json`;
-      const sum = await fetchJsonCached(sumUrl, 6 * 60 * 60 * 1000);
-      const uids = sum?.result?.uids || [];
-      const items = [];
-
-      for (const id of uids.slice(0, 5)) {
-        const row = sum?.result?.[id];
-        const title = safeString(row?.title || "");
-        const source = safeString(row?.fulljournalname || row?.source || "");
-        const pub = safeString(row?.pubdate || "");
-        const year = (pub.match(/\b(19|20)\d{2}\b/) || [])[0] || "";
-        if (!title) continue;
-        items.push({
-          title,
-          year,
-          source,
-          url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
-        });
-      }
-
-      if (items.length) {
-        return {
-          type: "scholar",
-          query: q,
-          items,
-          trustScore: 74,
-          sources: [{ title: "PubMed", url: "https://pubmed.ncbi.nlm.nih.gov/" }],
-        };
-      }
-    }
-  } catch {
-    // fall through
-  }
-
-  // 2) Crossref fallback
-   // 2) Crossref fallback
-  try {
-    const url = `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=5`;
-    const cr = await fetchJsonCached(url, 6 * 60 * 60 * 1000);
-    const arr = cr?.message?.items || [];
-    const items = [];
-
-    for (const it of arr.slice(0, 5)) {
-      const title = safeString(Array.isArray(it?.title) ? it.title[0] : it?.title);
-      if (!title) continue;
-
-      const year =
-        safeString(it?.issued?.["date-parts"]?.[0]?.[0]) ||
-        safeString(it?.created?.["date-parts"]?.[0]?.[0]) ||
-        "";
-
-      const source = safeString(Array.isArray(it?.["container-title"]) ? it["container-title"][0] : it?.["container-title"]);
-      const doi = safeString(it?.DOI || "");
-      const link = safeString(it?.URL || (doi ? `https://doi.org/${doi}` : ""));
-
-      items.push({ title, year, source, url: link });
-    }
-
-    if (items.length) {
-      return {
-        type: "scholar",
-        query: q,
-        items,
-        trustScore: 70,
-        sources: [{ title: "Crossref", url: "https://api.crossref.org/" }],
-      };
-    }
-  } catch {
-    // ignore
-  }
-
-  return null;
-}
 
 
 // ============================================================================
@@ -3571,23 +3573,6 @@ async function getCrossrefPapers(query) {
   return out.filter((x) => x.title && x.url);
 }
 
-async function getScholarEvidence(text, lang) {
-  const q = compactWords(text, 10) || safeString(text);
-  if (!q) return null;
-  const pub = await getPubMedPapers(q);
-  const cr = pub.length ? [] : await getCrossrefPapers(q);
-  const items = (pub.length ? pub : cr).slice(0, 5);
-  if (!items.length) {
-    return { type: "no_answer", reason: "no_scholar_hits", trustScore: 45 };
-  }
-  return {
-    type: "scholar",
-    query: q,
-    items,
-    trustScore: 72,
-    sources: items.map((x) => ({ title: x.title, url: x.url })).slice(0, 5),
-  };
-}
 
 function parseMealIngredients(meal) {
   const out = [];
