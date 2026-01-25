@@ -524,6 +524,13 @@ function pickCity(text, cityHint) {
   return safeString(words.slice(0, 3).join(" "));
 }
 
+// Backward-compat shim: some code paths call inferCity(), but the original refactor kept pickCity().
+function inferCity(text, lang) {
+  // Be conservative: only return a city if the user explicitly mentions one.
+  return pickCity(String(text || ""), "");
+}
+
+
 function pickWikiLang(lang) {
   const L = normalizeLang(lang);
   if (L === "tr") return "tr";
@@ -3699,51 +3706,82 @@ function sanitizeLLMAnswer(answer, normLocale) {
 
 async function callLLM({
   message,
-  locale,
-  intent,
-  region,
-  city,
-  memorySnapshot,
-  persona,
+  locale = "tr",
+  intent = "chat",
+  region = "",
+  city = "",
+  memorySnapshot = "",
+  persona = "Sono",
+  forceOpenAI = false,
+  forceWorkersAI = false,
+  personaNote = "",
 }) {
-  // --- Provider selection ---
-  // Prefer Cloudflare Workers AI if configured (cheaper / simpler).
-  // Env (any of these work):
-  // - WORKERS_AI_BASE_URL = https://xxxx.workers.dev   (or full .../chat)
-  // - WORKERS_AI_TOKEN    = same secret as Worker CHAT_TOKEN
-  const workerBase = safeString(
-    process.env.WORKERS_AI_BASE_URL ||
-      process.env.CF_WORKERS_AI_BASE_URL ||
-      process.env.CF_WORKERS_AI_URL ||
-      process.env.WORKERS_AI_URL ||
-      process.env.CF_WORKER_URL
-  );
+  const normLocale = normalizeLang(locale);
 
-  const workerToken = safeString(
-    process.env.WORKERS_AI_TOKEN ||
-      process.env.CF_WORKERS_AI_TOKEN ||
-      process.env.WORKERS_AI_CHAT_TOKEN ||
-      process.env.CF_CHAT_TOKEN ||
-      process.env.WORKER_CHAT_TOKEN
-  );
+  const T = {
+    tr: {
+      noKey: "LLM anahtar(lar)ı eksik. Şu an metin yanıtı üretemiyorum.",
+      noAnswer: "Şu an cevap üretemedim. Daha net sorabilir misin?",
+      workersFail: "Workers AI yanıt üretemedi. (Geçici)",
+      openaiFail: "OpenAI yanıt üretemedi. (Geçici)",
+    },
+    en: {
+      noKey: "LLM keys are missing. I can't generate a text answer right now.",
+      noAnswer: "I couldn't generate an answer. Can you ask more clearly?",
+      workersFail: "Workers AI failed to answer. (Temporary)",
+      openaiFail: "OpenAI failed to answer. (Temporary)",
+    },
+  }[normLocale] || {
+    noKey: "LLM keys are missing. I can't generate a text answer right now.",
+    noAnswer: "I couldn't generate an answer. Can you ask more clearly?",
+    workersFail: "Workers AI failed to answer. (Temporary)",
+    openaiFail: "OpenAI failed to answer. (Temporary)",
+  };
 
-  const apiKey = safeString(process.env.OPENAI_API_KEY);
-  const baseUrl =
-    safeString(process.env.OPENAI_BASE_URL) || "https://api.openai.com/v1";
+  const safeMessage = String(message || "").trim().slice(0, 4000);
 
-  const normLocale = (() => {
-    const l = safeString(locale || "tr").toLowerCase();
-    if (l.startsWith("en")) return "en";
-    if (l.startsWith("fr")) return "fr";
-    if (l.startsWith("ru")) return "ru";
-    if (l.startsWith("ar")) return "ar";
-    return "tr";
-  })();
+  // --- Providers ---
+  const workersAiBaseUrl = String(process.env.WORKERS_AI_BASE_URL || "").trim().replace(/\/+$/, "");
+  const workersAiToken = String(process.env.WORKERS_AI_TOKEN || "").trim();
+  const hasWorkers = !!workersAiBaseUrl && !!workersAiToken;
 
-  // Mesajı sert limit ile kısalt
-  const safeMessage = clampText(message, MAX_MESSAGE_LENGTH);
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  const hasOpenAI = !!apiKey;
+  const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
+  const baseUrl = "https://api.openai.com/v1";
 
-  // Tek bir parse yolu: model JSON döndürse de döndürmese de toparla
+  if (!hasWorkers && !hasOpenAI) {
+    return {
+      provider: "none",
+      answer: T.noKey,
+      suggestions: [],
+    };
+  }
+
+  function wantsHighQuality(text) {
+    const s = String(text || "").toLowerCase();
+    if (s.length >= 280) return true;
+    if ((s.match(/\n/g) || []).length >= 2) return true;
+    if ((s.match(/[?]/g) || []).length >= 2) return true;
+    // TR + EN quality triggers
+    return /uzun\s+analiz|kapsamlı|detaylı|derinlemesine|karmaşık|kibar|tutarlı|rapor|strateji|plan|iş\s+planı|hukuk|sözleşme|dilekçe|mail|e-?posta|sunum|proje\s+mimarisi|refactor|debug|karşılaştır/.test(s)
+      || /long\s+analysis|in\s+depth|complex|polite|consistent|report|strategy|plan|legal|contract|refactor|debug|compare/.test(s);
+  }
+
+  const preferOpenAI = !forceWorkersAI && hasOpenAI && (forceOpenAI || wantsHighQuality(safeMessage));
+
+  const sys = `You are ${persona}. Reply ONLY as a JSON object with keys: "answer" (string) and "suggestions" (array of 0-3 short strings). No markdown. No code fences. Answer in the user's language (${normLocale}). If you are uncertain, say so briefly and ask one clarifying question. ${personaNote || ""}`;
+
+  const prompt = [
+    `Language: ${normLocale}`,
+    `Intent: ${intent}`,
+    region ? `Region: ${region}` : "",
+    city ? `City: ${city}` : "",
+    memorySnapshot ? `Context: ${memorySnapshot}` : "",
+    "",
+    `User: ${safeMessage}`,
+  ].filter(Boolean).join("\n");
+
   function parseModelOutput(rawText, providerName = "llm") {
     const fallbackJson =
       ({
@@ -3786,209 +3824,114 @@ async function callLLM({
     return { provider: providerName, answer, suggestions };
   }
 
-  // Eğer ne Worker ne OpenAI var → fallback
-  const hasWorkers = !!workerBase && !!workerToken;
-  const hasOpenAI = !!apiKey;
+  async function runWorkers() {
+    const r = await fetch(`${workersAiBaseUrl}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${workersAiToken}`,
+      },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
 
-  if (!hasWorkers && !hasOpenAI) {
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j?.ok) {
+      const msg = j?.error || `HTTP_${r.status}`;
+      throw new Error(msg);
+    }
+
+    const raw = String(j?.answer || "").trim();
+    const parsed = parseModelOutput(raw, j?.model || "workers-ai");
+    parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+    if (!parsed.answer) parsed.answer = T.noAnswer;
+    return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+  }
+
+  async function runOpenAI() {
+    const r = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        response_format: { type: "json_object" },
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
+
+    const data = await r.json().catch(() => null);
+    if (!r.ok) {
+      const msg = data?.error?.message || `HTTP_${r.status}`;
+      throw new Error(msg);
+    }
+
+    const raw = String(data?.choices?.[0]?.message?.content || "").trim();
+    const parsed = parseModelOutput(raw, data?.model || "openai");
+    parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+    if (!parsed.answer) parsed.answer = T.noAnswer;
+    return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+  }
+
+  // --- Orchestration ---
+  if (preferOpenAI) {
+    try {
+      return await runOpenAI();
+    } catch (e) {
+      // fall through
+    }
+    if (hasWorkers) {
+      try {
+        return await runWorkers();
+      } catch (e) {
+        // fall through
+      }
+    }
     return {
-      provider: "fallback",
-      answer:
-        ({
-          en: "Sono is in limited mode right now, but I can still help with quick information.",
-          fr: "Sono est en mode limité pour le moment, mais je peux quand même aider avec des infos rapides.",
-          ru: "Сейчас Sono работает в ограниченном режиме, но я всё равно могу помочь с быстрыми справками.",
-          ar: "Sono يعمل الآن بوضع محدود، لكن يمكنني مساعدتك بمعلومات سريعة.",
-          tr: "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim.",
-        }[normLocale] ||
-          "Sono şu an sınırlı modda çalışıyor ama yine de hızlı bilgi verebilirim."),
-      suggestions:
-        ({
-          en: ["Tell me about a place", "Explain a concept", "Compare two things"],
-          fr: ["Parle-moi d’un lieu", "Explique un concept", "Compare deux choses"],
-          ru: ["Расскажи о месте", "Объясни понятие", "Сравни два варианта"],
-          ar: ["حدثني عن مكان", "اشرح فكرة", "قارن بين خيارين"],
-          tr: ["Bir yer hakkında bilgi ver", "Bir şeyi açıkla", "İki şeyi karşılaştır"],
-        }[normLocale] || []),
+      provider: "openai",
+      answer: T.openaiFail,
+      suggestions: [],
     };
   }
 
-  const personaNote = {
-    saver:
-      "Kullanıcı fiyat odaklı. Ekonomik, avantaj yaratılmış, uygun fiyatlı seçenekler öner.",
-    fast: "Kullanıcı hız odaklı. Hızlı adımlar ve pratik yönlendirmeler yap.",
-    luxury:
-      "Kullanıcı premium kalite istiyor. En yüksek rating'li, güvenilir seçenekleri öne çıkar.",
-    explorer:
-      "Kullanıcı alternatif görmek istiyor. En az 2 farklı yolu kısa anlat.",
-    neutral:
-      "Kullanıcının niyeti karışık. Dengeli, rahat okunur kısa yanıtlar ver.",
-  }[persona];
-
-  const systemPrompt = `
-You are Sono, a smart assistant. The user may ask for general information or guidance.
-Rules:
-- Reply in the user's language. Target language is based on locale: ${normLocale}.
-  • tr = Turkish, en = English, fr = French, ru = Russian, ar = Arabic.
-- Keep it short, clear, and helpful. No fluff.
-- Do NOT mention "affiliate", "commission", or "sponsor". Never produce links.
-
-Output format (VERY IMPORTANT):
-Return ONLY valid JSON with this exact shape:
-{"answer":"...","suggestions":["...","...","..."]}
-- answer: a short, direct answer (2–6 short sentences or 3 bullets).
-- suggestions: 2–4 short follow-up prompts the user can click.
-No markdown. No code fences. No extra keys.
-
-Context:
-- Intent: ${intent}
-- Region: ${region}
-- City: ${city}
-- Recent Queries: ${(memorySnapshot?.lastQueries || []).slice(0, 10).join(" • ")}
-Persona hint: ${persona} → ${personaNote || "balanced"}
-`.trim();
-
-  // --- 1) Workers AI path (preferred if configured) ---
+  // Default: Workers first (cheap/fast), OpenAI fallback
   if (hasWorkers) {
-    const chatUrl = (() => {
-      const b = workerBase.replace(/\/+$/, "");
-      return b.endsWith("/chat") ? b : `${b}/chat`;
-    })();
-
     try {
-      const res = await fetchWithTimeout(chatUrl, {
-        method: "POST",
-        timeout: 15000,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${workerToken}`,
-          // geri uyumluluk / debug kolaylığı:
-          "X-Chat-Token": workerToken,
-        },
-        body: JSON.stringify({
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: safeMessage },
-          ],
-        }),
-      });
-
-      if (!res || !res.ok) {
-        let text = "";
-        try {
-          text = await res.text();
-        } catch {}
-        console.error("Workers AI HTTP error:", res?.status, text);
-        // Worker patlarsa OpenAI'ye düş (varsa)
-        if (!hasOpenAI) {
-          return {
-            provider: "workers-ai-error",
-            answer:
-              ({
-                en: "I can’t generate a text answer right now. Try again in a moment.",
-                fr: "Je ne peux pas générer de réponse texte pour le moment. Réessayez dans un instant.",
-                ru: "Сейчас не получается выдать текстовый ответ. Попробуйте ещё раз чуть позже.",
-                ar: "لا أستطيع إنشاء إجابة نصية الآن. جرّب مرة أخرى بعد قليل.",
-                tr: "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin.",
-              }[normLocale] ||
-                "Şu an metin yanıtında sorun oluştu. Biraz sonra tekrar deneyin."),
-            suggestions:
-              ({
-                en: ["Ask in one sentence", "Give context", "What exactly do you want to know?"],
-                fr: ["Pose une seule phrase", "Donne un peu de contexte", "Qu’est-ce que tu veux savoir exactement ?"],
-                ru: ["Спроси одним предложением", "Дай контекст", "Что именно ты хочешь узнать?"],
-                ar: ["اسأل بجملة واحدة", "أضف بعض السياق", "ما الذي تريد معرفته تحديدًا؟"],
-                tr: ["Tek cümleyle sor", "Biraz bağlam ver", "Tam olarak neyi öğrenmek istiyorsun?"],
-              }[normLocale] || []),
-          };
-        }
-      } else {
-        const data = await res.json().catch(() => null);
-        if (data && data.ok === true) {
-          const rawAnswer =
-            data.answer ??
-            data.response ??
-            data.output_text ??
-            (typeof data === "string" ? data : JSON.stringify(data));
-          return parseModelOutput(rawAnswer, data.model || "workers-ai");
-        }
-
-        // ok:false geldiyse
-        if (!hasOpenAI) {
-          return parseModelOutput(
-            safeString(data?.error) || "",
-            "workers-ai-error"
-          );
-        }
-      }
-    } catch (err) {
-      console.error("Workers AI çağrı hatası:", err);
-      if (!hasOpenAI) return parseModelOutput("", "workers-ai-exception");
-      // OpenAI'ye düş
+      return await runWorkers();
+    } catch (e) {
+      // fall through to OpenAI
     }
   }
 
-  // --- 2) OpenAI path (fallback) ---
-  const requestBody = {
-    model: safeString(process.env.OPENAI_MODEL) || "gpt-4.1-mini",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: safeMessage },
-    ],
-    max_tokens: 250,
-    temperature: 0.7,
-  };
-
-  try {
-    const res = await fetchWithTimeout(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      timeout: 15000,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!res || !res.ok) {
-      let text = "";
-      try {
-        text = await res.text();
-      } catch {}
-      console.error("LLM HTTP error:", res?.status, text);
+  if (hasOpenAI) {
+    try {
+      return await runOpenAI();
+    } catch (e) {
       return {
-        provider: "openai-error",
-        answer:
-          ({
-            en: "I can’t generate a text answer right now, but I can still help if you rephrase briefly.",
-            fr: "Je ne peux pas générer de réponse texte pour le moment, mais je peux aider si vous reformulez brièvement.",
-            ru: "Сейчас не получается выдать текстовый ответ, но я смогу помочь, если вы переформулируете короче.",
-            ar: "لا أستطيع إنشاء إجابة نصية الآن، لكن يمكنني المساعدة إذا أعدت صياغة السؤال باختصار.",
-            tr: "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim.",
-          }[normLocale] ||
-            "Şu an metin yanıtı üretemiyorum; soruyu daha kısa yazarsan yardımcı olabilirim."),
-        suggestions:
-          ({
-            en: ["Summarize this topic", "Give key points", "How does it work?"],
-            fr: ["Résume ce sujet", "Donne les points clés", "Comment ça marche ?"],
-            ru: ["Кратко о теме", "Дай ключевые пункты", "Как это работает?"],
-            ar: ["لخّص الموضوع", "أعطني النقاط الأساسية", "كيف يعمل ذلك؟"],
-            tr: ["Konuyu özetle", "Ana maddeleri ver", "Nasıl çalışır?"],
-          }[normLocale] || []),
+        provider: "openai",
+        answer: T.openaiFail,
+        suggestions: [],
       };
     }
-
-    const data = await res.json().catch(() => null);
-    const rawAnswer =
-      data?.choices?.[0]?.message?.content ||
-      (typeof data === "string" ? data : JSON.stringify(data || ""));
-
-    return parseModelOutput(rawAnswer, data?.model || "openai");
-  } catch (err) {
-    console.error("LLM çağrı hatası:", err);
-    return parseModelOutput("", "openai-exception");
   }
+
+  return {
+    provider: "workers-ai",
+    answer: T.workersFail,
+    suggestions: [],
+  };
 }
+
 
 // ============================================================================
 // GET RESULTS â€” S16 (runAdapters triple-safe) â€” KORUNDU
