@@ -1,5 +1,5 @@
 // patched
-bunun düzeltilmiş eksik hatalrı giderilmiş komple zip olarak gönder // server/routes/ai.js
+//bunun düzeltilmiş eksik hatalrı giderilmiş komple zip olarak gönder // server/routes/ai.js
 // ============================================================================
 //   SONO AI — S50 ULTRA OMEGA ROUTE (FINAL FINAL FORM)
 //   • Intent Engine v3 (S16 core + hijyen güçlendirme)
