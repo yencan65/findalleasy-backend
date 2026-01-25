@@ -1480,13 +1480,13 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
   const q = safeString(text);
   const low = q.toLowerCase();
 
-  const wantGram = /(gram\s*alt(Ä±|i)n|\bgram\b)/i.test(low);
-  const wantQuarter = /(Ã§eyrek|quarter)/i.test(low);
-  const wantHalf = /(yarÄ±m|half)/i.test(low);
+  const wantGram = /(gram\s*alt(ı|i)n|\bgram\b)/i.test(low);
+  const wantQuarter = /(çeyrek|ceyrek|quarter)/i.test(low);
+  const wantHalf = /(yarım|yarim|half)/i.test(low);
   const wantFull = /\btam\b/i.test(low);
   const wantCumhuriyet = /(cumhuriyet)/i.test(low);
   const wantAta = /\bata\b/i.test(low);
-  const wantSilver = /(g[uÃ¼]m[uÃ¼]ÅŸ|silver|xag)/i.test(low);
+  const wantSilver = /(gümüş|gumus|silver|xag)/i.test(low);
   const wantOunce = /(ons|ounce|xau)/i.test(low);
 
   const wantsSpecific =
@@ -1505,22 +1505,22 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
       const k = findKey(re);
       if (!k) return null;
       const obj = j[k];
-      const buy = parseTRNumber(obj?.["AlÄ±ÅŸ"] ?? obj?.["Alis"] ?? obj?.["Buying"] ?? obj?.["buying"] ?? obj?.["alis"]);
-      const sell = parseTRNumber(obj?.["SatÄ±ÅŸ"] ?? obj?.["Satis"] ?? obj?.["Selling"] ?? obj?.["selling"] ?? obj?.["satis"]);
-      const chg = String(obj?.["DeÄŸiÅŸim"] ?? obj?.["Degisim"] ?? obj?.["Change"] ?? obj?.["change"] ?? "").trim();
+      const buy = parseTRNumber(obj?.["Alış"] ?? obj?.["Alis"] ?? obj?.["Buying"] ?? obj?.["buying"] ?? obj?.["alis"]);
+      const sell = parseTRNumber(obj?.["Satış"] ?? obj?.["Satis"] ?? obj?.["Selling"] ?? obj?.["selling"] ?? obj?.["satis"]);
+      const chg = String(obj?.["Değişim"] ?? obj?.["Degisim"] ?? obj?.["Change"] ?? obj?.["change"] ?? "").trim();
       if (buy == null && sell == null) return null;
       return { name, buy, sell, ccy, change: chg || null };
     };
 
     const itemsAll = [
-      pick("Gram AltÄ±n", /gram\s*alt[Ä±i]n|gram\s*gold|gram_altin|gr_altin/),
-      pick("Ã‡eyrek AltÄ±n", /Ã§eyrek\s*alt[Ä±i]n|ceyrek\s*alt[Ä±i]n|quarter/),
-      pick("YarÄ±m AltÄ±n", /yar[Ä±i]m\s*alt[Ä±i]n|half/),
-      pick("Tam AltÄ±n", /\btam\s*alt[Ä±i]n\b|\bfull\s*gold\b/),
-      pick("Cumhuriyet AltÄ±nÄ±", /cumhuriyet/),
+      pick("Gram Altın", /gram\s*alt[ıi]n|gram\s*gold|gram_altin|gr_altin/),
+      pick("Çeyrek Altın", /çeyrek\s*alt[ıi]n|ceyrek\s*alt[ıi]n|quarter/),
+      pick("Yarım Altın", /yar[ıi]m\s*alt[ıi]n|half/),
+      pick("Tam Altın", /\btam\s*alt[ıi]n\b|\bfull\s*gold\b/),
+      pick("Cumhuriyet Altını", /cumhuriyet/),
       pick("Ata AltÄ±n", /\bata\b/),
       pick("Ons AltÄ±n (XAU)", /ons|ounce|xau/ , "USD"),
-      pick("GÃ¼mÃ¼ÅŸ", /g[uÃ¼]m[uÃ¼]ÅŸ|silver|xag/ , "TRY"),
+      pick("Gümüş", /gümüş|gumus|silver|xag/ , "TRY"),
     ].filter(Boolean);
 
     // Filter if user asked specifically
@@ -1529,12 +1529,12 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
       items = itemsAll.filter((it) => {
         const n = it.name.toLowerCase();
         if (wantGram && n.includes("gram")) return true;
-        if (wantQuarter && n.includes("Ã§eyrek")) return true;
-        if (wantHalf && n.includes("yarÄ±m")) return true;
+        if (wantQuarter && n.includes("çeyrek")) return true;
+        if (wantHalf && n.includes("yarım")) return true;
         if (wantFull && n.includes("tam")) return true;
         if (wantCumhuriyet && n.includes("cumhuriyet")) return true;
         if (wantAta && n.includes("ata")) return true;
-        if (wantSilver && n.includes("gÃ¼mÃ¼ÅŸ")) return true;
+        if (wantSilver && n.includes("gümüş")) return true;
         if (wantOunce && n.includes("ons")) return true;
         return false;
       });
@@ -1547,7 +1547,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     // Simple suggestions
     const suggestions =
       L === "tr"
-        ? ["Gram altÄ±n kaÃ§ para?", "Ã‡eyrek altÄ±n fiyatÄ±", "USD/TRY kuru", "AltÄ±n ons fiyatÄ±"]
+        ? ["Gram altın kaç para?", "Çeyrek altın fiyatı", "USD/TRY kuru", "Altın ons fiyatı"]
         : ["Gold price per gram", "Quarter gold coin price", "USD/TRY rate", "Gold ounce price"];
 
     return {
@@ -1614,7 +1614,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     });
     if (gramTry) {
       items.push({
-        name: "Gram AltÄ±n (spot, TRY)",
+        name: "Gram Altın (spot, TRY)",
         buy: gramTry,
         sell: gramTry,
         ccy: "TRY",
@@ -1629,7 +1629,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     sources.push({ title: "Stooq XAGUSD", url: xag.url });
     const ounceUsd = xag.close;
     items.push({
-      name: "GÃ¼mÃ¼ÅŸ Ons (XAGUSD)",
+      name: "Gümüş Ons (XAGUSD)",
       buy: ounceUsd,
       sell: ounceUsd,
       ccy: "USD",
@@ -1646,12 +1646,12 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
       trustScore: 35,
       reason: "metals_fetch_failed",
       sources,
-      suggestions: L === "tr" ? ["Tekrar dene", "USD/TRY kuru"] : ["Try again", "USD/TRY rate"],
+      suggestions: [],
     };
   }
 
   if (usdtry) {
-    sources.push({ title: "Frankfurter USDâ†’TRY", url: "https://api.frankfurter.app/latest?from=USD&to=TRY" });
+    sources.push({ title: "Frankfurter USD→TRY", url: "https://api.frankfurter.app/latest?from=USD&to=TRY" });
   }
 
   const updatedAt = xau?.date ? `${xau.date}${xau.time ? " " + xau.time : ""}` : null;
@@ -1663,10 +1663,7 @@ async function getMetalsEvidence({ text, lang = "tr" }) {
     items,
     trustScore: 70,
     sources,
-    suggestions:
-      L === "tr"
-        ? ["Gram altÄ±n kaÃ§ para?", "USD/TRY kuru", "AltÄ±n ons fiyatÄ±", "GÃ¼mÃ¼ÅŸ ons fiyatÄ±"]
-        : ["Gold price per gram", "USD/TRY rate", "Gold ounce price", "Silver ounce price"],
+    suggestions: [],
   };
 }
 
@@ -2203,7 +2200,7 @@ async function getFirstsEvidence(text, lang) {
         answer: sum.extract,
         trustScore: Math.max(60, Math.min(88, (sum.trustScore || 70) + 6)),
         sources: sum.sources || (forcedTitle ? [{ title: `Wikipedia: ${forcedTitle}`, url: wikipediaPageUrl(forcedTitle, L) }] : []),
-        suggestions: L === "tr" ? ["TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k", "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri spor"] : ["Turkey firsts aviation", "Turkey firsts women", "Turkey firsts sports"],
+        suggestions: [],
       };
     }
     // fallback: still return wiki
@@ -2328,9 +2325,7 @@ async function getFirstsEvidence(text, lang) {
           answer: sum.extract,
           trustScore: Math.max(55, Math.min(82, (sum.trustScore || 68) + 4)),
           sources: sum.sources || [],
-          suggestions: L === "tr"
-            ? [`${scope.label} ilkleri ${((category.title && category.title.tr) || "")}`.trim(), "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k"]
-            : [`${scope.label} firsts ${((category.title && category.title.en) || "")}`.trim(), "Turkey firsts women", "Turkey firsts aviation"],
+          suggestions: [],
         };
       }
     }
@@ -2346,9 +2341,7 @@ async function getFirstsEvidence(text, lang) {
       items: uniq,
       trustScore,
       sources: sources.slice(0, 3),
-      suggestions: L === "tr"
-        ? [`${scope.label} ilkleri ${catTitle}`.trim(), `${scope.label} ilk kadÄ±n`, `${scope.label} ilk bilim`, `${scope.label} ilk spor`]
-        : [`${scope.label} firsts ${catTitle}`.trim(), `${scope.label} first woman`, `${scope.label} first science`, `${scope.label} first sports`],
+      suggestions: [],
     };
   }
 
@@ -2399,7 +2392,7 @@ async function getFirstsEvidence(text, lang) {
       answer: sum.extract,
       trustScore: Math.max(60, Math.min(90, (sum.trustScore || 70) + 6)),
       sources: sum.sources || [{ title: `Wikipedia: ${best.title}`, url: wikipediaPageUrl(best.title, L) }],
-      suggestions: L === "tr" ? ["TÃ¼rkiye'nin ilkleri", "TÃ¼rkiye'nin ilkleri kadÄ±nlar", "TÃ¼rkiye'nin ilkleri havacÄ±lÄ±k"] : ["Turkey firsts", "Turkey firsts women", "Turkey firsts aviation"],
+      suggestions: [],
     };
   }
 
@@ -3745,6 +3738,8 @@ async function callLLM({
   const workersAiToken = String(process.env.WORKERS_AI_TOKEN || "").trim();
   const hasWorkers = !!workersAiBaseUrl && !!workersAiToken;
 
+  const workersAiModel = String(process.env.WORKERS_AI_MODEL || "@cf/meta/llama-3.1-8b-instruct").trim();
+
   const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
   const hasOpenAI = !!apiKey;
   const OPENAI_MODEL = String(process.env.OPENAI_MODEL || "gpt-4.1-mini").trim();
@@ -3825,34 +3820,89 @@ async function callLLM({
   }
 
   async function runWorkers() {
-    const r = await fetch(`${workersAiBaseUrl}/chat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${workersAiToken}`,
-      },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: sys },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+  // Supports:
+  // 1) OpenAI-compatible endpoints: POST {base}/chat/completions → { choices: [{ message: { content } }] }
+  // 2) Legacy Sono Worker: POST {base}/chat → { ok: true, answer }
+  const base = workersAiBaseUrl;
 
-    const j = await r.json().catch(() => null);
-    if (!r.ok || !j?.ok) {
-      const msg = j?.error || `HTTP_${r.status}`;
-      throw new Error(msg);
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${workersAiToken}`,
+    "cf-aig-authorization": workersAiToken,
+  };
+
+  const openAiCompatBody = {
+    model: workersAiModel || undefined,
+    temperature: 0.2,
+    max_tokens: 700,
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: prompt },
+    ],
+  };
+
+  // Try OpenAI-compatible first
+  try {
+    const r1 = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(openAiCompatBody),
+    });
+    const j1 = await r1.json().catch(() => null);
+
+    const raw1 = String(j1?.choices?.[0]?.message?.content || "").trim();
+    if (r1.ok && raw1) {
+      const parsed = parseModelOutput(raw1, j1?.model || "workers-ai");
+      parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+      if (!parsed.answer) parsed.answer = T.noAnswer;
+      return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
     }
 
-    const raw = String(j?.answer || "").trim();
-    const parsed = parseModelOutput(raw, j?.model || "workers-ai");
-    parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
-    if (!parsed.answer) parsed.answer = T.noAnswer;
-    return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+    // Cloudflare run-like shapes (just in case):
+    const raw2 = String(
+      j1?.result?.response ||
+        j1?.result?.answer ||
+        j1?.result?.output_text ||
+        j1?.response ||
+        ""
+    ).trim();
+
+    if (r1.ok && raw2) {
+      const parsed = parseModelOutput(raw2, j1?.model || "workers-ai");
+      parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+      if (!parsed.answer) parsed.answer = T.noAnswer;
+      return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+    }
+  } catch (e) {
+    // fall through to legacy
   }
 
-  async function runOpenAI() {
+  // Legacy /chat format
+  const r = await fetch(`${base}/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+
+  const j = await r.json().catch(() => null);
+  if (!r.ok || !j?.ok) {
+    const msg = j?.error || `HTTP_${r.status}`;
+    throw new Error(msg);
+  }
+
+  const raw = String(j?.answer || "").trim();
+  const parsed = parseModelOutput(raw, j?.model || "workers-ai");
+  parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+  if (!parsed.answer) parsed.answer = T.noAnswer;
+  return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+}
+
+async function runOpenAI()async function runOpenAI() {
     const r = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -3904,32 +3954,46 @@ async function callLLM({
     };
   }
 
-  // Default: Workers first (cheap/fast), OpenAI fallback
-  if (hasWorkers) {
-    try {
-      return await runWorkers();
-    } catch (e) {
-      // fall through to OpenAI
-    }
-  }
+  // Default: Workers first, OpenAI fallback (and upgrade low-quality replies)
+if (hasWorkers) {
+  try {
+    const w = await runWorkers();
+    const ans = String(w?.answer || "");
+    const low =
+      !ans.trim() ||
+      /yanıt üretemedi|cevap üretemedim|erişimim yok/i.test(ans) ||
+      (ans.trim().length < 120 && wantsHighQuality(safeMessage));
 
-  if (hasOpenAI) {
-    try {
-      return await runOpenAI();
-    } catch (e) {
-      return {
-        provider: "openai",
-        answer: T.openaiFail,
-        suggestions: [],
-      };
+    if (hasOpenAI && low) {
+      try {
+        return await runOpenAI();
+      } catch (e) {
+        // ignore
+      }
     }
+    return w;
+  } catch (e) {
+    // fall through to OpenAI
   }
+}
 
-  return {
-    provider: "workers-ai",
-    answer: T.workersFail,
-    suggestions: [],
-  };
+if (hasOpenAI) {
+  try {
+    return await runOpenAI();
+  } catch (e) {
+    return {
+      provider: "openai",
+      answer: T.openaiFail,
+      suggestions: [],
+    };
+  }
+}
+
+return {
+  provider: "workers-ai",
+  answer: T.workersFail,
+  suggestions: [],
+};
 }
 
 
