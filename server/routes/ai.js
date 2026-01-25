@@ -1,4 +1,5 @@
-// server/routes/ai.js
+// patched
+bunun düzeltilmiş eksik hatalrı giderilmiş komple zip olarak gönder // server/routes/ai.js
 // ============================================================================
 //   SONO AI — S50 ULTRA OMEGA ROUTE (FINAL FINAL FORM)
 //   • Intent Engine v3 (S16 core + hijyen güçlendirme)
@@ -382,31 +383,60 @@ function buildVitrineCards(query, rawResults) {
 // ============================================================================
 // LLM YARDIMCI: Timeout + Güvenli Fetch (S16 core + S20 + S50 guard)
 // ============================================================================
-
 async function fetchWithTimeout(resource, options = {}) {
-  const timeout = Number(options.timeout || 15000);
+  const timeoutMs = Number(options.timeout || 15000);
+  const controller = new AbortController();
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error("LLM timeout"));
-    }, timeout);
+  // dış signal varsa controller'a bağla
+  const extSignal = options.signal;
+  if (extSignal) {
+    if (extSignal.aborted) controller.abort();
+    else extSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
 
-    fetch(resource, options)
-      .then((response) => {
-        clearTimeout(timer);
-        resolve(response);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-  });
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const { timeout, signal, ...rest } = options;
+    const res = await fetch(resource, {
+      ...rest,
+      signal: controller.signal, // <-- her zaman controller
+    });
+    return res;
+  } catch (err) {
+    if (err && (err.name === "AbortError" || String(err).includes("AbortError"))) {
+      throw new Error("LLM timeout");
+    }
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
 }
+
+
 
 // ============================================================================
 // LIVE / RELIABLE INFO: Evidence fetch (FX, weather, travel, POI, recipe, news, wiki) -- S52
 //   - Used for chat/info mode to provide source-backed answers
 //   - Hard rules: topic-locked, no random drift; graceful fallback
+const EVIDENCE_MAX_KEYS = 2500;
+const EVIDENCE_GC_THRESHOLD = 3000;
+
+function gcEvidenceCache(now = Date.now()) {
+  if (evidenceCache.size <= EVIDENCE_GC_THRESHOLD) return;
+
+  for (const [k, v] of evidenceCache.entries()) {
+    if (!v || (v.exp && now > v.exp)) evidenceCache.delete(k);
+  }
+
+  if (evidenceCache.size > EVIDENCE_MAX_KEYS) {
+    const entries = Array.from(evidenceCache.entries()).sort(
+      (a, b) => (a[1]?.exp || 0) - (b[1]?.exp || 0)
+    );
+    const drop = entries.length - EVIDENCE_MAX_KEYS;
+    for (let i = 0; i < drop; i++) evidenceCache.delete(entries[i][0]);
+  }
+}
 
 const evidenceCache = new Map();
 const EVIDENCE_DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
@@ -431,8 +461,10 @@ function cacheSet(key, val, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
       val,
       exp: Date.now() + Number(ttlMs || EVIDENCE_DEFAULT_TTL_MS),
     });
+    gcEvidenceCache();
   } catch {}
 }
+
 
 function decodeHtmlEntities(str = "") {
   const s = safeString(str);
@@ -926,15 +958,13 @@ function buildEvidenceAnswer(e, lang) {
   // --- S52 HOTFIX: prevent "ReferenceError: trust is not defined"
   // Not: trustScore hic tanimli olmasa bile typeof guvenli.
   // e parametresi evidence objesidir.
-  const trust = (() => {
-    const v = (typeof trustScore === "number"
-      ? trustScore
-      : (typeof e?.trustScore === "number" ? e.trustScore : undefined));
+  // trustScore sadece evidence objesinden gelsin. Başka yerden "hayalet değişken" istemiyorum.
+const trust = (() => {
+  const n = Number(e?.trustScore);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+})();
 
-    const n = Number(v);
-    if (!Number.isFinite(n)) return null;
-    return Math.max(0, Math.min(100, Math.round(n)));
-  })();
   const lowNote = trust != null && trust < 55 ? `\n(${T.lowConf})` : "";
 
   // Clarify / Disambiguation / No-answer (avoid confident nonsense)
@@ -1198,34 +1228,34 @@ ${line}${lowNote}`.trim(),
 
   
   if (e.type === "metals") {
-    const items = Array.isArray(e.items) ? e.items : [];
-    const updatedAt = String(e.updatedAt || "").trim();
+  const items = Array.isArray(e.items) ? e.items : [];
+  const updatedAt = String(e.updatedAt || "").trim();
 
-    const lines = items
-      .slice(0, 10)
-      .map((it) => {
-        const buy = it.buyText || (typeof it.buy === "number" ? String(it.buy) : "");
-        const sell = it.sellText || (typeof it.sell === "number" ? String(it.sell) : "");
-        const ccy = String(it.ccy || "").trim();
-        const label = String(it.name || "").trim() || "—";
-        if (buy && sell) return `• ${label}: ${T.buy || "Buy"} ${buy} / ${T.sell || "Sell"} ${sell}${ccy ? " " + ccy : ""}`;
-        if (sell) return `• ${label}: ${sell}${ccy ? " " + ccy : ""}`;
-        if (buy) return `• ${label}: ${buy}${ccy ? " " + ccy : ""}`;
-        return `• ${label}`;
-      })
-      .join("\n");
+  const lines = items
+    .slice(0, 10)
+    .map((it) => {
+      const buy = it.buyText || (typeof it.buy === "number" ? String(it.buy) : "");
+      const sell = it.sellText || (typeof it.sell === "number" ? String(it.sell) : "");
+      const ccy = String(it.ccy || "").trim();
+      const label = String(it.name || "").trim() || "—";
+      if (buy && sell) return `• ${label}: ${T.buy || "Buy"} ${buy} / ${T.sell || "Sell"} ${sell}${ccy ? " " + ccy : ""}`;
+      if (sell) return `• ${label}: ${sell}${ccy ? " " + ccy : ""}`;
+      if (buy) return `• ${label}: ${buy}${ccy ? " " + ccy : ""}`;
+      return `• ${label}`;
+    })
+    .join("\n");
 
-    const head = T.metals || (L === "tr" ? "Güncel altın/metal fiyatları:" : "Live precious metals prices:");
-    const upd = updatedAt ? `\n${T.updated || "Updated:"} ${updatedAt}` : "";
+  const head = T.metals || (L === "tr" ? "Güncel altın/metal fiyatları:" : "Live precious metals prices:");
+  const upd = updatedAt ? `\n${T.updated || "Updated:"} ${updatedAt}` : "";
 
-    return {
-      answer: `${head}${upd}\n${lines}`.trim(),
-      sources: Array.isArray(e.sources) ? e.sources.slice(0, 5) : [],
-      confidence: typeof e.trustScore === "number" ? Math.max(0.35, Math.min(0.95, e.trustScore / 100)) : 0.7,
-      meta: { trustScore: typeof e.trustScore === "number" ? e.trustScore : 70, type: "metals" },
-      suggestions: Array.isArray(e.suggestions) ? e.suggestions.slice(0, 4) : [],
-    };
-  }
+  return {
+    answer: `${head}${upd}\n${lines}${lowNote}`.trim(),
+    suggestions: Array.isArray(e.suggestions) ? e.suggestions.slice(0, 4) : [],
+    sources: Array.isArray(e.sources) ? e.sources.slice(0, 5) : [],
+    trustScore: trust ?? 70, // <-- UYUM
+  };
+}
+
 
 if (e.type === "weather") {
     const lines = [];
@@ -2491,13 +2521,14 @@ async function wikidataGetEntityByWikiTitle(title, lang) {
   const data = await fetchJsonCached(url, 30 * 24 * 60 * 60 * 1000);
   const entities = data?.entities || {};
   for (const [id, ent] of Object.entries(entities)) {
-    if (!id || id === '-1' || !ent) continue;
-    const label = safeString(ent?.labels?.[wLang]?.value || ent?.labels?.en?.value || '');
-    const desc = safeString(ent?.descriptions?.[wLang]?.value || ent?.descriptions?.en?.value || '');
-    return { id, label: label || t, description: desc };
+    if (!id || id === "-1" || !ent) continue;
+    const label = safeString(ent?.labels?.[wLang]?.value || ent?.labels?.en?.value || "");
+    const desc  = safeString(ent?.descriptions?.[wLang]?.value || ent?.descriptions?.en?.value || "");
+    return { id, label: label || t, desc }; // ✅ description değil desc
   }
   return null;
 }
+
 
 
 // 30+ property map (country/city/person). Keep it small-but-useful.
@@ -2805,8 +2836,8 @@ async function getFactEvidence(text, lang) {
   let results = [];
   const overrideId = lookupEntityOverride(hint);
   if (overrideId) {
-    results = [{ id: overrideId, label: hint, description: "Known entity" }];
-  } else {
+  results = [{ id: overrideId, label: hint, desc: "Known entity" }]; // ✅ description değil desc
+} else {
     results = await wikidataSearchEntities(hint, L);
     if (!results.length) {
       // fallback: resolve by wiki title (trwiki/enwiki), sometimes more reliable than search
@@ -3166,7 +3197,333 @@ async function getSportsEvidence(text, lang) {
 // ============================================================================
 // SCHOLAR — PubMed + Crossref (free)
 // ============================================================================
+async function getScholarEvidence(text, lang) {
+  const L = normalizeLang(lang);
+  const q = (compactWords(text, 10) || safeString(text)).trim();
+  if (!q) return null;
 
+  // 1) PubMed
+  try {
+    const term = encodeURIComponent(q);
+    const esUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${term}&retmode=json&retmax=5&sort=relevance`;
+    const es = await fetchJsonCached(esUrl, 6 * 60 * 60 * 1000);
+    const ids = es?.esearchresult?.idlist || [];
+    if (Array.isArray(ids) && ids.length) {
+      const sumUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${encodeURIComponent(ids.join(","))}&retmode=json`;
+      const sum = await fetchJsonCached(sumUrl, 6 * 60 * 60 * 1000);
+      const uids = sum?.result?.uids || [];
+      const items = [];
+
+      for (const id of uids.slice(0, 5)) {
+        const row = sum?.result?.[id];
+        const title = safeString(row?.title || "");
+        const source = safeString(row?.fulljournalname || row?.source || "");
+        const pub = safeString(row?.pubdate || "");
+        const year = (pub.match(/\b(19|20)\d{2}\b/) || [])[0] || "";
+        if (!title) continue;
+        items.push({
+          title,
+          year,
+          source,
+          url: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+        });
+      }
+
+      if (items.length) {
+        return {
+          type: "scholar",
+          query: q,
+          items,
+          trustScore: 74,
+          sources: [{ title: "PubMed", url: "https://pubmed.ncbi.nlm.nih.gov/" }],
+        };
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // 2) Crossref fallback
+   // 2) Crossref fallback
+  try {
+    const url = `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=5`;
+    const cr = await fetchJsonCached(url, 6 * 60 * 60 * 1000);
+    const arr = cr?.message?.items || [];
+    const items = [];
+
+    for (const it of arr.slice(0, 5)) {
+      const title = safeString(Array.isArray(it?.title) ? it.title[0] : it?.title);
+      if (!title) continue;
+
+      const year =
+        safeString(it?.issued?.["date-parts"]?.[0]?.[0]) ||
+        safeString(it?.created?.["date-parts"]?.[0]?.[0]) ||
+        "";
+
+      const source = safeString(Array.isArray(it?.["container-title"]) ? it["container-title"][0] : it?.["container-title"]);
+      const doi = safeString(it?.DOI || "");
+      const link = safeString(it?.URL || (doi ? `https://doi.org/${doi}` : ""));
+
+      items.push({ title, year, source, url: link });
+    }
+
+    if (items.length) {
+      return {
+        type: "scholar",
+        query: q,
+        items,
+        trustScore: 70,
+        sources: [{ title: "Crossref", url: "https://api.crossref.org/" }],
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+
+// ============================================================================
+// POI — OpenStreetMap (Overpass) + Open-Meteo geocode (free) — S60
+// ============================================================================
+
+const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+
+function hashStringDjb2(str = "") {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i);
+  return (h >>> 0).toString(16);
+}
+
+async function fetchJsonPostCached(url, body, ttlMs = EVIDENCE_DEFAULT_TTL_MS) {
+  const key = `post:${url}:${hashStringDjb2(String(body || ""))}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    timeout: 9000,
+    headers: {
+      "User-Agent": "FindAllEasy-SonoAI/1.0",
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      Accept: "application/json",
+    },
+    body: String(body || ""),
+  });
+  if (!res || !res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (data) cacheSet(key, data, ttlMs);
+  return data;
+}
+
+function inferPoiMode(text = "") {
+  const low = safeString(text).toLowerCase();
+  if (/(kahvaltı|breakfast|brunch)/i.test(low)) return "breakfast";
+  if (/(restoran|restaurant|yemek|eat)/i.test(low)) return "food";
+  if (/(kafe|cafe|coffee)/i.test(low)) return "cafe";
+  if (/(otel|hotel)/i.test(low)) return "hotel";
+  if (/(müze|muze|museum|tarihi|historic|antik)/i.test(low)) return "culture";
+  return "mixed";
+}
+
+function osmMapUrl(lat, lon) {
+  if (typeof lat !== "number" || typeof lon !== "number") return "";
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=16/${lat}/${lon}`;
+}
+
+async function getPoiEvidence(text, lang, cityHint) {
+  const L = normalizeLang(lang);
+  const city = pickCity(text, cityHint);
+  if (!city) return { type: "need_city" };
+
+  const g = await geocodeCity(city, L);
+  if (!g) return null;
+
+  const mode = inferPoiMode(text);
+
+  // Overpass query: pick a few tags, keep it light.
+  const around = mode === "hotel" ? 6000 : 4000;
+
+  const blocks = [];
+  if (mode === "cafe" || mode === "mixed") blocks.push(`node["amenity"="cafe"](around:${around},${g.lat},${g.lon});`);
+  if (mode === "food" || mode === "breakfast" || mode === "mixed")
+    blocks.push(`node["amenity"="restaurant"](around:${around},${g.lat},${g.lon});`);
+  if (mode === "breakfast")
+    blocks.push(`node["amenity"="cafe"]["cuisine"~"breakfast|brunch"](around:${around},${g.lat},${g.lon});`);
+  if (mode === "hotel" || mode === "mixed") blocks.push(`node["tourism"="hotel"](around:${around},${g.lat},${g.lon});`);
+  if (mode === "culture" || mode === "mixed") {
+    blocks.push(`node["tourism"="museum"](around:${around},${g.lat},${g.lon});`);
+    blocks.push(`node["tourism"="attraction"](around:${around},${g.lat},${g.lon});`);
+    blocks.push(`node["historic"](around:${around},${g.lat},${g.lon});`);
+  }
+
+  const query = `[out:json][timeout:8];(${blocks.join("\n")});out 25;`;
+  const data = await fetchJsonPostCached(OVERPASS_URL, `data=${encodeURIComponent(query)}`, 5 * 60 * 1000);
+  const els = Array.isArray(data?.elements) ? data.elements : [];
+  const items = [];
+
+  for (const el of els) {
+    const name = safeString(el?.tags?.name || "");
+    const lat = typeof el?.lat === "number" ? el.lat : null;
+    const lon = typeof el?.lon === "number" ? el.lon : null;
+    if (!name || lat == null || lon == null) continue;
+
+    const noteParts = [];
+    if (el?.tags?.amenity) noteParts.push(el.tags.amenity);
+    if (el?.tags?.tourism) noteParts.push(el.tags.tourism);
+    if (el?.tags?.historic) noteParts.push(el.tags.historic);
+
+    items.push({
+      name,
+      note: noteParts.length ? noteParts.join(" • ") : "",
+      url: osmMapUrl(lat, lon),
+    });
+
+    if (items.length >= 10) break;
+  }
+
+  if (!items.length) {
+    return {
+      type: "no_answer",
+      reason: "poi_empty",
+      trustScore: 50,
+      sources: [{ title: "OpenStreetMap (Overpass)", url: "https://overpass-api.de/" }],
+      suggestions: [],
+    };
+  }
+
+  return {
+    type: "poi",
+    city: g.name,
+    items,
+    trustScore: 78,
+    sources: [{ title: "OpenStreetMap (Overpass)", url: "https://overpass-api.de/" }],
+  };
+}
+
+// ============================================================================
+// TRAVEL — evidence-backed: Wiki summary + POI extraction — S60
+// ============================================================================
+
+async function getTravelEvidence(text, lang, cityHint) {
+  const L = normalizeLang(lang);
+  const city = pickCity(text, cityHint);
+  if (!city) return { type: "need_city" };
+
+  const g = await geocodeCity(city, L);
+  if (!g) return null;
+
+  const wiki = await getWikiEvidence(g.name, L).catch(() => null);
+  const poiCulture = await getPoiEvidence(`${g.name} müze tarihi yer`, L, g.name).catch(() => null);
+  const poiFood = await getPoiEvidence(`${g.name} restoran kafe`, L, g.name).catch(() => null);
+
+  const see = Array.isArray(poiCulture?.items) ? poiCulture.items.map((x) => x.name).slice(0, 6) : [];
+  const eat = Array.isArray(poiFood?.items) ? poiFood.items.map((x) => x.name).slice(0, 6) : [];
+
+  const sections = {
+    see,
+    do: [],
+    eat,
+    tips: [],
+  };
+
+  // “tips” = kaynaklı, genel olmayan minik yönlendirme
+  if (wiki?.sources?.[0]?.url) {
+    sections.tips.push(L === "tr" ? "Şehir özeti ve arka plan için Wikipedia bağlantısına bak." : "See Wikipedia link for city overview.");
+  }
+  sections.tips.push(L === "tr" ? "Yerler listesi OpenStreetMap verisinden gelir; açılış saatleri için mekân sayfasını kontrol et." : "Places list is from OpenStreetMap; check each place page for hours.");
+
+  const sources = [];
+  if (wiki?.sources?.length) sources.push(...wiki.sources.slice(0, 1));
+  sources.push({ title: "OpenStreetMap (Overpass)", url: "https://overpass-api.de/" });
+
+  return {
+    type: "travel",
+    city: g.name,
+    sections,
+    itinerary: [],
+    trustScore: 72,
+    sources,
+  };
+}
+
+// ============================================================================
+// RECIPE — TheMealDB (free, best-effort) — S60
+// ============================================================================
+
+async function getRecipeEvidence(text, lang) {
+  const L = normalizeLang(lang);
+  const q = stripQuestionNoise(text) || compactWords(text, 5) || safeString(text);
+  if (!q) return null;
+
+  const url = `https://www.themealdb.com/api/json/v1/1/search.php?s=${encodeURIComponent(q)}`;
+  const data = await fetchJsonCached(url, 12 * 60 * 60 * 1000);
+  const meal = Array.isArray(data?.meals) ? data.meals[0] : null;
+  if (!meal) {
+    return { type: "no_answer", reason: "recipe_empty", trustScore: 45, sources: [{ title: "TheMealDB", url: "https://www.themealdb.com/" }], suggestions: [] };
+  }
+
+  const title = safeString(meal?.strMeal || q);
+  const ingredients = [];
+  for (let i = 1; i <= 20; i++) {
+    const ing = safeString(meal?.[`strIngredient${i}`] || "");
+    const mea = safeString(meal?.[`strMeasure${i}`] || "");
+    if (!ing) continue;
+    ingredients.push(mea ? `${mea} ${ing}`.trim() : ing);
+  }
+
+  const stepsRaw = safeString(meal?.strInstructions || "");
+  const steps = stepsRaw
+    .split(/\r?\n|\. +/g)
+    .map((s) => safeString(s))
+    .filter((s) => s.length >= 6)
+    .slice(0, 15);
+
+  const src = safeString(meal?.strSource || "");
+  const ytb = safeString(meal?.strYoutube || "");
+
+  const sources = [{ title: "TheMealDB", url: "https://www.themealdb.com/" }];
+  if (src) sources.unshift({ title: "Recipe source", url: src });
+
+  return {
+    type: "recipe",
+    title,
+    ingredients,
+    steps,
+    trustScore: 70,
+    sources: sources.slice(0, 5),
+    suggestions:
+      L === "tr" ? ["mercimek çorbası tarifi", "kek tarifi", "makarna tarifi", "tavuk tarifi"]
+               : ["chicken recipe", "pasta recipe", "cake recipe", "soup recipe"],
+  };
+}
+
+// ============================================================================
+// Evidence dispatcher — tek kapı (info mode) — S60
+// ============================================================================
+
+async function getEvidence(text, lang, memorySnapshot = {}) {
+  const t = detectEvidenceType(text, lang);
+  if (!t || t === "none") return null;
+
+  if (t === "weather") return await getWeatherEvidence(text, lang, memorySnapshot.lastCity);
+  if (t === "news") return await getNewsEvidence(text, lang);
+  if (t === "fx") return await getFxEvidence(text, lang);
+  if (t === "metals") return await getMetalsEvidence({ text, lang });
+  if (t === "poi") return await getPoiEvidence(text, lang, memorySnapshot.lastCity);
+  if (t === "travel") return await getTravelEvidence(text, lang, memorySnapshot.lastCity);
+  if (t === "recipe") return await getRecipeEvidence(text, lang);
+  if (t === "firsts") return await getFirstsEvidence(text, lang);
+  if (t === "fact") return await getFactEvidence(text, lang);
+  if (t === "econ") return await getEconEvidence(text, lang);
+  if (t === "sports") return await getSportsEvidence(text, lang);
+  if (t === "scholar") return await getScholarEvidence(text, lang);
+  if (t === "science") return await getWikiEvidence(text, lang); // “science” yoksa wiki’ye düş
+  if (t === "wiki") return await getWikiEvidence(text, lang);
+
+  return null;
+}
 async function getPubMedPapers(query) {
   const q = safeString(query);
   if (!q) return [];
@@ -3734,9 +4091,20 @@ async function callLLM({
   const safeMessage = String(message || "").trim().slice(0, 4000);
 
   // --- Providers ---
-  const workersAiBaseUrl = String(process.env.WORKERS_AI_BASE_URL || "").trim().replace(/\/+$/, "");
-  const workersAiToken = String(process.env.WORKERS_AI_TOKEN || "").trim();
-  const hasWorkers = !!workersAiBaseUrl && !!workersAiToken;
+ const workersAiBaseUrl = String(
+  process.env.WORKERS_AI_BASE_URL ||
+    process.env.CF_WORKER_AI_URL ||
+    process.env.CLOUDFLARE_AI_URL ||
+    ""
+)
+  .trim()
+  .replace(/\/+$/, "");
+
+const workersAiToken = String(
+  process.env.WORKERS_AI_TOKEN || process.env.CF_WORKER_CHAT_TOKEN || process.env.CHAT_TOKEN || ""
+).trim();
+
+const hasWorkers = !!workersAiBaseUrl; // token opsiyonel; header sadece varsa eklenir
 
   const workersAiModel = String(process.env.WORKERS_AI_MODEL || "@cf/meta/llama-3.1-8b-instruct").trim();
 
@@ -3763,7 +4131,8 @@ async function callLLM({
       || /long\s+analysis|in\s+depth|complex|polite|consistent|report|strategy|plan|legal|contract|refactor|debug|compare/.test(s);
   }
 
-  const preferOpenAI = !forceWorkersAI && hasOpenAI && (forceOpenAI || wantsHighQuality(safeMessage));
+ const preferOpenAI = false; // workers-first policy
+
 
   const sys = `You are ${persona}. Reply ONLY as a JSON object with keys: "answer" (string) and "suggestions" (array of 0-3 short strings). No markdown. No code fences. Answer in the user's language (${normLocale}). If you are uncertain, say so briefly and ask one clarifying question. ${personaNote || ""}`;
 
@@ -3820,19 +4189,17 @@ async function callLLM({
   }
 
   async function runWorkers() {
-  // Supports:
-  // 1) OpenAI-compatible endpoints: POST {base}/chat/completions → { choices: [{ message: { content } }] }
-  // 2) Legacy Sono Worker: POST {base}/chat → { ok: true, answer }
   const base = workersAiBaseUrl;
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${workersAiToken}`,
-    "cf-aig-authorization": workersAiToken,
-  };
+  const headers = { "Content-Type": "application/json" };
+  if (workersAiToken) {
+    headers.Authorization = `Bearer ${workersAiToken}`;
+    headers["cf-aig-authorization"] = workersAiToken;
+    headers["x-chat-token"] = workersAiToken; // bazı custom worker’lar bunu kullanır
+  }
 
-  const openAiCompatBody = {
-    model: workersAiModel || undefined,
+  const bodyCompat = {
+    model: String(process.env.WORKERS_AI_MODEL || "").trim() || undefined,
     temperature: 0.2,
     max_tokens: 700,
     messages: [
@@ -3841,59 +4208,64 @@ async function callLLM({
     ],
   };
 
-  // Try OpenAI-compatible first
-  try {
-    const r1 = await fetch(`${base}/chat/completions`, {
+  const tryJson = async (url, body) => {
+    const r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => null);
+    return { r, j };
+  };
+
+  // 1) OpenAI-compatible (2 yaygın şekil)
+  const urlsCompat = [`${base}/chat/completions`, `${base}/v1/chat/completions`];
+
+  for (const url of urlsCompat) {
+    try {
+      const { r, j } = await tryJson(url, bodyCompat);
+      const raw1 = String(j?.choices?.[0]?.message?.content || "").trim();
+      const raw2 = String(
+        j?.result?.response || j?.result?.answer || j?.result?.output_text || j?.response || ""
+      ).trim();
+
+      const raw = raw1 || raw2;
+      if (r.ok && raw) {
+        const parsed = parseModelOutput(raw, j?.model || "workers-ai");
+        parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+        if (!parsed.answer) parsed.answer = T.noAnswer;
+        return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+      }
+    } catch {
+      // diğer endpoint’e geç
+    }
+  }
+
+  // 2) Legacy /chat
+  const urlsLegacy = [`${base}/chat`, `${base}/v1/chat`];
+  for (const url of urlsLegacy) {
+    const r = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify(openAiCompatBody),
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: prompt },
+        ],
+      }),
     });
-    const j1 = await r1.json().catch(() => null);
 
-    const raw1 = String(j1?.choices?.[0]?.message?.content || "").trim();
-    if (r1.ok && raw1) {
-      const parsed = parseModelOutput(raw1, j1?.model || "workers-ai");
-      parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
-      if (!parsed.answer) parsed.answer = T.noAnswer;
-      return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+    const j = await r.json().catch(() => null);
+    if (r.ok && (j?.ok || j?.answer || j?.result)) {
+      const raw = String(j?.answer || j?.result?.response || j?.result?.answer || "").trim();
+      if (raw) {
+        const parsed = parseModelOutput(raw, j?.model || "workers-ai");
+        parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
+        if (!parsed.answer) parsed.answer = T.noAnswer;
+        return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
+      }
     }
-
-    // Cloudflare run-like shapes (just in case):
-    const raw2 = String(
-      j1?.result?.response ||
-        j1?.result?.answer ||
-        j1?.result?.output_text ||
-        j1?.response ||
-        ""
-    ).trim();
-
-    if (r1.ok && raw2) {
-      const parsed = parseModelOutput(raw2, j1?.model || "workers-ai");
-      parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
-      if (!parsed.answer) parsed.answer = T.noAnswer;
-      return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
-    }
-  } catch (e) {
-    // fall through to legacy
   }
 
-  // Legacy /chat format
-  const r = await fetch(`${base}/chat`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: prompt },
-      ],
-    }),
-  });
+  throw new Error("WORKERS_AI_UNREACHABLE");
+}
 
-  const j = await r.json().catch(() => null);
-  if (!r.ok || !j?.ok) {
-    const msg = j?.error || `HTTP_${r.status}`;
-    throw new Error(msg);
-  }
 
   const raw = String(j?.answer || "").trim();
   const parsed = parseModelOutput(raw, j?.model || "workers-ai");
@@ -3934,45 +4306,52 @@ async function runOpenAI() {
   }
 
   // --- Orchestration ---
-  if (preferOpenAI) {
+if (forceWorkersAI && hasWorkers) {
+  try {
+    return await runWorkers();
+  } catch {}
+  if (hasOpenAI) {
     try {
       return await runOpenAI();
-    } catch (e) {
-      // fall through
-    }
-    if (hasWorkers) {
-      try {
-        return await runWorkers();
-      } catch (e) {
-        // fall through
-      }
-    }
-    return {
-      provider: "openai",
-      answer: T.openaiFail,
-      suggestions: [],
-    };
+    } catch {}
   }
+  return { provider: "workers-ai", answer: T.workersFail, suggestions: [] };
+}
 
-  // Default: Workers first, OpenAI fallback (and upgrade low-quality replies)
+if (forceOpenAI && hasOpenAI) {
+  try {
+    return await runOpenAI();
+  } catch {}
+  if (hasWorkers) {
+    try {
+      return await runWorkers();
+    } catch {}
+  }
+  return { provider: "openai", answer: T.openaiFail, suggestions: [] };
+}
+
+const looksFailish = (s) =>
+  /yanıt\s*üretemedi|cevap\s*üretemedim|erişimim\s*yok|temporary|i failed to answer/i.test(
+    String(s || "").toLowerCase()
+  );
+
+// Default: Workers first, OpenAI only if needed
 if (hasWorkers) {
   try {
     const w = await runWorkers();
-    const ans = String(w?.answer || "");
     const low =
-      !ans.trim() ||
-      /yanıt üretemedi|cevap üretemedim|erişimim yok/i.test(ans) ||
-      (ans.trim().length < 120 && wantsHighQuality(safeMessage));
-
-    if (hasOpenAI && low) {
+      !w?.answer ||
+      looksFailish(w.answer) ||
+      (String(w.answer || "").length < 140 && wantsHighQuality(safeMessage));
+    if (low && hasOpenAI) {
       try {
         return await runOpenAI();
-      } catch (e) {
-        // ignore
+      } catch {
+        return w;
       }
     }
     return w;
-  } catch (e) {
+  } catch {
     // fall through to OpenAI
   }
 }
@@ -3980,21 +4359,12 @@ if (hasWorkers) {
 if (hasOpenAI) {
   try {
     return await runOpenAI();
-  } catch (e) {
-    return {
-      provider: "openai",
-      answer: T.openaiFail,
-      suggestions: [],
-    };
+  } catch {
+    return { provider: "openai", answer: T.openaiFail, suggestions: [] };
   }
 }
 
-return {
-  provider: "workers-ai",
-  answer: T.workersFail,
-  suggestions: [],
-};
-}
+return { provider: "workers-ai", answer: T.workersFail, suggestions: [] };
 
 
 // ============================================================================
@@ -4078,6 +4448,17 @@ function aiFirewall(req, res, next) {
   gcAiFlood(now);
   next();
 }
+function isExplicitPriceQuery(text) {
+  const low = safeString(text).toLowerCase();
+  return /(bu\s*ne\s*kadar|kaç\s*para|ne\s*kadar|fiyat(ı|i)?(\s*(nedir|ne))?|en\s*ucuz|en\s*uygun|daha\s*ucuz|ucuz|ekonomik|hesaplı|bütçe\s*dostu|pahalı\s*olmayan|indirim|kampanya|satın\s*al|satınal)/i.test(
+    low
+  );
+}
+
+function isChatInfoMode(modeNorm) {
+  const m = safeString(modeNorm).toLowerCase();
+  return m === "chat" || m === "info" || m === "assistant_chat" || m === "nocredit";
+}
 
 // ============================================================================
 // POST /api/ai — Ana Sono AI endpoint’i — S16 → S50 güçlendirilmiş
@@ -4139,16 +4520,29 @@ async function handleAiChat(req, res) {
       });
     }
 
-    const intent = detectIntent(text, lang);
+   const intent = detectIntent(text, lang);
 
-	const modeNorm = safeString(mode).toLowerCase();
-	// mode=chat/info/... → sadece sohbet/info; adapter çalıştırma (kredi yakma) YASAK
-	const noSearchMode =
-	  modeNorm === "chat" || modeNorm === "info" || modeNorm === "assistant_chat" || modeNorm === "nocredit";
-	// Otomatik niyet: intent=info ise (hava durumu/kur/haber/wiki/gezilecek vb.) arama yapma, evidence üret
-	const shouldEvidence = noSearchMode || intent === "info";
-	// Ürün + hizmet + belirsiz(mixed) için vitrin araması
-	const didSearch = !shouldEvidence && (intent === "product" || intent === "service" || intent === "mixed");
+const modeNorm = safeString(mode).toLowerCase();
+const inChat = isChatInfoMode(modeNorm);
+
+// Metals her zaman evidence (vitrin ASLA)
+const eType0 = detectEvidenceType(text, lang);
+const isMetals = eType0 === "metals";
+
+// chat/info modunda sadece açık fiyat/ucuzluk soruları vitrin açar (metaller hariç)
+const explicitPrice = !isMetals && isExplicitPriceQuery(text);
+
+const allowSearch = !inChat || explicitPrice;
+
+// Evidence: arama izni yoksa evet; metallerde her zaman evet; info niyetinde explicit değilse evet
+const shouldEvidence = !allowSearch || isMetals || (intent === "info" && !explicitPrice);
+
+// Vitrin: chat’te sadece explicitPrice ile; diğer modlarda product/service/mixed ile
+const didSearch =
+  allowSearch &&
+  !shouldEvidence &&
+  (explicitPrice || intent === "product" || intent === "service" || intent === "mixed");
+
     const userMem = await getUserMemory(userId, ip);
     const persona = detectPersona(text, userMem);
 
@@ -4262,5 +4656,14 @@ if (shouldEvidence) {
 router.post("/", aiFirewall, handleAiChat);
 router.post("/chat", aiFirewall, handleAiChat);
 
-export default router;
+export default router;    eksik hata varsa düzelt gönder bana tek parça halinde 
 
+// === PATCH: intent & vitrin guards ===
+const PRICE_INTENT_RE = /(ucuz|fiyat|kaç\s*para|ne\s*kadar|indirim|kampanya|ekonomik|uygun|bütçe\s*dostu|hesaplı|pahalı\s*olmayan)/i;
+const METALS_RE = /(altın|gümüş|platin|paladyum|ons|gram\s*altın|çeyrek|yarım)/i;
+
+function shouldTriggerVitrinChatMode(q){
+  if(!q) return false;
+  if(METALS_RE.test(q)) return false; // metals are info-only
+  return PRICE_INTENT_RE.test(q);
+}
