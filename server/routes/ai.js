@@ -3605,9 +3605,9 @@ function splitSteps(instructions) {
   return uniq;
 }
 
-async function getRecipeEvidence(text, lang) {
-  const q = safeString(text);
-  if (!q) return null;
+//async function getRecipeEvidence(text, lang) {
+ // const q = safeString(text);
+  //if (!q) return null;
 
   // Try a best-effort: use compact query
   const topic = compactWords(q, 5) || q;
