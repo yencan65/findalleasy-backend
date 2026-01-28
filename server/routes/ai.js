@@ -45,7 +45,6 @@ async function getScholarEvidence(text, lang) {
   }
 
   // 2) Crossref fallback
-   // 2) Crossref fallback
   try {
     const url = `https://api.crossref.org/works?query=${encodeURIComponent(q)}&rows=5`;
     const cr = await fetchJsonCached(url, 6 * 60 * 60 * 1000);
@@ -83,7 +82,6 @@ async function getScholarEvidence(text, lang) {
 
   return null;
 }
-
 
 // patched
 //bunun düzeltilmiş eksik hatalrı giderilmiş komple zip olarak gönder // server/routes/ai.js
