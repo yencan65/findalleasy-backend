@@ -3603,31 +3603,6 @@ function splitSteps(instructions) {
   return uniq;
 }
 
-//async function getRecipeEvidence(text, lang) {
- // const q = safeString(text);
-  //if (!q) return null;
-
-  // Try a best-effort: use compact query
-  const topic = compactWords(q, 5) || q;
-  const url = `https://www.themealdb.com/api/json/v1/1/search.php?s=${encodeURIComponent(topic)}`;
-  const data = await fetchJsonCached(url, 12 * 60 * 60 * 1000);
-  const meal = data?.meals?.[0];
-  if (!meal) return null;
-
-  const title = safeString(meal.strMeal || topic);
-  const ingredients = parseMealIngredients(meal);
-  const steps = splitSteps(meal.strInstructions);
-  const srcUrl = safeString(meal.strSource || meal.strYoutube || "");
-
-  return {
-    type: "recipe",
-    title,
-    ingredients,
-    steps,
-    trustScore: srcUrl ? 78 : 70,
-    sources: srcUrl ? [{ title: "Recipe source", url: srcUrl }] : [{ title: "TheMealDB", url: "https://www.themealdb.com/" }],
-  };
-}
 
 
 
@@ -3702,83 +3677,6 @@ async function overpassQuery(query, ttlMs = 5 * 60 * 1000) {
   return data;
 }
 
-async function getPoiEvidence(text, lang, cityHint) {
-  const city = pickCity(text, cityHint);
-  if (!city) return { type: "need_city" };
-  const g = await geocodeCity(city, lang);
-  if (!g) return null;
-
-  const cat = detectPoiCategory(text);
-  const radius = 6000;
-
-  const qParts = [];
-  if (cat in {"cafe":1, "food":1, "breakfast":1, "restaurant":1}) {
-  }
-  // Compose Overpass filters
-  let filters = [];
-  if (cat === "beach") {
-    filters = [
-      '["natural"="beach"]',
-      '["leisure"="beach_resort"]',
-    ];
-  } else if (cat === "marina") {
-    filters = [
-      '["leisure"="marina"]',
-      '["man_made"="pier"]',
-      '["harbour"="yes"]',
-    ];
-  } else {
-    // food/cafe/restaurant/breakfast
-    const wantsCafe = cat in {"cafe":1, "food":1, "breakfast":1};
-    const wantsRest = cat in {"restaurant":1, "food":1, "breakfast":1};
-    filters = [];
-    if (wantsCafe) filters.push('["amenity"="cafe"]');
-    if (wantsRest) filters.push('["amenity"="restaurant"]');
-    if (cat === "breakfast") filters.push('["amenity"="fast_food"]');
-  }
-
-  const blocks = [];
-  for (const f of filters) {
-    blocks.push(`node(around:${radius},${g.lat},${g.lon})${f};`);
-    blocks.push(`way(around:${radius},${g.lat},${g.lon})${f};`);
-    blocks.push(`relation(around:${radius},${g.lat},${g.lon})${f};`);
-  }
-
-  const query = `[out:json][timeout:12];(\n${blocks.join("\n")}\n);out center 30;`;
-  const data = await overpassQuery(query, 5 * 60 * 1000);
-  const elements = (data?.elements || []).slice(0, 60);
-
-  const items = [];
-  for (const el of elements) {
-    const tags = el.tags || {};
-    const name = safeString(tags.name || tags["name:en"] || tags["name:tr"] || "");
-    if (!name) continue;
-    const lat = el.lat || el.center?.lat;
-    const lon = el.lon || el.center?.lon;
-    if (typeof lat !== "number" || typeof lon !== "number") continue;
-
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lat + ',' + lon)}`;
-    const note = safeString(tags.amenity || tags.natural || tags.leisure || tags.man_made || tags.harbour || "");
-    items.push({ name, note, url });
-    if (items.length >= 10) break;
-  }
-
-  if (!items.length) return null;
-
-  const trustScore = 82;
-
-  return {
-    type: "poi",
-    city: g.name,
-    category: cat,
-    items,
-    trustScore,
-    sources: [
-      { title: "OpenStreetMap (Overpass)", url: "https://www.openstreetmap.org/" },
-      { title: "Overpass API", url: "https://overpass-api.de/" },
-    ],
-  };
-}
 
 function pickTravelTopic(text, lang, cityHint) {
   const city = pickCity(text, cityHint);
@@ -3905,75 +3803,6 @@ function mapTravelSections(sections, lang) {
   return matches;
 }
 
-async function getTravelEvidence(text, lang, cityHint) {
-  const topic = pickTravelTopic(text, lang, cityHint);
-  if (!topic) return null;
-
-  // Try user's language first; fallback to EN
-  const primary = await wikivoyageSearch(topic, lang);
-  let useLang = pickWikiLang(lang);
-  let chosen = primary;
-  if (!chosen) {
-    useLang = "en";
-    chosen = await wikivoyageSearch(topic, "en");
-  }
-  if (!chosen) return null;
-
-  const title = chosen.title;
-  const sections = await wikivoyageSections(title, useLang);
-  const mapped = mapTravelSections(sections, useLang);
-
-  const outSections = { see: [], do: [], eat: [], tips: [] };
-
-  // fetch html for up to 1 section per category
-  const tasks = [];
-  for (const k of ["see", "do", "eat", "tips"]) {
-    const s = (mapped[k] || [])[0];
-    if (!s) continue;
-    tasks.push((async () => {
-      const html = await wikivoyageSectionHtml(title, s.idx, useLang);
-      const items = extractListItems(html);
-      if (items.length) outSections[k] = items;
-    })());
-  }
-  await Promise.allSettled(tasks);
-
-  // itinerary: simple mix
-  const itinerary = [];
-  const seeTop = (outSections.see || []).slice(0, 2);
-  const doTop = (outSections.do || []).slice(0, 2);
-  const eatTop = (outSections.eat || []).slice(0, 2);
-  if (seeTop[0]) itinerary.push(seeTop[0]);
-  if (doTop[0]) itinerary.push(doTop[0]);
-  if (eatTop[0]) itinerary.push(eatTop[0]);
-  if (seeTop[1]) itinerary.push(seeTop[1]);
-  if (doTop[1]) itinerary.push(doTop[1]);
-  if (eatTop[1]) itinerary.push(eatTop[1]);
-
-  const pageUrl = `https://${useLang}.wikivoyage.org/wiki/${encodeURIComponent(title.replace(/\s/g, "_"))}`;
-
-  // Multi-source: try wikipedia summary for topic
-  const wiki = await getWikiEvidence(topic, useLang).catch(() => null);
-
-  const sources = [{ title: `Wikivoyage: ${title}`, url: pageUrl }];
-  if (wiki?.sources?.[0]) sources.push(wiki.sources[0]);
-
-  const itemCount = ["see","do","eat","tips"].reduce((acc,k)=>acc+(Array.isArray(outSections[k])?outSections[k].length:0),0);
-
-  let trustScore = 72;
-  if (itemCount >= 6) trustScore += 6;
-  if (wiki) trustScore += 8;
-  trustScore = Math.max(55, Math.min(92, trustScore));
-
-  return {
-    type: "travel",
-    city: title,
-    sections: outSections,
-    itinerary: itinerary.slice(0, 6),
-    trustScore,
-    sources,
-  };
-}
 
 async function gatherEvidence({ text, lang, city }) {
   const L = normalizeLang(lang);
@@ -4250,13 +4079,6 @@ const hasWorkers = !!workersAiBaseUrl; // token opsiyonel; header sadece varsa e
 }
 
 
-  const raw = String(j?.answer || "").trim();
-  const parsed = parseModelOutput(raw, j?.model || "workers-ai");
-  parsed.answer = sanitizeLLMAnswer(parsed.answer || "");
-  if (!parsed.answer) parsed.answer = T.noAnswer;
-  return { provider: parsed.provider, answer: parsed.answer, suggestions: parsed.suggestions || [] };
-}
-
 async function runOpenAI() {
     const r = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -4348,6 +4170,7 @@ if (hasOpenAI) {
 }
 
 return { provider: "workers-ai", answer: T.workersFail, suggestions: [] };
+}
 
 
 // ============================================================================
@@ -4639,14 +4462,4 @@ if (shouldEvidence) {
 router.post("/", aiFirewall, handleAiChat);
 router.post("/chat", aiFirewall, handleAiChat);
 
-export default router;    eksik hata varsa düzelt gönder bana tek parça halinde 
-
-// === PATCH: intent & vitrin guards ===
-const PRICE_INTENT_RE = /(ucuz|fiyat|kaç\s*para|ne\s*kadar|indirim|kampanya|ekonomik|uygun|bütçe\s*dostu|hesaplı|pahalı\s*olmayan)/i;
-const METALS_RE = /(altın|gümüş|platin|paladyum|ons|gram\s*altın|çeyrek|yarım)/i;
-
-function shouldTriggerVitrinChatMode(q){
-  if(!q) return false;
-  if(METALS_RE.test(q)) return false; // metals are info-only
-  return PRICE_INTENT_RE.test(q);
-}
+export default router;
