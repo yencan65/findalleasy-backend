@@ -1231,6 +1231,55 @@ async function handle(req, res) {
   const count = items.length;
 
   // Cards — ONLY "best" active
+
+// Strict relevance guardrail: Never pick a "best" card if it's unrelated.
+// Goal: better to show "no match" than a wrong product.
+const _normTxt = (x) =>
+  String(x || "")
+    .toLocaleLowerCase("tr")
+    .replace(/[ ]/g, " ")
+    .replace(/[^a-z0-9çğıöşü\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const _tokenSet = (x) => {
+  const t = _normTxt(x);
+  if (!t) return new Set();
+  const parts = t.split(" ").filter(Boolean);
+  // drop ultra-common noise
+  const stop = new Set(["ve", "ile", "icin", "için", "the", "a", "an", "of", "for", "to"]);
+  const out = [];
+  for (const p of parts) {
+    if (p.length < 2) continue;
+    if (stop.has(p)) continue;
+    out.push(p);
+  }
+  return new Set(out);
+};
+
+const _jaccard = (A, B) => {
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const a of A) if (B.has(a)) inter++;
+  const uni = A.size + B.size - inter;
+  return uni ? inter / uni : 0;
+};
+
+const _similarity = (q0, title0) => {
+  const A = _tokenSet(q0);
+  const B = _tokenSet(title0);
+  const j = _jaccard(A, B);
+  // also reward substring hits for short brands/models
+  const qn = _normTxt(q0);
+  const tn = _normTxt(title0);
+  let bonus = 0;
+  if (qn && tn && qn.length >= 4 && tn.includes(qn)) bonus = 0.12;
+  return Math.min(1, j + bonus);
+};
+
+const effectiveQ = safeStr(upstreamResolvedQuery || resolvedQueryIn || q);
+const qTokens = Array.from(_tokenSet(effectiveQ));
+const SIM_MIN = qTokens.length >= 3 ? 0.22 : qTokens.length === 2 ? 0.18 : 0.0;
   const pickPrice = (it) => {
     const v = it?.optimizedPrice ?? it?.finalPrice ?? it?.price;
     const n = typeof v === "number" ? v : Number(String(v ?? "").replace(",", "."));
@@ -1242,24 +1291,31 @@ async function handle(req, res) {
     return typeof t === "number" && Number.isFinite(t) ? t : null;
   };
 
-  const candidates = filteredItems.filter((it) => {
-    const p = pickPrice(it);
-    return !!it?.title && !!it?.url && p != null;
-  });
+  
+const candidates0 = filteredItems.filter((it) => {
+  const p = pickPrice(it);
+  return !!it?.title && !!it?.url && p != null;
+});
 
-  const trusted = candidates.filter((it) => {
-    const t = trustOf(it);
-    return t == null ? true : t >= 0.45;
-  });
+const trusted0 = candidates0.filter((it) => {
+  const t = trustOf(it);
+  return t == null ? true : t >= 0.45;
+});
 
-  const pool = trusted.length ? trusted : candidates;
-  const best = pool.reduce((acc, cur) => {
-    if (!acc) return cur;
-    const ap = pickPrice(acc);
-    const cp = pickPrice(cur);
-    return ap == null ? cur : cp == null ? acc : cp < ap ? cur : acc;
-  }, null);
+// Apply relevance filter ONLY for picking the single "best" card.
+// We keep the full list for power users, but the headline card must be correct.
+const basePool = (trusted0.length ? trusted0 : candidates0);
 
+const pool = (SIM_MIN > 0)
+  ? basePool.filter((it) => _similarity(effectiveQ, it?.title) >= SIM_MIN)
+  : basePool;
+
+const best = pool.reduce((acc, cur) => {
+  if (!acc) return cur;
+  const ap = pickPrice(acc);
+  const cp = pickPrice(cur);
+  return ap == null ? cur : cp == null ? acc : cp < ap ? cur : acc;
+}, null);
   const cards = [
     {
       key: "best",
@@ -1423,6 +1479,24 @@ async function handle(req, res) {
     } catch {}
   }
 
+
+
+
+// Relevance filter: drop obviously unrelated items so the UI never shows junk.
+try {
+  if (SIM_MIN > 0 && Array.isArray(response?.items)) {
+    const beforeN = response.items.length;
+    response.items = response.items.filter((it) => _similarity(effectiveQ, it?.title) >= SIM_MIN);
+    if (Array.isArray(response?.results)) response.results = response.items;
+    const afterN = response.items.length;
+    if (beforeN > 0 && afterN === 0) {
+      // If everything was junk, also clear headline cards.
+      if (Array.isArray(response?.cards)) response.cards = [];
+      if (!response._meta || typeof response._meta !== "object") response._meta = {};
+      response._meta.relevanceFiltered = true;
+    }
+  }
+} catch {}
 
   // 🔥 store response cache (prevents re-burning credits)
   if (!bypassCache && response && typeof response === "object" && response.ok !== false) {
