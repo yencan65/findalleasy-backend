@@ -168,6 +168,11 @@ async function lookupOpenFactsByBarcode(code, { signal } = {}) {
       api: `https://world.openproductsfacts.org/api/v2/product/${barcode}.json`,
       page: `https://world.openproductsfacts.org/product/${barcode}`,
     },
+    {
+      key: "openpetfoodfacts",
+      api: `https://world.openpetfoodfacts.org/api/v2/product/${barcode}.json`,
+      page: `https://world.openpetfoodfacts.org/product/${barcode}`,
+    },
   ];
 
   for (const ep of endpoints) {
