@@ -26,6 +26,7 @@ import { getDb } from "../../db.js";
 
 // ✅ SINGLE SOURCE OF TRUTH kit
 import {
+import { searchCollectApiTrendyol, searchCollectApiHepsiburada, searchCollectApiAkakce, searchCollectApiTeknosa } from "../collectApiAdapter.js";
   makeSafeImport,
   runWithCooldownS200,
   normalizeUrlS200,
@@ -757,6 +758,12 @@ const getTimeout = (key) => timeoutConfig[key] || timeoutConfig.default;
 export const productAdapters = [
   // ✅ EN ÖNCE: gerçek index’li katalog (Admitad feed -> Mongo)
    wrapS200("admitad", searchAdmitadFeedAdapter, getTimeout("admitad")),
+
+  // ✅ CollectAPI fallback for TR marketplaces (needs COLLECTAPI_APIKEY)
+  wrapS200("collectapi_trendyol", searchCollectApiTrendyol, getTimeout("collectapi")),
+  wrapS200("collectapi_hepsiburada", searchCollectApiHepsiburada, getTimeout("collectapi")),
+  wrapS200("collectapi_akakce", searchCollectApiAkakce, getTimeout("collectapi")),
+  wrapS200("collectapi_teknosa", searchCollectApiTeknosa, getTimeout("collectapi")),
  // wrapS200("admitad", searchCatalogMongo, getTimeout("catalog_mongo")),
 
   wrapS200("trendyol", searchTrendyolAdapter, getTimeout("trendyol")),
