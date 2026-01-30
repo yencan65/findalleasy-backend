@@ -26,7 +26,6 @@ import { getDb } from "../../db.js";
 
 // ✅ SINGLE SOURCE OF TRUTH kit
 import {
-import { searchCollectApiTrendyol, searchCollectApiHepsiburada, searchCollectApiAkakce, searchCollectApiTeknosa } from "../collectApiAdapter.js";
   makeSafeImport,
   runWithCooldownS200,
   normalizeUrlS200,
@@ -674,6 +673,14 @@ function wrapS200(providerKey, fn, timeoutMs = 2600, rules = PRODUCT_RULES) {
 const searchTrendyolAdapter = await safeImport("../trendyolAdapter.js", "searchTrendyolAdapter");
 const searchHepsiburadaAdapter = await safeImport("../hepsiburadaAdapter.js", "searchHepsiburadaAdapter");
 const searchN11Adapter = await safeImport("../n11Adapter.js", "searchN11Adapter");
+
+// CollectAPI (paid fallback aggregator) — used for TR marketplaces when API key exists
+const searchCollectApiTrendyol = await safeImport("../collectApiAdapter.js", "searchCollectApiTrendyol");
+const searchCollectApiHepsiburada = await safeImport("../collectApiAdapter.js", "searchCollectApiHepsiburada");
+const searchCollectApiN11 = await safeImport("../collectApiAdapter.js", "searchCollectApiN11");
+const COLLECTAPI_KEY = (process.env.COLLECTAPI_APIKEY || process.env.COLLECTAPI_KEY || process.env.COLLECTAPI_TOKEN || "").trim();
+const USE_COLLECTAPI = Boolean(COLLECTAPI_KEY);
+
 const searchAmazonTRAdapter = await safeImport("../amazonTRAdapter.js"); // auto-pick
 
 const searchCimri = await safeImport("../cimriAdapter.js"); // auto-pick
@@ -758,17 +765,11 @@ const getTimeout = (key) => timeoutConfig[key] || timeoutConfig.default;
 export const productAdapters = [
   // ✅ EN ÖNCE: gerçek index’li katalog (Admitad feed -> Mongo)
    wrapS200("admitad", searchAdmitadFeedAdapter, getTimeout("admitad")),
-
-  // ✅ CollectAPI fallback for TR marketplaces (needs COLLECTAPI_APIKEY)
-  wrapS200("collectapi_trendyol", searchCollectApiTrendyol, getTimeout("collectapi")),
-  wrapS200("collectapi_hepsiburada", searchCollectApiHepsiburada, getTimeout("collectapi")),
-  wrapS200("collectapi_akakce", searchCollectApiAkakce, getTimeout("collectapi")),
-  wrapS200("collectapi_teknosa", searchCollectApiTeknosa, getTimeout("collectapi")),
  // wrapS200("admitad", searchCatalogMongo, getTimeout("catalog_mongo")),
 
-  wrapS200("trendyol", searchTrendyolAdapter, getTimeout("trendyol")),
-  wrapS200("hepsiburada", searchHepsiburadaAdapter, getTimeout("hepsiburada")),
-  wrapS200("n11", searchN11Adapter, getTimeout("n11")),
+  wrapS200("trendyol", (USE_COLLECTAPI ? searchCollectApiTrendyol : searchTrendyolAdapter), getTimeout("trendyol")),
+  wrapS200("hepsiburada", (USE_COLLECTAPI ? searchCollectApiHepsiburada : searchHepsiburadaAdapter), getTimeout("hepsiburada")),
+  wrapS200("n11", (USE_COLLECTAPI ? searchCollectApiN11 : searchN11Adapter), getTimeout("n11")),
   wrapS200("amazon_tr", searchAmazonTRAdapter, getTimeout("amazon_tr")),
 
   wrapS200("cimri", searchCimri, getTimeout("cimri")),
