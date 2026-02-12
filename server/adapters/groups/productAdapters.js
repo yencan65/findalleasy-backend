@@ -145,8 +145,7 @@ async function searchAdmitadFeedAdapter(query, options = {}) {
   } catch (e) {
     // ignore and try legacy
   }
-
-  // Legacy fallback: admitad_catalog (older deployments)
+// Legacy fallback: admitad_catalog (older deployments)
   const legacyLimit = Math.max(1, Math.min(200, limit + offset));
   const legacy = await searchAdmitadLegacyCollection(q, legacyLimit, provider);
   if (!legacy || !legacy.length) return [];
@@ -164,6 +163,87 @@ async function searchAdmitadFeedAdapter(query, options = {}) {
       affiliateUrl: finalUrl,
     };
   });
+}
+
+
+  
+// ============================================================================
+// REKLAMACTION FEED (Mongo Catalog) → S200 adapter
+// - feedIngest.mjs ile doldurulan catalog_items içinde providerKey='reklamaction'
+// - output: normal product item shape (url/affiliateUrl garanti)
+// ============================================================================
+async function searchReklamActionFeedAdapter(query, options = {}) {
+  const q = String(query || "").trim();
+  if (!q) return [];
+
+  const limitRaw = Number((options && typeof options === "object") ? (options.limit ?? options.max ?? 20) : 20);
+  const limit = Math.max(1, Math.min(50, Number.isFinite(limitRaw) ? limitRaw : 20));
+
+  const offsetRaw = Number((options && typeof options === "object") ? (options.offset ?? 0) : 0);
+  const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
+
+  const provider = "reklamaction";
+
+  try {
+    const db = await getDb();
+    const colName = kitSafeStr(process.env.CATALOG_COLLECTION) || "catalog_items";
+    const col = db.collection(colName);
+
+    const rx = new RegExp(escapeRegexS200(q), "i");
+    const docs = await col
+      .find({ providerKey: provider, title: rx })
+      .sort({ updatedAt: -1 })
+      .skip(offset)
+      .limit(limit)
+      .project({
+        _id: 0,
+        providerKey: 1,
+        providerName: 1,
+        campaignId: 1,
+        offerId: 1,
+        title: 1,
+        price: 1,
+        oldPrice: 1,
+        currency: 1,
+        image: 1,
+        originUrl: 1,
+        finalUrl: 1,
+        updatedAt: 1,
+        raw: 1,
+      })
+      .toArray();
+
+    if (!docs || !docs.length) return [];
+
+    return docs.map((d) => ({
+      id: `${provider}:${d.campaignId ?? 0}:${d.offerId ?? ""}`,
+      title: d.title,
+
+      price: d.price ?? null,
+      oldPrice: d.oldPrice ?? null,
+      currency: d.currency || "TRY",
+
+      image: d.image || "",
+      originUrl: d.originUrl || "",
+      finalUrl: d.finalUrl || d.originUrl || "",
+
+      // NOTE: ReklamAction tarafında link zaten tracking olabilir.
+      // Değilse front-end TrinkLink script'i otomatik affiliate'e çevirir.
+      affiliateUrl: d.finalUrl || d.originUrl || "",
+
+      provider: provider,
+      providerKey: provider,
+      providerFamily: provider,
+      providerName: d.providerName || "ReklamAction Feed",
+
+      campaignId: d.campaignId ?? null,
+      offerId: d.offerId ?? null,
+      updatedAt: d.updatedAt ?? null,
+      raw: d.raw,
+    }));
+  } catch (e) {
+    return [];
+  }
 }
 
 // ============================================================================
@@ -726,6 +806,7 @@ const searchSerpApiAdapter = await safeImport("../serpApi.js", "searchWithSerpAp
 // ============================================================================
 const timeoutConfig = {
   admitad: 4500,
+  reklamaction: 1200,
   // ✅ Mongo catalog hızlı olmalı (DB + regex)
   catalog_mongo: 1200,
 
@@ -765,6 +846,7 @@ const getTimeout = (key) => timeoutConfig[key] || timeoutConfig.default;
 export const productAdapters = [
   // ✅ EN ÖNCE: gerçek index’li katalog (Admitad feed -> Mongo)
    wrapS200("admitad", searchAdmitadFeedAdapter, getTimeout("admitad")),
+  wrapS200("reklamaction", searchReklamActionFeedAdapter, getTimeout("reklamaction")),
  // wrapS200("admitad", searchCatalogMongo, getTimeout("catalog_mongo")),
 
   wrapS200("trendyol", (USE_COLLECTAPI ? searchCollectApiTrendyol : searchTrendyolAdapter), getTimeout("trendyol")),
@@ -840,7 +922,7 @@ export function getProductAdaptersByCategory(category) {
   };
 
   // ✅ Admitad catalog her kategoride aktif + serpapi fallback kalsın
-  const providerKeys = Array.from(new Set([...(categoryMap[cat] || categoryMap.all), "serpapi", "admitad"]));
+  const providerKeys = Array.from(new Set([...(categoryMap[cat] || categoryMap.all), "serpapi", "admitad", "reklamaction"]));
   return productAdapters.filter((adapter) => providerKeys.includes(adapter.providerKey));
 }
 
