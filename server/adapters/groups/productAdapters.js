@@ -145,7 +145,8 @@ async function searchAdmitadFeedAdapter(query, options = {}) {
   } catch (e) {
     // ignore and try legacy
   }
-// Legacy fallback: admitad_catalog (older deployments)
+
+  // Legacy fallback: admitad_catalog (older deployments)
   const legacyLimit = Math.max(1, Math.min(200, limit + offset));
   const legacy = await searchAdmitadLegacyCollection(q, legacyLimit, provider);
   if (!legacy || !legacy.length) return [];
@@ -166,84 +167,100 @@ async function searchAdmitadFeedAdapter(query, options = {}) {
 }
 
 
-  
-// ============================================================================
-// REKLAMACTION FEED (Mongo Catalog) → S200 adapter
-// - feedIngest.mjs ile doldurulan catalog_items içinde providerKey='reklamaction'
-// - output: normal product item shape (url/affiliateUrl garanti)
-// ============================================================================
+
 async function searchReklamActionFeedAdapter(query, options = {}) {
-  const q = String(query || "").trim();
+  const provider = "reklamaction";
+  const q = safeString(query).trim();
   if (!q) return [];
 
-  const limitRaw = Number((options && typeof options === "object") ? (options.limit ?? options.max ?? 20) : 20);
-  const limit = Math.max(1, Math.min(50, Number.isFinite(limitRaw) ? limitRaw : 20));
+  const limit = clampInt(options.limit ?? 24, 1, 50);
+  const offset = clampInt(options.offset ?? 0, 0, 200);
+  const currency = safeString(options.currency || CATALOG_DEFAULT_CURRENCY).toUpperCase();
 
-  const offsetRaw = Number((options && typeof options === "object") ? (options.offset ?? 0) : 0);
-  const offset = Math.max(0, Number.isFinite(offsetRaw) ? offsetRaw : 0);
+  const db = await getDb();
+  const col = db.collection("catalog_items");
 
-  const provider = "reklamaction";
+  // Shared allowlist; empty => allow all
+  const allow = CATALOG_CAMPAIGN_ALLOWLIST;
+  const allowMatch = allow.length ? { campaignId: { $in: allow } } : {};
 
-  try {
-    const db = await getDb();
-    const colName = kitSafeStr(process.env.CATALOG_COLLECTION) || "catalog_items";
-    const col = db.collection(colName);
+  const rx = new RegExp(escapeRegexS200(q), "i");
 
-    const rx = new RegExp(escapeRegexS200(q), "i");
-    const docs = await col
-      .find({ providerKey: provider, title: rx })
-      .sort({ updatedAt: -1 })
-      .skip(offset)
-      .limit(limit)
-      .project({
-        _id: 0,
-        providerKey: 1,
-        providerName: 1,
-        campaignId: 1,
-        offerId: 1,
-        title: 1,
-        price: 1,
-        oldPrice: 1,
-        currency: 1,
-        image: 1,
-        originUrl: 1,
-        finalUrl: 1,
-        updatedAt: 1,
-        raw: 1,
-      })
-      .toArray();
+  const filter = {
+    providerKey: provider,
+    ...allowMatch,
+    $or: [
+      { title: rx },
+      { brand: rx },
+      { merchantName: rx },
+      { category: rx },
+      { keywords: rx },
+      { gtin: q },
+      { sku: q },
+    ],
+  };
 
-    if (!docs || !docs.length) return [];
+  const projection = {
+    _id: 0,
+    id: 1,
+    providerKey: 1,
+    campaignId: 1,
+    offerId: 1,
+    merchantName: 1,
+    title: 1,
+    brand: 1,
+    category: 1,
+    currency: 1,
+    price: 1,
+    oldPrice: 1,
+    discount: 1,
+    image: 1,
+    url: 1,
+    originUrl: 1,
+    finalUrl: 1,
+    affiliateUrl: 1,
+    gtin: 1,
+    sku: 1,
+    updatedAt: 1,
+    raw: 1,
+  };
 
-    return docs.map((d) => ({
-      id: `${provider}:${d.campaignId ?? 0}:${d.offerId ?? ""}`,
-      title: d.title,
+  const docs = await col
+    .find(filter, { projection })
+    .sort({ updatedAt: -1 })
+    .limit(limit + offset)
+    .toArray();
 
+  const slice = docs.slice(offset, offset + limit);
+
+  // Currency filter: keep exact currency if present, otherwise keep unknown
+  const items = slice
+    .filter((d) => !d.currency || safeString(d.currency).toUpperCase() === currency)
+    .map((d) => ({
+      id: d.id || `${provider}:${d.offerId || d.url || ""}`,
+      title: d.title || "",
       price: d.price ?? null,
       oldPrice: d.oldPrice ?? null,
-      currency: d.currency || "TRY",
-
+      currency: d.currency || currency,
       image: d.image || "",
-      originUrl: d.originUrl || "",
-      finalUrl: d.finalUrl || d.originUrl || "",
-
-      // NOTE: ReklamAction tarafında link zaten tracking olabilir.
-      // Değilse front-end TrinkLink script'i otomatik affiliate'e çevirir.
-      affiliateUrl: d.finalUrl || d.originUrl || "",
-
-      provider: provider,
+      brand: d.brand || "",
+      category: d.category || "",
+      merchantName: d.merchantName || "",
+      originUrl: d.originUrl || d.url || "",
+      finalUrl: d.finalUrl || d.url || "",
+      affiliateUrl: d.affiliateUrl || d.finalUrl || d.url || "",
+      provider,
       providerKey: provider,
       providerFamily: provider,
-      providerName: d.providerName || "ReklamAction Feed",
-
       campaignId: d.campaignId ?? null,
       offerId: d.offerId ?? null,
-      updatedAt: d.updatedAt ?? null,
-      raw: d.raw,
+      updatedAt: d.updatedAt || null,
+      raw: d.raw || null,
+      gtin: d.gtin || "",
+      sku: d.sku || "",
     }));
-  } catch (e) {
-    return [];
-  }
+
+  return items;
 }
 
 // ============================================================================
@@ -805,8 +822,8 @@ const searchSerpApiAdapter = await safeImport("../serpApi.js", "searchWithSerpAp
 // TIMEOUT CONFIG (kept)
 // ============================================================================
 const timeoutConfig = {
+  reklamaction: 3500,
   admitad: 4500,
-  reklamaction: 1200,
   // ✅ Mongo catalog hızlı olmalı (DB + regex)
   catalog_mongo: 1200,
 
@@ -846,7 +863,7 @@ const getTimeout = (key) => timeoutConfig[key] || timeoutConfig.default;
 export const productAdapters = [
   // ✅ EN ÖNCE: gerçek index’li katalog (Admitad feed -> Mongo)
    wrapS200("admitad", searchAdmitadFeedAdapter, getTimeout("admitad")),
-  wrapS200("reklamaction", searchReklamActionFeedAdapter, getTimeout("reklamaction")),
+    wrapS200("reklamaction", searchReklamActionFeedAdapter, getTimeout("reklamaction")),
  // wrapS200("admitad", searchCatalogMongo, getTimeout("catalog_mongo")),
 
   wrapS200("trendyol", (USE_COLLECTAPI ? searchCollectApiTrendyol : searchTrendyolAdapter), getTimeout("trendyol")),
