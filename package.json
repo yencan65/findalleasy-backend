@@ -1,13 +1,16 @@
 {
-"name": "findalleasy-backend",
+  "name": "findalleasy-backend",
   "version": "2.2.1",
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test:system": "node systemCheck.js"
+    "test:system": "node systemCheck.js",
+    "ingest:feed": "node server/workers/feedIngest.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
